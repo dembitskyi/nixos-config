@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly OPENCODE_URL="http://127.0.0.1:4097"
+readonly MAX_TIME=120
+
+clip=$(wl-paste -p 2>/dev/null) || true
+[[ -z "${clip:-}" ]] && { notify-send "ClipTextRefiner" "No text selected"; exit 1; }
+
+session_id=$(curl -sf -X POST "$OPENCODE_URL/session" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"clip-text-refiner"}' | jq -r '.id // empty')
+[[ -z "$session_id" ]] && { notify-send "ClipTextRefiner" "Failed to create session"; exit 1; }
+
+escaped_clip=$(printf '%s' "$clip" | jq -Rs .)
+
+improved=$(curl -sf -X POST "$OPENCODE_URL/session/$session_id/message" \
+  -H "Content-Type: application/json" \
+  --max-time "$MAX_TIME" \
+  -d "{\"agent\":\"refine\",\"parts\":[{\"type\":\"text\",\"text\":$escaped_clip}]}" \
+  | jq -r '[.parts[]? | select(.type == "text" and (.ignored | not) and (.synthetic | not) and .time.end)] | map(.text) | join("\n")')
+
+if [[ -n "${improved:-}" ]]; then
+  printf '%s' "$improved" | wl-copy
+  notify-send "ClipTextRefiner" "Text improved → clipboard ready"
+else
+  notify-send "ClipTextRefiner" "OpenCode processing failed"
+fi

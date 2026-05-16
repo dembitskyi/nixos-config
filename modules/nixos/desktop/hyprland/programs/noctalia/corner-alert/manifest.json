@@ -1,0 +1,19 @@
+{
+  "id": "corner-alert",
+  "name": "Corner Alert",
+  "version": "1.0.0",
+  "minNoctaliaVersion": "4.4.1",
+  "author": "Vasyl Dembitskyi",
+  "license": "MIT",
+  "description": "Blinking red dot overlay in the top-right corner, controlled via IPC or the corner-alert CLI.",
+  "tags": ["Desktop", "Utility"],
+  "entryPoints": {
+    "main": "Main.qml"
+  },
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {
+    "defaultSettings": {}
+  }
+}

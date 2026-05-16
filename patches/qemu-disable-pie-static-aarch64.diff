@@ -1,0 +1,14 @@
+diff --git a/pkgs/by-name/qe/qemu/package.nix b/pkgs/by-name/qe/qemu/package.nix
+index 5dde5e581158..9d14b64a858b 100644
+--- a/pkgs/by-name/qe/qemu/package.nix
++++ b/pkgs/by-name/qe/qemu/package.nix
+@@ -333,7 +333,8 @@ stdenv.mkDerivation (finalAttrs: {
+   ++ lib.optional (!pluginsSupport) "--disable-plugins"
+   ++ lib.optional (!enableBlobs) "--disable-install-blobs"
+   ++ lib.optional userOnly "--disable-system"
+-  ++ lib.optional stdenv.hostPlatform.isStatic "--static";
++  ++ lib.optional stdenv.hostPlatform.isStatic "--static"
++  ++ lib.optional (stdenv.hostPlatform.isStatic && stdenv.hostPlatform.isAarch64) "--disable-pie";
+ 
+   dontWrapGApps = true;
+ 

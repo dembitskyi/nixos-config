@@ -1,0 +1,6 @@
+{
+  "plugin": {
+    "name": "Corner Alert",
+    "description": "Blinking red dot overlay in the top-right corner."
+  }
+}

@@ -1,0 +1,234 @@
+{
+  lib,
+  config,
+  pkgs,
+  inputs',
+  ...
+}:
+let
+  scripts = ./scripts;
+
+  # Use the pinned hyprland input (v0.53.3) with a glaze compatibility patch,
+  # or the latest hyprland from the rolling flake input.
+  hyprlandPackage =
+    if config.mine.hyprland.pinned then
+      inputs'.hyprland-v0_53_3.packages.default.overrideAttrs (old: {
+        patches = (old.patches or [ ]) ++ [ ../../../../patches/hyprland-hyprpm-glaze-7.diff ];
+      })
+    else
+      inputs'.hyprland.packages.default;
+
+  hyprlandPortalPackage =
+    if config.mine.hyprland.pinned then
+      inputs'.hyprland-v0_53_3.packages.xdg-desktop-portal-hyprland
+    else
+      inputs'.hyprland.packages.xdg-desktop-portal-hyprland;
+
+  # Settings only valid for the pinned version (v0.53.3).
+  pinnedSettings = {
+    misc = {
+      vfr = true;
+    };
+  };
+
+  # Settings only valid for the latest version.
+  latestSettings = {
+  };
+
+  versionSettings = if config.mine.hyprland.pinned then pinnedSettings else latestSettings;
+
+  tools = pkgs.stdenv.mkDerivation {
+    name = "hyprland-tools";
+    src = scripts;
+    dontBuild = true;
+    installPhase = ''
+      mkdir -p $out/sbin
+      cp -r $src/ClipManager.sh $out/sbin/
+    '';
+  };
+
+  commonSettings = import ./settings.nix { inherit lib pkgs tools; };
+in
+{
+  options = {
+    mine.hyprland.enable = lib.mkEnableOption "enable hyprland";
+    mine.hyprland.pinned = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Use the pinned hyprland version (v0.53.3) instead of the latest.";
+    };
+    mine.hyprland.package = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      description = "Resolved Hyprland package used by the system and Home Manager configuration.";
+    };
+  };
+
+  imports = [
+    ./themes/Catppuccin
+    ./programs/greetd
+    ./programs/noctalia
+    ./programs/rofi
+  ];
+
+  config = lib.mkIf config.mine.hyprland.enable {
+    mine.hyprland.package = hyprlandPackage;
+    environment.systemPackages = with pkgs; [
+      (import ./scripts/launcher.nix { inherit lib pkgs; })
+      inputs'.noctalia.packages.default
+
+      eog
+      nautilus
+      feh
+      gnome-disk-utility
+      popsicle
+      ubootTools
+      meld
+      gnome-calculator
+      file-roller
+      gedit
+      qalculate-gtk
+    ];
+
+    services.displayManager.defaultSession = "hyprland-uwsm";
+    programs.hyprland = {
+      enable = true;
+      withUWSM = true;
+      package = hyprlandPackage;
+      portalPackage = hyprlandPortalPackage;
+    };
+    programs.uwsm.waylandCompositors.hyprland = {
+      prettyName = "Hyprland";
+      comment = "Hyprland compositor managed by UWSM";
+      binPath = "/run/current-system/sw/bin/start-hyprland";
+    };
+
+    home-manager.users.${config.variables.username} = {
+
+      xdg = {
+        desktopEntries.hyprpicker = {
+          name = "hyprpicker";
+          genericName = "Color picker";
+          comment = "Launch it. Click. That's it.";
+          exec = "bash -c \"sleep 1 && hyprpicker -a\"";
+          terminal = false;
+          icon = "utilities-terminal";
+          type = "Application";
+          categories = [ "Utility" ];
+        };
+        portal = {
+          enable = true;
+          extraPortals = with pkgs; [
+            xdg-desktop-portal-gtk
+          ];
+          xdgOpenUsePortal = true;
+          config.hyprland = {
+            default = [
+              "hyprland"
+              "gtk"
+            ];
+            "org.freedesktop.impl.portal.OpenURI" = "gtk";
+            "org.freedesktop.impl.portal.FileChooser" = "gtk";
+            "org.freedesktop.impl.portal.Print" = "gtk";
+          };
+        };
+        mimeApps =
+          let
+            file-manager = [ "org.gnome.Nautilus.desktop" ];
+            browser = [ "firefox.desktop" ];
+            text-editor = [ "nvim.desktop" ];
+            pdf = [ "okularApplication_pdf.desktop" ];
+            image = [ "org.gnome.eog.desktop" ];
+            mail = [ "thunderbird.desktop" ];
+            playback = [ "umpv.desktop" ];
+            archive = [ "org.gnome.FileRoller.desktop" ];
+          in
+          rec {
+            enable = true;
+            associations.added = defaultApplications;
+            defaultApplications = {
+              "text/html" = browser;
+              "x-scheme-handler/http" = browser;
+              "x-scheme-handler/https" = browser;
+              "x-scheme-handler/ftp" = browser;
+              "x-scheme-handler/chrome" = browser;
+              "x-scheme-handler/about" = browser;
+              "x-scheme-handler/unknown" = browser;
+              "application/x-extension-htm" = browser;
+              "application/x-extension-html" = browser;
+              "application/x-extension-shtml" = browser;
+              "application/xhtml+xml" = browser;
+              "application/x-extension-xhtml" = browser;
+              "application/x-extension-xht" = browser;
+              "x-scheme-handler/miru" = [ "miru.desktop" ];
+              "inode/directory" = file-manager;
+              "x-scheme-handler/mailto" = mail;
+              "application/pdf" = pdf;
+              "application/json" = text-editor;
+              "application/zip" = archive;
+              "application/x-tar" = archive;
+              "application/gzip" = archive;
+              "application/x-bzip2" = archive;
+              "application/x-xz" = archive;
+              "text/plain" = text-editor;
+              "text/csv" = text-editor;
+              "image/png" = image;
+              "image/webp" = image;
+              "image/jpeg" = image;
+              "image/jpg" = image;
+              "video/mp4" = playback;
+              "video/x-matroska" = playback;
+              "video/avi" = playback;
+            };
+          };
+      };
+
+      home.packages = with pkgs; [
+        kazam
+        slurp
+        grim
+        awww
+        hyprpicker
+        cliphist
+        wf-recorder
+        grimblast
+        swappy
+        libnotify
+        brightnessctl
+        networkmanagerapplet
+        pamixer
+        pavucontrol
+        playerctl
+        waybar
+        wtype
+        wl-clipboard
+        #wl-freeze
+        xdotool
+        yad
+        wev
+        blueman
+        hyprpolkitagent
+        hyprsysteminfo
+        inputs'.niri-screen-time.packages.default
+      ];
+
+      xdg.configFile."hypr/icons" = {
+        source = ./icons;
+        recursive = true;
+      };
+
+      wayland.windowManager.hyprland = {
+        enable = true;
+        package = hyprlandPackage;
+        portalPackage = hyprlandPortalPackage;
+        plugins = [ ];
+        systemd = {
+          enable = false;
+          variables = [ "--all" ];
+        };
+        settings = lib.recursiveUpdate commonSettings versionSettings;
+      };
+
+    };
+  };
+}
