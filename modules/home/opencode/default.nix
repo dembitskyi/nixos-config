@@ -13,6 +13,17 @@ let
     };
   writePrompt = name: path: pkgs.writeText name (builtins.readFile path);
 
+  # CLI tool for monitoring AI token usage and estimating Copilot costs.
+  opencode-usage = pkgs.writeShellApplication {
+    name = "opencode-usage";
+    runtimeInputs = [ pkgs.python3 ];
+    text = ''
+      exec python3 ${./scripts/opencode-usage.py} \
+        --pricing ${./scripts/pricing.json} \
+        "$@"
+    '';
+  };
+
   # Per-server client overrides (e.g. timeout).
   clientOverrides = {
     playwright = { timeout = 300000; };
@@ -158,6 +169,8 @@ in
       type = "Application";
       categories = [ "Utility" ];
     };
+
+    home.packages = [ opencode-usage ];
 
     xdg.configFile = {
       "opencode/plugin/env-protection.js" = {

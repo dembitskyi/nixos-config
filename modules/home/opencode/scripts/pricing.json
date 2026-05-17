@@ -1,0 +1,114 @@
+{
+  "$schema": "Copilot billing rules. Update when GitHub changes pricing.",
+  "billing_modes": {
+    "premium_requests": {
+      "description": "Request-based billing (active until 2026-06-01).",
+      "effective_until": "2026-06-01",
+      "included_per_user_month": 1000,
+      "overage_per_request_usd": 0.04,
+      "auto_model_discount": 0.10,
+      "model_multipliers": {
+        "gpt-5.4-nano": 0.25,
+        "claude-haiku-4.5": 0.33,
+        "gemini-3-flash": 0.33,
+        "gpt-5.4-mini": 0.33,
+        "gpt-4.1": 0.0,
+        "gpt-4o": 0.0,
+        "gpt-5-mini": 0.0,
+        "claude-sonnet-4.5": 1.0,
+        "claude-sonnet-4.6": 1.0,
+        "claude-opus-4.5": 3.0,
+        "claude-opus-4.6": 3.0,
+        "gpt-5.2": 1.0,
+        "gpt-5.3": 1.0,
+        "gpt-5.4": 1.0,
+        "gpt-5.4-codex": 1.0,
+        "gemini-2.5-pro": 1.0,
+        "gemini-3.1-pro": 1.0,
+        "gpt-5.5": 7.5,
+        "claude-opus-4.7": 15.0
+      }
+    },
+    "ai_credits": {
+      "description": "Token-based AI credits billing (active from 2026-06-01).",
+      "effective_from": "2026-06-01",
+      "credit_value_usd": 0.01,
+      "included_credits_per_user_month_usd": 39.00,
+      "seat_cost_usd": 39.00,
+      "model_token_rates": {
+        "claude-opus-4.6": {
+          "input_per_1m": 15.00,
+          "output_per_1m": 75.00,
+          "cache_read_per_1m": 1.50,
+          "cache_write_per_1m": 18.75
+        },
+        "claude-opus-4.5": {
+          "input_per_1m": 15.00,
+          "output_per_1m": 75.00,
+          "cache_read_per_1m": 1.50,
+          "cache_write_per_1m": 18.75
+        },
+        "claude-sonnet-4.6": {
+          "input_per_1m": 3.00,
+          "output_per_1m": 15.00,
+          "cache_read_per_1m": 0.30,
+          "cache_write_per_1m": 3.75
+        },
+        "claude-sonnet-4.5": {
+          "input_per_1m": 3.00,
+          "output_per_1m": 15.00,
+          "cache_read_per_1m": 0.30,
+          "cache_write_per_1m": 3.75
+        },
+        "gpt-5.4": {
+          "input_per_1m": 2.50,
+          "output_per_1m": 10.00,
+          "cache_read_per_1m": 0.625,
+          "cache_write_per_1m": 2.50
+        },
+        "gpt-5.4-codex": {
+          "input_per_1m": 2.50,
+          "output_per_1m": 10.00,
+          "cache_read_per_1m": 0.625,
+          "cache_write_per_1m": 2.50
+        },
+        "gpt-5.4-mini": {
+          "input_per_1m": 0.40,
+          "output_per_1m": 1.60,
+          "cache_read_per_1m": 0.10,
+          "cache_write_per_1m": 0.40
+        },
+        "gpt-5.4-nano": {
+          "input_per_1m": 0.10,
+          "output_per_1m": 0.40,
+          "cache_read_per_1m": 0.025,
+          "cache_write_per_1m": 0.10
+        },
+        "gpt-4.1": {
+          "input_per_1m": 2.00,
+          "output_per_1m": 8.00,
+          "cache_read_per_1m": 0.50,
+          "cache_write_per_1m": 2.00
+        },
+        "gpt-5.5": {
+          "input_per_1m": 10.00,
+          "output_per_1m": 30.00,
+          "cache_read_per_1m": 2.50,
+          "cache_write_per_1m": 10.00
+        },
+        "gemini-2.5-pro": {
+          "input_per_1m": 1.25,
+          "output_per_1m": 10.00,
+          "cache_read_per_1m": 0.315,
+          "cache_write_per_1m": 1.25
+        },
+        "gemini-3-flash": {
+          "input_per_1m": 0.15,
+          "output_per_1m": 0.60,
+          "cache_read_per_1m": 0.0375,
+          "cache_write_per_1m": 0.15
+        }
+      }
+    }
+  }
+}
