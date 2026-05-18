@@ -25,7 +25,8 @@
     ./steam
     ./jellyfin
     ./dnsmasq
-    ./vllm
+    ./vllm-native
+    ./vllm-docker
     ./oom-swap
     ./modem
     ./ghidra
