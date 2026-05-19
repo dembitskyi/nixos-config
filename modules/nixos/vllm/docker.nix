@@ -45,6 +45,8 @@ in
           --ulimit memlock=-1 \
           --ulimit stack=67108864 \
           --network host \
+          -v /etc/passwd:/etc/passwd:ro \
+          -v /etc/group:/etc/group:ro \
           -v "${cfg._stateDir}:${cfg._stateDir}" \
           -e HOME="${cfg._stateDir}" \
           -e VLLM_LOG_STATS_INTERVAL=1 \
