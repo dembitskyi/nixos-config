@@ -1,5 +1,5 @@
 # Native backend for the unified vLLM module.
-# Runs vLLM directly from nixpkgs.
+# Runs vLLM directly from nixpkgs. Emits one ExecStart per active model.
 {
   lib,
   config,
@@ -8,24 +8,35 @@
 }:
 let
   cfg = config.mine.vllm;
-  model = cfg.models.${cfg.model};
 
-  args = lib.concatStringsSep " " (
-    [
-      (lib.escapeShellArg model.huggingfaceId)
-      "--host ${cfg.host}"
-      "--port ${toString cfg.port}"
-    ]
-    ++ cfg._commonArgs
-  );
+  mkExecStart =
+    modelKey:
+    let
+      m = cfg.models.${modelKey};
+      port = cfg.activeModels.${modelKey}.port;
+      args = lib.concatStringsSep " " (
+        [
+          (lib.escapeShellArg m.huggingfaceId)
+          "--host ${cfg.host}"
+          "--port ${toString port}"
+        ]
+        ++ (cfg._mkModelArgs modelKey)
+      );
+    in
+    pkgs.writeShellScript "vllm-native-start-${modelKey}" ''
+      export HF_TOKEN=$(< ${config.sops.secrets.huggingface_token.path})
+      exec ${pkgs.vllm}/bin/vllm serve ${args}
+    '';
 in
 {
   config = lib.mkIf (cfg.enable && !cfg.useDocker) {
     environment.systemPackages = [ pkgs.vllm ];
 
-    systemd.services.vllm.serviceConfig.ExecStart = pkgs.writeShellScript "vllm-native-start" ''
-      export HF_TOKEN=$(< ${config.sops.secrets.huggingface_token.path})
-      exec ${pkgs.vllm}/bin/vllm serve ${args}
-    '';
+    systemd.services = lib.listToAttrs (
+      map (modelKey: {
+        name = cfg._unitName modelKey;
+        value.serviceConfig.ExecStart = mkExecStart modelKey;
+      }) (lib.attrNames cfg.activeModels)
+    );
   };
 }

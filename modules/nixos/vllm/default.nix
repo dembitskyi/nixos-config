@@ -1,6 +1,9 @@
 # Unified vLLM module.
 # Exposes a single mine.vllm.* option namespace and shared service plumbing.
 # Backend-specific bits live in docker.nix and native.nix.
+# Multi-model: one systemd unit per entry in mine.vllm.activeModels, none
+# wantedBy multi-user.target — they are started on demand by llama-swap
+# (see swap.nix).
 {
   lib,
   config,
@@ -74,32 +77,48 @@ let
     };
   };
 
-  # Resolved model is guarded so an invalid key fails via the assertion,
-  # not a confusing eval error in the backends.
-  selectedModel = cfg.models.${cfg.model} or null;
+  activeModelType = lib.types.submodule {
+    options = {
+      port = lib.mkOption {
+        type = lib.types.port;
+        description = "Port the backend vLLM server binds to. Must be unique across activeModels.";
+      };
+    };
+  };
 
-  # Common vLLM CLI arguments shared by both backends. Backend-specific
-  # arguments (positional model id, --host, --port) are appended separately.
-  commonArgs =
+  # Build the common vLLM CLI arg list for a given model key.
+  mkModelArgs =
+    modelKey:
+    let
+      m = cfg.models.${modelKey};
+    in
     [
-      "--served-model-name ${selectedModel.servedName}"
-      "--gpu-memory-utilization ${builtins.toString selectedModel.gpuMemoryUtilization}"
-      "--max-model-len ${toString selectedModel.maxModelLen}"
-      "--max-num-seqs ${toString selectedModel.maxNumSeqs}"
+      "--served-model-name ${m.servedName}"
+      "--gpu-memory-utilization ${builtins.toString m.gpuMemoryUtilization}"
+      "--max-model-len ${toString m.maxModelLen}"
+      "--max-num-seqs ${toString m.maxNumSeqs}"
     ]
-    ++ lib.optional (selectedModel.quantization != null) "--quantization ${selectedModel.quantization}"
-    ++ lib.optional (cfg.enableToolCalling && selectedModel.toolCallParser != null)
-      "--tool-call-parser ${selectedModel.toolCallParser} --enable-auto-tool-choice"
-    ++ lib.optional (cfg.enableReasoningParser && selectedModel.reasoningParser != null)
-      "--reasoning-parser ${selectedModel.reasoningParser}"
-    ++ lib.optional (selectedModel.speculativeConfig != null)
-      "--speculative-config ${lib.escapeShellArg (builtins.toJSON selectedModel.speculativeConfig)}"
-    ++ selectedModel.extraArgs;
+    ++ lib.optional (m.quantization != null) "--quantization ${m.quantization}"
+    ++ lib.optional (cfg.enableToolCalling && m.toolCallParser != null)
+      "--tool-call-parser ${m.toolCallParser} --enable-auto-tool-choice"
+    ++ lib.optional (cfg.enableReasoningParser && m.reasoningParser != null)
+      "--reasoning-parser ${m.reasoningParser}"
+    ++ lib.optional (
+      m.speculativeConfig != null
+    ) "--speculative-config ${lib.escapeShellArg (builtins.toJSON m.speculativeConfig)}"
+    ++ m.extraArgs;
+
+  # Unit name for the backend vLLM server for a given model key.
+  unitName = modelKey: "vllm-${modelKey}";
+
+  activeModelKeys = lib.attrNames cfg.activeModels;
+  activePorts = map (k: cfg.activeModels.${k}.port) activeModelKeys;
 in
 {
   imports = [
     ./docker.nix
     ./native.nix
+    ./swap.nix
   ];
 
   options.mine.vllm = {
@@ -107,10 +126,22 @@ in
 
     useDocker = lib.mkEnableOption "run vLLM via Docker instead of the native binary";
 
-    model = lib.mkOption {
-      type = lib.types.str;
-      default = "qwen3.5-27b-nvfp4";
-      description = "Key into the models attrset selecting which model to serve.";
+    activeModels = lib.mkOption {
+      type = lib.types.attrsOf activeModelType;
+      default = { };
+      description = ''
+        Models to expose as on-demand backend services. Each key must exist in
+        mine.vllm.models. Each entry defines the port the backend vLLM server
+        binds to. One systemd unit (vllm-<key>.service) is generated per entry;
+        none auto-start at boot — they are managed by llama-swap (see
+        mine.vllm.swap).
+      '';
+      example = lib.literalExpression ''
+        {
+          "qwen3.5-27b-nvfp4" = { port = 5412; };
+          "qwen3.6-35b-a3b"   = { port = 5413; };
+        }
+      '';
     };
 
     models = lib.mkOption {
@@ -122,13 +153,7 @@ in
     host = lib.mkOption {
       type = lib.types.str;
       default = "127.0.0.1";
-      description = "Address the API server binds to.";
-    };
-
-    port = lib.mkOption {
-      type = lib.types.port;
-      default = 5411;
-      description = "Port for the vLLM API server.";
+      description = "Address backend vLLM servers bind to.";
     };
 
     enableToolCalling = lib.mkEnableOption "tool calling features";
@@ -149,12 +174,19 @@ in
       };
     };
 
-    # Internal: shared CLI arg list, exposed so backends can compose it.
-    _commonArgs = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
+    # Internal: exposed so backends can build per-model arg lists.
+    _mkModelArgs = lib.mkOption {
+      type = lib.types.functionTo (lib.types.listOf lib.types.str);
       internal = true;
       readOnly = true;
-      default = commonArgs;
+      default = mkModelArgs;
+    };
+
+    _unitName = lib.mkOption {
+      type = lib.types.functionTo lib.types.str;
+      internal = true;
+      readOnly = true;
+      default = unitName;
     };
 
     _stateDir = lib.mkOption {
@@ -168,8 +200,16 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = cfg.models ? ${cfg.model};
-        message = "mine.vllm.model '${cfg.model}' is not defined in mine.vllm.models.";
+        assertion = cfg.activeModels != { };
+        message = "mine.vllm.activeModels must define at least one model.";
+      }
+      {
+        assertion = lib.all (k: cfg.models ? ${k}) activeModelKeys;
+        message = "mine.vllm.activeModels references keys missing from mine.vllm.models.";
+      }
+      {
+        assertion = lib.length (lib.unique activePorts) == lib.length activePorts;
+        message = "mine.vllm.activeModels ports must be unique.";
       }
     ];
 
@@ -190,20 +230,26 @@ in
       "d ${cfg._stateDir}/.cache/huggingface 0755 vllm vllm -"
     ];
 
-    systemd.services.vllm = {
-      description = "vLLM OpenAI-compatible API server";
-      after = [ "network.target" ];
-      wantedBy = [ "multi-user.target" ];
-
-      serviceConfig = {
-        Type = "simple";
-        User = "vllm";
-        Group = "vllm";
-        Restart = "on-failure";
-        RestartSec = "10s";
-        LimitNOFILE = "65536";
-        Environment = [ "HOME=${cfg._stateDir}" ];
-      };
-    };
+    # Generate one shared service skeleton per active model. Backends
+    # (docker.nix / native.nix) fill in ExecStart.
+    systemd.services = lib.listToAttrs (
+      map (modelKey: {
+        name = unitName modelKey;
+        value = {
+          description = "vLLM OpenAI-compatible API server (${modelKey})";
+          after = [ "network.target" ];
+          # Intentionally NOT wantedBy multi-user.target — started on demand.
+          serviceConfig = {
+            Type = "simple";
+            User = "vllm";
+            Group = "vllm";
+            Restart = "on-failure";
+            RestartSec = "10s";
+            LimitNOFILE = "65536";
+            Environment = [ "HOME=${cfg._stateDir}" ];
+          };
+        };
+      }) activeModelKeys
+    );
   };
 }

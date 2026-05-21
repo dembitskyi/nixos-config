@@ -5,28 +5,35 @@
     huggingfaceId = "osoleve/Qwen3.5-27B-NVFP4-MTP";
     servedName = "Qwen3.5-27B-NVFP4";
     quantization = "modelopt";
-    maxModelLen = 128000;
-    maxNumSeqs = 762;
-    gpuMemoryUtilization = 0.70;
+    maxModelLen = 200000;
+    maxNumSeqs = 64;
+    gpuMemoryUtilization = 0.82;
     toolCallParser = "qwen3_coder";
     reasoningParser = "qwen3";
     speculativeConfig = {
       method = "mtp";
       num_speculative_tokens = 1;
     };
-    extraArgs = [ "--trust-remote-code" "--language-model-only" ];
+    extraArgs = [
+      "--trust-remote-code"
+      "--language-model-only"
+    ];
   };
 
-  "qwen3.6-35b-a3b-nvfp4" = {
-    huggingfaceId = "RedHatAI/Qwen3.6-35B-A3B-NVFP4";
-    servedName = "Qwen3.6-35B-A3B-NVFP4";
+  "qwen3.6-35b-a3b" = {
+    huggingfaceId = "Qwen/Qwen3.6-35B-A3B";
+    servedName = "Qwen3.6-35B-A3B";
     quantization = null;
-    maxModelLen = 32768;
-    maxNumSeqs = 256;
-    gpuMemoryUtilization = 0.90;
-    toolCallParser = null;
+    maxModelLen = 200000;
+    maxNumSeqs = 8;
+    gpuMemoryUtilization = 0.82;
+    toolCallParser = "qwen3_coder";
     reasoningParser = "qwen3";
     speculativeConfig = null;
-    extraArgs = [ ];
+    extraArgs = [
+      "--kv-cache-dtype"
+      "fp8_e4m3"
+      "--trust-remote-code"
+    ];
   };
 }
