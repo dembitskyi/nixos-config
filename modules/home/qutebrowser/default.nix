@@ -15,8 +15,6 @@
       default = ''
         https://mail.google.com/ gmail
         https://searchmysite.net/ searchmysite
-        https://vdevjournal.com/ mysite
-        https://stylebydembitska.com/ andriana
       '';
       description = "Lines for qutebrowser bookmarks/urls";
     };
