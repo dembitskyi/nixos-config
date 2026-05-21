@@ -23,5 +23,6 @@
     ./atuin
     ./git
     ./ai-skills
+    ./prlcp
   ];
 }
