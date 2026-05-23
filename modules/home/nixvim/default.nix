@@ -2,15 +2,34 @@
   lib,
   config,
   pkgs,
+  nixvim-custom,
   ...
 }:
+let
+  cfg = config.mine.home.nixvim-custom;
+in
 {
 
-  options = {
-    mine.home.nixvim-custom.enable = lib.mkEnableOption "enable nixvim-custom";
+  imports = [ nixvim-custom.homeModules.default ];
+
+  options.mine.home.nixvim-custom = {
+    enable = lib.mkEnableOption "enable nixvim-custom";
+    profile = lib.mkOption {
+      type = lib.types.enum [
+        "home"
+        "work"
+      ];
+      default = "home";
+      description = "Which nvim.nix profile to install (home uses local LLM, work uses Copilot).";
+    };
   };
 
-  config = lib.mkIf config.mine.home.nixvim-custom.enable {
+  config = lib.mkIf cfg.enable {
+    programs.nvim-nix = {
+      enable = true;
+      inherit (cfg) profile;
+    };
+
     home.packages = with pkgs; [
       prettierd
       gh

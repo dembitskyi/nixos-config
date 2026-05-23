@@ -34,6 +34,7 @@ let
           inherit variables;
           inputs = flake.inputs;
           inputs' = { };
+          nixvim-custom = flake.inputs.nixvim-custom;
           self' = {
             packages = flake.packages.x86_64-linux or { };
           };
