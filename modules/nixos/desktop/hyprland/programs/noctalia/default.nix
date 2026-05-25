@@ -267,11 +267,11 @@
 
           hooks = {
             darkModeChange = "";
-            enabled = false;
+            enabled = true;
             performanceModeDisabled = "";
             performanceModeEnabled = "";
-            screenLock = "";
-            screenUnlock = "";
+            screenLock = "dbus-send --session --type=signal /org/noctalia/Session org.noctalia.Session.Lock";
+            screenUnlock = "dbus-send --session --type=signal /org/noctalia/Session org.noctalia.Session.Unlock";
             wallpaperChange = "";
           };
 
