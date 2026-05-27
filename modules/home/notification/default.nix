@@ -50,37 +50,41 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (lib.mkMerge [
-    {
-      # Periodic rest notification.
-      home.packages = with pkgs; [
-        ianny
-      ];
+  config = lib.mkIf cfg.enable (
+    lib.mkMerge [
+      {
+        # Periodic rest notification.
+        home.packages = with pkgs; [
+          ianny
+        ];
 
-      xdg.configFile."io.github.zefr0x.ianny/config.toml".source = iannyConfig;
-    }
+        ## no longer useful as eyeblink-monitor does better job
+        #xdg.configFile."io.github.zefr0x.ianny/config.toml".source = iannyConfig;
+      }
 
-    (lib.mkIf cfg.hook.enable {
-      systemd.user.services.notification-hook = {
-        Unit = {
-          Description = "Notification hook monitor";
-          After = [ "graphical-session.target" ];
-          PartOf = [ "graphical-session.target" ];
+      (lib.mkIf cfg.hook.enable {
+        systemd.user.services.notification-hook = {
+          Unit = {
+            Description = "Notification hook monitor";
+            After = [ "graphical-session.target" ];
+            PartOf = [ "graphical-session.target" ];
+          };
+
+          Install = {
+            WantedBy = [ "graphical-session.target" ];
+          };
+
+          Service = {
+            ExecStart =
+              if cfg.hook.command != null then
+                "${notificationMonitorPython} ${cfg.hook.command}"
+              else
+                notificationMonitorPython;
+            Restart = "on-failure";
+            RestartSec = 5;
+          };
         };
-
-        Install = {
-          WantedBy = [ "graphical-session.target" ];
-        };
-
-        Service = {
-          ExecStart =
-            if cfg.hook.command != null
-            then "${notificationMonitorPython} ${cfg.hook.command}"
-            else notificationMonitorPython;
-          Restart = "on-failure";
-          RestartSec = 5;
-        };
-      };
-    })
-  ]);
+      })
+    ]
+  );
 }
