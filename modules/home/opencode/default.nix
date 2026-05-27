@@ -65,6 +65,7 @@ let
   genericPrompt = writePrompt "generic-prompt.md" config.mine.home.opencode.promptFiles.generic;
   browserPrompt = writePrompt "browser-prompt.md" config.mine.home.opencode.promptFiles.browser;
   notificationPrompt = writePrompt "notification-prompt.md" config.mine.home.opencode.promptFiles.notification;
+  followPromptPrompt = writePrompt "follow-prompt.md" config.mine.home.opencode.promptFiles.follow-prompt;
   tools = import ./tools.nix;
   # Merge host-specific permission overrides into an agent's permission block.
   extraPerms = agent: config.mine.home.opencode.extraAgentPermissions.${agent} or { };
@@ -108,6 +109,8 @@ in
       mkPromptFileOption ./prompts/browser.md "Prompt file used by the browser opencode agent.";
     mine.home.opencode.promptFiles.notification =
       mkPromptFileOption ./prompts/notification.md "Prompt file used by the notification-analyzer opencode agent.";
+    mine.home.opencode.promptFiles.follow-prompt =
+      mkPromptFileOption ./prompts/follow-prompt.md "Prompt file used by the follow-prompt opencode agent.";
     mine.home.opencode.extraAgentPermissions = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -118,6 +121,11 @@ in
       default = { };
       description = "Additional opencode provider definitions merged into the settings.";
     };
+    mine.home.opencode.automationAgents = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      description = "Agent definitions only available in the automation opencode instance.";
+    };
     mine.home.opencode.defaultModel = lib.mkOption {
       type = lib.types.str;
       default = "github-copilot/gpt-5.4";
@@ -126,6 +134,23 @@ in
   };
 
   config = lib.mkIf config.mine.home.opencode.enable {
+    mine.home.opencode.automationAgents = {
+      follow-prompt = {
+        description = "Follows the user's prompt exactly.";
+        mode = "primary";
+        model = "github-copilot/claude-opus-4.6";
+        prompt = "{file:${followPromptPrompt}}";
+        tools = lib.mergeAttrsList [
+          tools.taskTool
+          tools.readTools
+          tools.writeTools
+          tools.context7Mcp
+          tools.githubMcpSearch
+          tools.githubMcpWrite
+        ];
+      };
+    };
+
     xdg.desktopEntries.opencode = {
       name = "opencode (unsafe)";
       genericName = "OpenCode - AI coding agent";

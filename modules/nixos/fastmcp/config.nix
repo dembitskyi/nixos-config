@@ -4,6 +4,7 @@
   config,
   placeholder,
   proxyEnv ? false,
+  automationConfig ? { },
 }:
 let
   fastmcp = lib.getExe' (pkgs.python313.withPackages (ps: [ ps.fastmcp ])) "fastmcp";
@@ -165,6 +166,14 @@ let
     map (name: lib.nameValuePair name "http://127.0.0.1:${toString serverPorts.${name}}/${name}") defaultServerOrder
   );
 
+  # Serialized extra config for the automation opencode instance.
+  automationConfigJson = builtins.toJSON automationConfig;
+  automationEnv =
+    if automationConfig != { } then
+      "OPENCODE_CONFIG_CONTENT=${lib.escapeShellArg automationConfigJson} "
+    else
+      "";
+
 in
 {
   templates = builtins.listToAttrs (lib.mapAttrsToList mkTemplate servers);
@@ -185,7 +194,7 @@ in
     mkdir -p ~/workspace
     cd ~/workspace
     ${proxyPrefix}${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
-    ${proxyPrefix}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
+    ${proxyPrefix}${automationEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (
         name: port:

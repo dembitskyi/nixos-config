@@ -116,6 +116,7 @@ let
       ;
     placeholder = config.sops.placeholder;
     proxyEnv = config.mine.fastmcp.proxy.enable;
+    automationConfig = config.mine.fastmcp.automationConfig;
   };
 in
 {
@@ -130,6 +131,12 @@ in
         internal = true;
         default = { };
         description = "Computed mapping of server name to its URL. Derived from server order.";
+      };
+
+      automationConfig = lib.mkOption {
+        type = lib.types.attrsOf lib.types.anything;
+        default = { };
+        description = "Extra opencode config merged into the automation instance via OPENCODE_CONFIG_CONTENT.";
       };
 
       extraServers = lib.mkOption {
@@ -166,6 +173,14 @@ in
 
   config = lib.mkIf config.mine.fastmcp.enable {
     mine.fastmcp.serverUrls = configData.serverUrls;
+    mine.fastmcp.automationConfig = lib.mkDefault (
+      let
+        hmCfg = config.home-manager.users.${config.variables.username}.mine.home.opencode;
+      in
+      lib.optionalAttrs (hmCfg.automationAgents != { }) {
+        agent = hmCfg.automationAgents;
+      }
+    );
 
     sops.secrets = {
       "MCP/GITHUB_TOKEN" = {
