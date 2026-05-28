@@ -282,6 +282,7 @@ in
             permission = withExtraPerms "build" {
               task = {
                 "pr" = "allow";
+                "vision" = "allow";
                 "*" = "deny";
               };
             };
@@ -316,6 +317,7 @@ in
             permission = withExtraPerms "generic" {
               task = {
                 "browser" = "allow";
+                "vision" = "allow";
                 "*" = "deny";
               };
             };
@@ -330,6 +332,20 @@ in
               tools.browserUseMcp
               tools.browserMcp
             ];
+          };
+          vision = {
+            description = "Analyzes images and returns a text description or answers questions about them.";
+            mode = "subagent";
+            model = "github-copilot/gpt-5.5";
+            prompt = ''
+              You are a vision analysis agent. When given an image file path, read it and analyze its contents.
+              Provide detailed, structured descriptions of what you see. Answer any specific questions about the image.
+            '';
+            tools = {
+              read = true;
+              glob = true;
+              skill = false;
+            };
           };
           notification-analyzer = {
             description = "Classifies desktop notifications and outputs structured action markers.";

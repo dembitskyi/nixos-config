@@ -14,6 +14,10 @@ let
 
   activeModelKeys = lib.attrNames cfg.activeModels;
 
+  # Effective members of the exclusive group: explicit list or all models.
+  effectiveExclusiveMembers =
+    if scfg.exclusiveMembers != [ ] then scfg.exclusiveMembers else activeModelKeys;
+
   # Build llama-swap YAML as JSON (YAML is a superset of JSON, llama-swap
   # parses both — avoids fragile string templating).
   swapConfig = {
@@ -40,13 +44,26 @@ let
       ) activeModelKeys
     );
 
-    groups = lib.optionalAttrs scfg.exclusive {
-      exclusive = {
-        swap = true;
-        exclusive = true;
-        members = map (k: cfg.models.${k}.servedName) activeModelKeys;
+    groups =
+      let
+        # Models not in the exclusive group run persistently alongside it.
+        persistentKeys = lib.filter (k: !lib.elem k effectiveExclusiveMembers) activeModelKeys;
+      in
+      lib.optionalAttrs scfg.exclusive {
+        exclusive = {
+          swap = true;
+          exclusive = true;
+          members = map (k: cfg.models.${k}.servedName) effectiveExclusiveMembers;
+        };
+      }
+      // lib.optionalAttrs (persistentKeys != [ ]) {
+        persistent = {
+          swap = false;
+          exclusive = false;
+          persistent = true;
+          members = map (k: cfg.models.${k}.servedName) persistentKeys;
+        };
       };
-    };
   };
 
   configFile = pkgs.writeText "llama-swap-config.yaml" (builtins.toJSON swapConfig);
@@ -90,6 +107,16 @@ in
         If true, only one model is loaded at a time (swap on request). Set
         to false if you intentionally want concurrent residency and have
         split GPU memory accordingly.
+      '';
+    };
+
+    exclusiveMembers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Model keys that form the exclusive swap group. Models in activeModels
+        but not listed here run concurrently alongside the exclusive group.
+        When empty (default), all activeModels are treated as exclusive.
       '';
     };
   };
