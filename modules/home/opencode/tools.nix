@@ -122,6 +122,10 @@
     "mcp_context7_query-docs" = true;
   };
 
+  sessionId = {
+    "session-id" = true;
+  };
+
   memoryMcp = {
     "mcp_memory_create_entities" = true;
     "mcp_memory_create_relations" = true;

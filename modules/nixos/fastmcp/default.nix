@@ -92,6 +92,7 @@ let
     opencode
     procps
     ripgrep
+    rtk
     systemd
     tree
     uv
@@ -290,6 +291,7 @@ in
           ];
           BindReadOnlyPaths = [
             "${userHome}/.config/opencode:${userHome}/.config/opencode"
+            "${userHome}/.config/rtk:${userHome}/.config/rtk"
           ]
           ++ map (
             skill: "${userHome}/.config/opencode/skills/${skill}:${userHome}/.config/opencode/skills/${skill}"

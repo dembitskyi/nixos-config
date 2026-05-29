@@ -195,11 +195,23 @@ in
       categories = [ "Utility" ];
     };
 
-    home.packages = [ opencode-usage ];
+    home.packages = [ opencode-usage pkgs.rtk ];
 
     xdg.configFile = {
       "opencode/plugin/env-protection.js" = {
         source = ./plugins/env-protection.js;
+      };
+      "opencode/plugin/rtk.ts" = {
+        source = ./plugins/rtk.ts;
+      };
+      "opencode/tool/session-id.ts" = {
+        source = ./tools/session-id.ts;
+      };
+      "rtk/config.toml" = {
+        text = ''
+          [hooks]
+          exclude_commands = ["curl", "ps", "playwright"]
+        '';
       };
     };
 
@@ -232,6 +244,7 @@ in
               tools.taskTool
               tools.readTools
               tools.timeMcp
+              tools.sessionId
               tools.memoryMcp
               tools.gitReadMcp
               tools.context7Mcp
@@ -275,6 +288,8 @@ in
               tools.taskTool
               tools.readTools
               tools.writeTools
+              tools.sessionId
+              tools.memoryMcp
               tools.context7Mcp
               tools.githubMcpSearch
               tools.githubMcpWrite
@@ -296,6 +311,8 @@ in
               tools.taskTool
               tools.readTools
               tools.writeTools
+              tools.sessionId
+              tools.memoryMcp
               tools.context7Mcp
               tools.githubMcpSearch
               tools.githubMcpWrite
@@ -311,6 +328,8 @@ in
               tools.readTools
               tools.writeTools
               tools.disableSkill
+              tools.sessionId
+              tools.memoryMcp
               tools.context7Mcp
               tools.githubMcpSearch
             ];
