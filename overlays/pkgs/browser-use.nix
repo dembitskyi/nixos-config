@@ -245,6 +245,8 @@ pkgs.python3Packages.callPackage
         sed -i -E 's/(requests)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(aiohttp)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(anyio)[^"]*"/\1"/g' pyproject.toml
+        sed -i -E 's/(ollama)[^"]*"/\1"/g' pyproject.toml
+        sed -i -E 's/(python-dotenv)[^"]*"/\1"/g' pyproject.toml
       '';
 
       dependencies = [
