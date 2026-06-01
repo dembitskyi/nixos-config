@@ -26,7 +26,7 @@
     quantization = null;
     maxModelLen = 200000;
     maxNumSeqs = 8;
-    gpuMemoryUtilization = 0.80;
+    gpuMemoryUtilization = 0.85;
     toolCallParser = "qwen3_coder";
     reasoningParser = "qwen3";
     speculativeConfig = null;
@@ -34,22 +34,11 @@
       "--kv-cache-dtype"
       "fp8_e4m3"
       "--trust-remote-code"
-    ];
-  };
-
-  "qwen2.5-vl-7b" = {
-    huggingfaceId = "Qwen/Qwen2.5-VL-7B-Instruct-AWQ";
-    servedName = "Qwen2.5-VL-7B";
-    quantization = null;
-    maxModelLen = 32768;
-    maxNumSeqs = 16;
-    gpuMemoryUtilization = 0.15;
-    toolCallParser = null;
-    reasoningParser = null;
-    speculativeConfig = null;
-    extraArgs = [
-      "--trust-remote-code"
-      "--limit-mm-per-prompt '{\"image\":5}'"
+      # Multimodal: run vision encoder data-parallel and use shared-mem image cache.
+      "--mm-encoder-tp-mode"
+      "data"
+      "--mm-processor-cache-type"
+      "shm"
     ];
   };
 }
