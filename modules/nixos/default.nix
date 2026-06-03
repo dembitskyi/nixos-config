@@ -30,5 +30,6 @@
     ./modem
     ./ghidra
     ./otterwiki
+    ./parallels-guest
   ];
 }

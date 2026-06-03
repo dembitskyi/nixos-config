@@ -36,6 +36,7 @@ let
   };
 
   versionSettings = if config.mine.hyprland.pinned then pinnedSettings else latestSettings;
+  userHome = "/${config.variables.homePrefix}/${config.variables.username}";
 
   tools = pkgs.stdenv.mkDerivation {
     name = "hyprland-tools";
@@ -106,6 +107,19 @@ in
     home-manager.users.${config.variables.username} = {
 
       xdg = {
+        userDirs = {
+          enable = true;
+          createDirectories = true;
+          desktop = "${userHome}/Desktop";
+          documents = "${userHome}/Documents";
+          download = "${userHome}/Downloads";
+          music = "${userHome}/Music";
+          pictures = "${userHome}/Pictures";
+          publicShare = "${userHome}/Public";
+          templates = "${userHome}/Templates";
+          videos = "${userHome}/Videos";
+        };
+
         desktopEntries.hyprpicker = {
           name = "hyprpicker";
           genericName = "Color picker";

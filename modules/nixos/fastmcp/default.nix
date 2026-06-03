@@ -224,8 +224,18 @@ in
       };
     };
 
-    home-manager.users.${config.variables.username} = {
+    home-manager.users.${config.variables.username} = hmArgs: {
       mine.home.opencode.mcpServerUrls = configData.defaultServerUrls;
+
+      systemd.user.tmpfiles.rules = [
+        "d ${userHome}/.config/opencode 0700 - - -"
+        "d ${userHome}/.config/opencode/skills 0700 - - -"
+        "d ${userHome}/.config/rtk 0700 - - -"
+        "d ${userHome}/.local/share/opencode 0700 - - -"
+        "d ${userHome}/.local/state/fastmcp/workspace 0755 - - -"
+      ];
+
+      home.file."workspace".source = hmArgs.config.lib.file.mkOutOfStoreSymlink "${userHome}/.local/state/fastmcp/workspace";
 
       systemd.user.services.fastmcp-ssh-agent = {
         Unit = {
@@ -280,6 +290,7 @@ in
             "%S/fastmcp:${userHome}"
             "${userRuntimeDir}/fastmcp-ssh-agent:${userRuntimeDir}/fastmcp-ssh-agent"
             "${userHome}/.local/share/opencode:${userHome}/.local/share/opencode"
+            "${userHome}/.config/opencode:${userHome}/.config/opencode"
             "${userRuntimeDir}/hypr:${userRuntimeDir}/hypr"
           ];
           # Mount the full opencode config, then overlay an empty tmpfs on
@@ -290,7 +301,6 @@ in
             "${userHome}/.config/opencode/skills:ro"
           ];
           BindReadOnlyPaths = [
-            "${userHome}/.config/opencode:${userHome}/.config/opencode"
             "${userHome}/.config/rtk:${userHome}/.config/rtk"
           ]
           ++ map (
