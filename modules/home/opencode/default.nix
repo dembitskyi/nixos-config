@@ -227,6 +227,7 @@ in
       };
       settings = {
         share = "disabled";
+        autoupdate = false;
         model = config.mine.home.opencode.defaultModel;
         default_agent = "local";
         provider = config.mine.home.opencode.extraProviders;
