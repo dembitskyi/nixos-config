@@ -70,6 +70,9 @@ let
   # Merge host-specific permission overrides into an agent's permission block.
   extraPerms = agent: config.mine.home.opencode.extraAgentPermissions.${agent} or { };
   withExtraPerms = agent: base: lib.recursiveUpdate base (extraPerms agent);
+  # Merge host-specific tool overrides into an agent's tools list.
+  extraTools = agent: config.mine.home.opencode.extraAgentTools.${agent} or { };
+  withExtraTools = agent: base: base // (extraTools agent);
 in
 {
   imports = [
@@ -116,6 +119,11 @@ in
       default = { };
       description = "Per-agent permission overrides, deep-merged into the corresponding agent's permission block. Keyed by agent name.";
     };
+    mine.home.opencode.extraAgentTools = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      description = "Per-agent tool overrides, merged into the corresponding agent's tools list. Keyed by agent name.";
+    };
     mine.home.opencode.extraProviders = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -138,7 +146,7 @@ in
       follow-prompt = {
         description = "Follows the user's prompt exactly.";
         mode = "primary";
-        model = "github-copilot/claude-opus-4.6";
+        model = "github-copilot/claude-opus-4.7";
         prompt = "{file:${followPromptPrompt}}";
         tools = lib.mergeAttrsList [
           tools.taskTool
@@ -264,7 +272,7 @@ in
           pr = {
             description = "Creates and manages GitHub pull requests using MCP GitHub tools.";
             mode = "subagent";
-            model = "github-copilot/claude-opus-4.6";
+            model = "github-copilot/claude-opus-4.7";
             prompt = "{file:${prPrompt}}";
             tools = lib.mergeAttrsList [
               tools.readTools
@@ -283,9 +291,9 @@ in
           build = {
             description = "Builds complex new features or entire applications based on a high-level description of what needs to be done.";
             mode = "primary";
-            model = "github-copilot/claude-opus-4.6";
+            model = "github-copilot/claude-opus-4.7";
             prompt = "{file:${buildPrompt}}";
-            tools = lib.mergeAttrsList [
+            tools = withExtraTools "build" (lib.mergeAttrsList [
               tools.taskTool
               tools.readTools
               tools.writeTools
@@ -294,7 +302,7 @@ in
               tools.context7Mcp
               tools.githubMcpSearch
               tools.githubMcpWrite
-            ];
+            ]);
             permission = withExtraPerms "build" {
               task = {
                 "pr" = "allow";
@@ -345,7 +353,7 @@ in
           browser = {
             description = "Browser automation subagent for web tasks using combined browseruse and playwright MCPs.";
             mode = "subagent";
-            model = "github-copilot/claude-opus-4.6";
+            model = "github-copilot/claude-opus-4.7";
             prompt = "{file:${browserPrompt}}";
             tools = lib.mergeAttrsList [
               tools.disableSkill
