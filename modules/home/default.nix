@@ -18,6 +18,7 @@
     ./ollama
     ./mpv
     ./lazygit
+    ./lnav
     ./whisper
 
     ./atuin

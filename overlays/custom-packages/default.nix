@@ -3,6 +3,18 @@
   browser-use = import ../pkgs/browser-use.nix { pkgs = final; };
   docling = final.callPackage ../pkgs/docling { };
   greasemonkeyUserscripts = import ../pkgs/greasemonkey-userscripts/default.nix { pkgs = final; };
+  lnav = prev.lnav.overrideAttrs (old: {
+    postPatch =
+      (old.postPatch or "")
+      + ''
+        # Make Ctrl-C a no-op so it cannot accidentally quit lnav.
+        # Use :q / :quit to exit.
+        substituteInPlace src/lnav.cc \
+          --replace-fail \
+            '(void) signal(SIGINT, sigint);' \
+            '(void) signal(SIGINT, SIG_IGN);'
+      '';
+  });
   opencode = prev.opencode.overrideAttrs (old: {
     postPatch =
       (old.postPatch or "")
