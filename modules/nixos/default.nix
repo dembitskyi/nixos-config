@@ -27,6 +27,8 @@
     ./dnsmasq
     ./vllm
     ./oom-swap
+    ./thermal-monitor
+    ./log-rate-limit
     ./modem
     ./ghidra
     ./otterwiki
