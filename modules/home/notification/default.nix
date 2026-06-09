@@ -7,21 +7,6 @@
 let
   cfg = config.mine.home.notification;
 
-  iannyConfig = (pkgs.formats.toml { }).generate "config.toml" {
-    timer = {
-      ignore_idle_inhibitors = true;
-      idle_timeout = 240;
-      long_break_duration = 240;
-      long_break_timeout = 3840;
-      short_break_duration = 120;
-      short_break_timeout = 1200;
-    };
-    notification = {
-      show_progress_bar = true;
-      minimum_update_delay = 1;
-    };
-  };
-
   notificationMonitorPython =
     let
       python = pkgs.python313.withPackages (ps: [ ps.dbus-next ]);
@@ -53,13 +38,8 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        # Periodic rest notification.
-        home.packages = with pkgs; [
-          ianny
-        ];
-
-        ## no longer useful as eyeblink-monitor does better job
-        #xdg.configFile."io.github.zefr0x.ianny/config.toml".source = iannyConfig;
+        # Periodic break notifications via `ianny` are disabled —
+        # eyeblink-monitor handles eye-strain reminders better.
       }
 
       (lib.mkIf cfg.hook.enable {
