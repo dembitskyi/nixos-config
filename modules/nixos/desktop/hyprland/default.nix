@@ -233,6 +233,8 @@ in
 
       wayland.windowManager.hyprland = {
         enable = true;
+        # Preserve pre-26.05 HM default; new default is "lua".
+        configType = "hyprlang";
         package = hyprlandPackage;
         portalPackage = hyprlandPortalPackage;
         plugins = [ ];
