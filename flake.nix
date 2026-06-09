@@ -2,7 +2,7 @@
   description = "Public NixOS modules, overlays, and packages";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-root.url = "github:srid/flake-root";
     nixpkgs-patcher.url = "github:gepbird/nixpkgs-patcher";
