@@ -91,6 +91,22 @@ in
       qalculate-gtk
     ];
 
+    # nixpkgs#507419 added security.wrappers.Hyprland with cap_sys_nice+ep so
+    # Hyprland can give itself SCHED_RR. NixOS setcap wrappers raise granted
+    # caps into the *ambient* set, leaking cap_sys_nice to every process in the
+    # session. A non-zero CapEff makes apps look privileged to the same-uid
+    # xdg-desktop-portal, whose ptrace-based /proc/<pid>/root check then fails
+    # with EACCES, breaking all portal file dialogs (e.g. Chromium's "Change
+    # folder"). Drop the cap to stop the leak; the only cost is no SCHED_RR for
+    # Hyprland. Only needed for the pinned version.
+    security.wrappers.Hyprland = lib.mkIf config.mine.hyprland.pinned (
+      lib.mkForce {
+        owner = "root";
+        group = "root";
+        source = lib.getExe config.programs.hyprland.package;
+      }
+    );
+
     services.displayManager.defaultSession = "hyprland-uwsm";
     programs.hyprland = {
       enable = true;
