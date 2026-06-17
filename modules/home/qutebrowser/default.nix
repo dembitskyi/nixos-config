@@ -116,6 +116,15 @@
 
           catppuccin.setup(c, "mocha", True)
           c.colors.completion.match.fg = "#a6e3a1"
+
+          c.colors.statusbar.insert.bg = "#a40000"
+          c.colors.statusbar.insert.fg = "#ffffff"
+          c.colors.statusbar.command.bg = "#a40000"
+          c.colors.statusbar.command.fg = "#ffffff"
+          c.colors.statusbar.caret.bg = "#a40000"
+          c.colors.statusbar.caret.fg = "#ffffff"
+          c.colors.statusbar.passthrough.bg = "#a40000"
+          c.colors.statusbar.passthrough.fg = "#ffffff"
         '';
       };
     };
