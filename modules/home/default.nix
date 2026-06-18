@@ -17,6 +17,7 @@
     ./opencode
     ./ollama
     ./mpv
+    ./anki
     ./lazygit
     ./lnav
     ./whisper
