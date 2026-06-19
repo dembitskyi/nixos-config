@@ -24,6 +24,12 @@ let
     '';
   };
 
+  # AI web search over CDP, driving the persistent ai-browser on port 9222.
+  # Shared with the fastmcp sandbox so the /search command resolves there too.
+  ai-search = pkgs.callPackage ./ai-search.nix { };
+
+  searchProvider = config.mine.home.opencode.searchProvider;
+
   # Per-server client overrides (e.g. timeout).
   clientOverrides = {
     playwright = { timeout = 300000; };
@@ -139,6 +145,11 @@ in
       default = "github-copilot/gpt-5.4";
       description = "Default model used by opencode.";
     };
+    mine.home.opencode.searchProvider = lib.mkOption {
+      type = lib.types.enum [ "perplexity" "google" ];
+      default = "perplexity";
+      description = "Provider used by the /search command (perplexity or google).";
+    };
   };
 
   config = lib.mkIf config.mine.home.opencode.enable {
@@ -203,7 +214,7 @@ in
       categories = [ "Utility" ];
     };
 
-    home.packages = [ opencode-usage pkgs.rtk ];
+    home.packages = [ opencode-usage ai-search pkgs.rtk ];
 
     xdg.configFile = {
       "opencode/plugin/env-protection.js" = {
@@ -401,6 +412,19 @@ in
         };
         mcp = defaultMcpServers // config.mine.home.opencode.extraMcpServers;
         # Append `// devMcpServers` above when testing with a dev browser-use instance.
+        command = {
+          # Runs an AI search via the ai-browser (CDP :9222) and injects the
+          # result into the current session — enriching context, not a subtask.
+          search = {
+            description = "AI web search (${searchProvider}) to enrich context.";
+            template = ''
+              Results of an AI web search for the query below. Use them as
+              context for the conversation; cite sources where relevant.
+
+              !`ai-search --provider ${searchProvider} "$ARGUMENTS"`
+            '';
+          };
+        };
       };
     };
   };

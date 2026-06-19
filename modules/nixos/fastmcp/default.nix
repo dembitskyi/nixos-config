@@ -93,6 +93,8 @@ let
     procps
     ripgrep
     rtk
+    # Backs the opencode /search command when it runs inside the sandbox.
+    (callPackage ../../home/opencode/ai-search.nix { })
     systemd
     tree
     uv
