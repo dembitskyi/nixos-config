@@ -63,6 +63,25 @@ let
       -o GlobalKnownHostsFile=/dev/null \
       "$@"
   '';
+  # OpenSSH ownership-check workaround for the sandbox.
+  #
+  # /etc/ssh/ssh_config Includes systemd's ssh-proxy drop-in from the Nix
+  # store. This unit runs under the unprivileged systemd --user manager, whose
+  # user namespace can only map our own uid; every other host uid (including
+  # root, who owns /nix/store) is squashed to `nobody`. OpenSSH strict-checks
+  # the ownership of Include'd config files and rejects any not owned by root
+  # or the caller, so the now-`nobody`-owned drop-in aborts every
+  # ssh/git-over-ssh call with "Bad owner or permissions". OpenSSH does not
+  # ownership-check the top-level config (only its Includes), so we bind a copy
+  # with that Include stripped over /etc/ssh/ssh_config. Derived from the live
+  # generated config so unrelated ssh client settings keep flowing through.
+  sandboxSshConfig = pkgs.writeText "ssh_config-sandbox" (
+    lib.concatStringsSep "\n" (
+      lib.filter (line: !(lib.hasInfix "20-systemd-ssh-proxy.conf" line)) (
+        lib.splitString "\n" config.environment.etc."ssh/ssh_config".text
+      )
+    )
+  );
   # Skills exposed to the opencode service. All other skills in
   # ~/.config/opencode/skills/ are hidden via a tmpfs overlay to avoid
   # inflating the permission ruleset (each skill adds a rule that gets
@@ -304,6 +323,7 @@ in
           ];
           BindReadOnlyPaths = [
             "${userHome}/.config/rtk:${userHome}/.config/rtk"
+            "${sandboxSshConfig}:/etc/ssh/ssh_config"
           ]
           ++ map (
             skill: "${userHome}/.config/opencode/skills/${skill}:${userHome}/.config/opencode/skills/${skill}"
