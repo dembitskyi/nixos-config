@@ -133,6 +133,7 @@ let
     bash
     bat
     coreutils-full
+    fd
     file
     findutils
     fzf

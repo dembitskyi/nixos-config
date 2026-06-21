@@ -126,6 +126,10 @@
     "session-id" = true;
   };
 
+  aiSearch = {
+    "ai-search" = true;
+  };
+
   memoryMcp = {
     "mcp_memory_create_entities" = true;
     "mcp_memory_create_relations" = true;

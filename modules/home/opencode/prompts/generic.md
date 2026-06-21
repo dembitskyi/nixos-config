@@ -29,7 +29,8 @@ When you need information that is not available locally (files, MCPs, your own k
 
 ### Guidelines
 
-- **Prefer Google AI summarization** — it provides concise, up-to-date answers directly on the search results page.
+- **Prefer the `ai-search` tool for quick lookups** — it runs an AI web search and returns rendered results with sources in a single call, without spinning up the `browser` subagent. Reserve the `browser` subagent for tasks that need real page navigation or interaction.
+- **Prefer Google AI summarization** — when you do use the `browser` subagent, it provides concise, up-to-date answers directly on the search results page.
 - **Minimize browser round-trips** — the subagent should need at most 2 calls: one `navigate` to the search URL and one `extract_content` with `extract_links=true` to get everything (summary text + source links) in one shot.
 - If the user's question is about a specific website or service, instruct the browser subagent to navigate there directly instead of searching.
 - Always provide the browser subagent with enough context (what the user asked, why you need this data, what format to return it in).
