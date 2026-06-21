@@ -70,6 +70,7 @@
       git-lfs
       python313.pkgs.pip
       statix
+      shellcheck
       nixfmt
       gcc
       clang

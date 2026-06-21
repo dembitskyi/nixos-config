@@ -82,6 +82,42 @@ let
       )
     )
   );
+  # Host-side debug helper: drops into the running fastmcp sandbox's
+  # namespaces so we can inspect exactly what the service sees (bind mounts,
+  # the ProtectHome tmpfs, the skills overlay, the stripped ssh_config).
+  # nsenter joins the user namespace first; --preserve-credentials keeps our
+  # euid at 1000, which owns the namespace and therefore grants the privileges
+  # needed to also join the mount namespace. The service env is replayed so
+  # PATH/HOME/SSH_AUTH_SOCK/CREDENTIALS_DIRECTORY match the service exactly.
+  fastmcpEnter = pkgs.writeShellApplication {
+    name = "fastmcp-enter";
+    runtimeInputs = with pkgs; [
+      systemd
+      util-linux
+    ];
+    text = ''
+      pid="$(systemctl --user show -p MainPID --value fastmcp.service)"
+      if [ -z "$pid" ] || [ "$pid" = "0" ]; then
+        echo "fastmcp-enter: fastmcp.service is not running" >&2
+        exit 1
+      fi
+
+      mapfile -d "" -t service_env < "/proc/$pid/environ"
+
+      if [ "$#" -eq 0 ]; then
+        set -- bash
+      fi
+
+      exec nsenter \
+        --target "$pid" \
+        --user \
+        --preserve-credentials \
+        --mount \
+        --uts \
+        --wd="${userHome}/workspace" \
+        -- env "''${service_env[@]}" "$@"
+    '';
+  };
   # Skills exposed to the opencode service. All other skills in
   # ~/.config/opencode/skills/ are hidden via a tmpfs overlay to avoid
   # inflating the permission ruleset (each skill adds a rule that gets
@@ -112,6 +148,7 @@ let
     procps
     ripgrep
     rtk
+    shellcheck
     # Backs the opencode /search command when it runs inside the sandbox.
     (callPackage ../../home/opencode/ai-search.nix { })
     systemd
@@ -247,6 +284,8 @@ in
 
     home-manager.users.${config.variables.username} = hmArgs: {
       mine.home.opencode.mcpServerUrls = configData.defaultServerUrls;
+
+      home.packages = [ fastmcpEnter ];
 
       systemd.user.tmpfiles.rules = [
         "d ${userHome}/.config/opencode 0700 - - -"
