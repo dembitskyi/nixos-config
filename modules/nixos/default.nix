@@ -33,5 +33,6 @@
     ./ghidra
     ./otterwiki
     ./parallels-guest
+    ./jlink
   ];
 }
