@@ -226,37 +226,12 @@ in
       "opencode/tool/session-id.ts" = {
         source = ./tools/session-id.ts;
       };
-      # AI-callable counterpart of the /search command. Loaded by opencode via a
-      # bare dynamic import, so it must avoid importing `@opencode-ai/plugin`
-      # (unresolvable outside opencode's own node_modules) and `bun`
-      # (runtime-specific). A plain object plus `node:child_process` keeps it
-      # portable; the provider is baked from `searchProvider`.
+      # AI-callable counterpart of the /search command. The provider is baked
+      # from `searchProvider` by substituting the `@searchProvider@` placeholder.
       "opencode/tool/ai-search.ts" = {
-        text = ''
-          import { execFile } from "node:child_process";
-          import { promisify } from "node:util";
-
-          const run = promisify(execFile);
-
-          export default {
-            description:
-              "Runs an AI web search via the persistent ai-browser (CDP) and returns rendered markdown results with sources. Use it to fetch current, post-training-cutoff information.",
-            args: {
-              query: {
-                type: "string",
-                description: "The search query or question to look up on the web.",
-              },
-            },
-            async execute(args) {
-              const { stdout } = await run(
-                "ai-search",
-                ["--provider", "${searchProvider}", args.query],
-                { maxBuffer: 16 * 1024 * 1024 },
-              );
-              return stdout;
-            },
-          };
-        '';
+        source = pkgs.replaceVars ./tools/ai-search.ts {
+          inherit searchProvider;
+        };
       };
       "rtk/config.toml" = {
         text = ''
