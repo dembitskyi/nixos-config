@@ -229,7 +229,7 @@ in
       "rtk/config.toml" = {
         text = ''
           [hooks]
-          exclude_commands = ["curl", "ps", "playwright"]
+          exclude_commands = ["curl", "ps", "playwright", "grep"]
         '';
       };
     };
