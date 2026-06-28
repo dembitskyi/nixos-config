@@ -231,6 +231,7 @@ pkgs.python3Packages.callPackage
         sed -i -E 's/(google-api-core)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(google-api-python-client)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(google-auth)[^"]*"/\1"/g' pyproject.toml
+        sed -i -E 's/(mcp)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(openai)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(portalocker)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(posthog)[^"]*"/\1"/g' pyproject.toml

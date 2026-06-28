@@ -20,7 +20,7 @@
       (old.postPatch or "")
       + ''
         # Bump TUI message fetch limit from 100 to 1000.
-        substituteInPlace packages/opencode/src/cli/cmd/tui/context/sync.tsx \
+        substituteInPlace packages/tui/src/context/sync.tsx \
           --replace-fail 'limit: 100' 'limit: 1000'
       '';
   });

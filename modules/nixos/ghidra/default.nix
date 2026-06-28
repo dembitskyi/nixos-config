@@ -20,7 +20,7 @@
           ret-sync
           #gnudisassembler
           sleighdevtools
-          wasm
+          #wasm
           ghidra-firmware-utils
           ghidra-golanganalyzerextension
         ]
