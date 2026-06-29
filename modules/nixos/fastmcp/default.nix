@@ -155,6 +155,7 @@ let
     systemd
     tree
     uv
+    which
     git
     openssh
     diffutils

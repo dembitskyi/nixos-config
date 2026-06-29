@@ -18,6 +18,7 @@
     ./ollama
     ./mpv
     ./anki
+    ./sioyek
     ./lazygit
     ./lnav
     ./whisper
