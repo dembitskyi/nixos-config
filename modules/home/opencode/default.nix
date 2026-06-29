@@ -170,6 +170,7 @@ in
           tools.taskTool
           tools.readTools
           tools.writeTools
+          tools.aiSearch
           tools.context7Mcp
           tools.githubMcpSearch
           tools.githubMcpWrite
