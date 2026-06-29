@@ -220,7 +220,7 @@ in
         };
         opencode.model = lib.mkOption {
           type = lib.types.str;
-          default = "gpt-5.4";
+          default = "claude-opus-4.8";
           description = "Model name passed to browser-use when using the opencode backend.";
         };
         opencode.provider = lib.mkOption {

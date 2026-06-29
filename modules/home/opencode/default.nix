@@ -146,7 +146,7 @@ in
     };
     mine.home.opencode.defaultModel = lib.mkOption {
       type = lib.types.str;
-      default = "github-copilot/gpt-5.4";
+      default = "github-copilot/claude-opus-4.8";
       description = "Default model used by opencode.";
     };
     mine.home.opencode.searchProvider = lib.mkOption {
@@ -164,7 +164,7 @@ in
       follow-prompt = {
         description = "Follows the user's prompt exactly.";
         mode = "primary";
-        model = "github-copilot/claude-opus-4.7";
+        model = "github-copilot/claude-opus-4.8";
         prompt = "{file:${followPromptPrompt}}";
         tools = lib.mergeAttrsList [
           tools.taskTool
@@ -277,7 +277,7 @@ in
           local = {
             description = "Analyzes code, explains logic and relationships, and provides expert advice grounded in the local project context.";
             mode = "primary";
-            model = "github-copilot/gpt-5.4";
+            model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${localPrompt}}";
             tools = lib.mergeAttrsList [
               tools.taskTool
@@ -294,7 +294,7 @@ in
             description = "Writing Analyzing and Improving Prompt";
             hidden = true;
             mode = "primary";
-            model = "github-copilot/gpt-5.4";
+            model = "github-copilot/claude-sonnet-4.6";
             prompt = "{file:${editorPrompt}}";
             tools = lib.mergeAttrsList [
               tools.disableSkill
@@ -303,7 +303,7 @@ in
           pr = {
             description = "Creates and manages GitHub pull requests using MCP GitHub tools.";
             mode = "subagent";
-            model = "github-copilot/claude-opus-4.7";
+            model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${prPrompt}}";
             tools = lib.mergeAttrsList [
               tools.readTools
@@ -322,7 +322,7 @@ in
           build = {
             description = "Builds complex new features or entire applications based on a high-level description of what needs to be done.";
             mode = "primary";
-            model = "github-copilot/claude-opus-4.7";
+            model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${buildPrompt}}";
             tools = withExtraTools "build" (
               lib.mergeAttrsList [
@@ -348,7 +348,7 @@ in
           debug = {
             description = "Finds and fixes bugs in the codebase based on error messages, logs, or a description of the issue.";
             mode = "primary";
-            model = "github-copilot/gpt-5.4";
+            model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${debugPrompt}}";
             tools = lib.mergeAttrsList [
               tools.taskTool
@@ -365,7 +365,7 @@ in
           generic = {
             description = "General-purpose assistant with web access via browser subagent.";
             mode = "primary";
-            model = "github-copilot/gpt-5.4";
+            model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${genericPrompt}}";
             tools = lib.mergeAttrsList [
               tools.taskTool
@@ -389,7 +389,7 @@ in
           browser = {
             description = "Browser automation subagent for web tasks using combined browseruse and playwright MCPs.";
             mode = "subagent";
-            model = "github-copilot/claude-opus-4.7";
+            model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${browserPrompt}}";
             tools = lib.mergeAttrsList [
               tools.disableSkill
@@ -415,7 +415,7 @@ in
             description = "Classifies desktop notifications and outputs structured action markers.";
             hidden = true;
             mode = "primary";
-            model = "github-copilot/gpt-4.1";
+            model = "github-copilot/gpt-5.4-mini";
             prompt = "{file:${notificationPrompt}}";
             tools = {
               bash = true;
