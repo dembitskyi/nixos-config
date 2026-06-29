@@ -1,12 +1,12 @@
 {
   lib,
   config,
-  inputs,
+  ncInputs,
   ...
 }:
 let
   extensions = [
-    "${inputs.thunderbird-catppuccin}/themes/mocha/mocha-mauve.xpi"
+    "${ncInputs.thunderbird-catppuccin}/themes/mocha/mocha-mauve.xpi"
   ];
 in
 {

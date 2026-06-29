@@ -1,9 +1,9 @@
-{ pkgs, inputs, ... }:
+{ pkgs, ncInputs, ... }:
 
 {
   home.file.".config/noctalia/plugins" = {
     source = pkgs.runCommand "noctalia-plugins-custom" { } ''
-      cp -r --no-preserve=mode ${inputs.noctalia-plugins} $out
+      cp -r --no-preserve=mode ${ncInputs.noctalia-plugins} $out
       cp -r ${./corner-alert} $out/corner-alert
     '';
   };

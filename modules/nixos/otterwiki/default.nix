@@ -2,7 +2,7 @@
   lib,
   config,
   pkgs,
-  inputs,
+  ncInputs,
   ...
 }:
 let
@@ -115,7 +115,7 @@ in
           mkdir ${repoRoot}/mkdocsPrivate ${repoRoot}/mkdocsPrivate/css
           ln -s ${repoRoot}/repository/shared ${repoRoot}/mkdocsPrivate/shared
           ln -s ${repoRoot}/repository/shared/index.md ${repoRoot}/mkdocsPrivate/index.md
-          cp ${inputs.mkdocs-catppuccin}/docs/stylesheets/extra.css ${repoRoot}/mkdocsPrivate/css
+          cp ${ncInputs.mkdocs-catppuccin}/docs/stylesheets/extra.css ${repoRoot}/mkdocsPrivate/css
         fi
 
         ${mkdocsEnv}/bin/mkdocs serve -f ${config.mine.otterwiki.mkdocsYml} --dev-addr 0.0.0.0:6430 &

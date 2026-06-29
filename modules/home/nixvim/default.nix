@@ -2,15 +2,12 @@
   lib,
   config,
   pkgs,
-  nixvim-custom,
   ...
 }:
 let
   cfg = config.mine.home.nixvim-custom;
 in
 {
-
-  imports = [ nixvim-custom.homeModules.default ];
 
   options.mine.home.nixvim-custom = {
     enable = lib.mkEnableOption "enable nixvim-custom";

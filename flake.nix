@@ -8,6 +8,41 @@
     nixpkgs-patcher.url = "github:gepbird/nixpkgs-patcher";
     nix-colors.url = "github:misterio77/nix-colors";
 
+    hyprland.url = "git+https://github.com/hyprwm/Hyprland?submodules=1&rev=b65714e3b8e123fb2febd507905d25fa6abd0400";
+    hyprland-v0_53_3.url = "github:hyprwm/Hyprland/dd220efe7b1e292415bd0ea7161f63df9c95bfd3";
+
+    catppuccin-sioyek = {
+      url = "github:catppuccin/sioyek";
+      flake = false;
+    };
+
+    catppuccin-qutebrowser = {
+      url = "github:catppuccin/qutebrowser";
+      flake = false;
+    };
+
+    thunderbird-catppuccin = {
+      url = "github:catppuccin/thunderbird";
+      flake = false;
+    };
+    mkdocs-catppuccin = {
+      url = "github:ruslanlap/mkdocs-catppuccin";
+      flake = false;
+    };
+    noctalia-plugins = {
+      url = "github:noctalia-dev/noctalia-plugins/bff44cbfe4f7347ec90727cff08e35975e66d42a";
+      flake = false;
+    };
+    noctalia = {
+      url = "github:noctalia-dev/noctalia-shell/759454d2d5bce9be7dea982818700140335ed047";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    eyeblink-monitor = {
+      url = "github:dembitskyi/eyeblink-monitor";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    nixified-ai.url = "github:dembitskyi/nixified-ai-flake";
+
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -40,10 +75,27 @@
 
         flake = {
           # NixOS module set that can be imported wholesale.
-          nixosModules.default = ./modules/nixos;
+          # NixOS module set that can be imported wholesale. Injects the public
+          # flake's own inputs as `ncInputs` so consumers don't pass them.
+          nixosModules.default = {
+            imports = [
+              ./modules/nixos
+              inputs.nixified-ai.nixosModules.comfyui
+            ];
+            _module.args.ncInputs = inputs;
+          };
 
-          # Home-manager module set that can be imported wholesale.
-          homeModules.default = ./modules/home;
+          # Home-manager module set that can be imported wholesale. Injects the
+          # public flake's own inputs as `ncInputs` so consumers don't pass them.
+          homeModules.default = {
+            imports = [
+              ./modules/home
+              inputs.nixvim-custom.homeModules.default
+              inputs.eyeblink-monitor.homeManagerModules.default
+              inputs.noctalia.homeModules.default
+            ];
+            _module.args.ncInputs = inputs;
+          };
 
           # Flake-parts module that provides the nixos-hosts builder and
           # shared scaffolding (overlays, treefmt).

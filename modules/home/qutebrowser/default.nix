@@ -3,7 +3,7 @@
   config,
   pkgs,
   variables,
-  inputs,
+  ncInputs,
   ...
 }:
 {
@@ -47,7 +47,7 @@
       pkgs.hunspellDictsChromium.en_US;
 
     home.file.".config/qutebrowser/userscripts".source = ./scripts;
-    home.file.".config/qutebrowser/catppuccin".source = inputs.catppuccin-qutebrowser;
+    home.file.".config/qutebrowser/catppuccin".source = ncInputs.catppuccin-qutebrowser;
 
     programs = {
       qutebrowser = {

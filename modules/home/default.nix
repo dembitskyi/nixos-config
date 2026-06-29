@@ -19,6 +19,7 @@
     ./mpv
     ./anki
     ./sioyek
+    ./eyeblink-monitor
     ./lazygit
     ./lnav
     ./whisper

@@ -2,7 +2,7 @@
   lib,
   config,
   pkgs,
-  inputs',
+  ncInputs,
   ...
 }:
 let
@@ -12,17 +12,17 @@ let
   # or the latest hyprland from the rolling flake input.
   hyprlandPackage =
     if config.mine.hyprland.pinned then
-      inputs'.hyprland-v0_53_3.packages.default.overrideAttrs (old: {
+      ncInputs.hyprland-v0_53_3.packages.${pkgs.stdenv.hostPlatform.system}.default.overrideAttrs (old: {
         patches = (old.patches or [ ]) ++ [ ../../../../patches/hyprland-hyprpm-glaze-7.diff ];
       })
     else
-      inputs'.hyprland.packages.default;
+      ncInputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
   hyprlandPortalPackage =
     if config.mine.hyprland.pinned then
-      inputs'.hyprland-v0_53_3.packages.xdg-desktop-portal-hyprland
+      ncInputs.hyprland-v0_53_3.packages.${pkgs.stdenv.hostPlatform.system}.xdg-desktop-portal-hyprland
     else
-      inputs'.hyprland.packages.xdg-desktop-portal-hyprland;
+      ncInputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.xdg-desktop-portal-hyprland;
 
   # Settings only valid for the pinned version (v0.53.3).
   pinnedSettings = {
@@ -76,7 +76,7 @@ in
     mine.hyprland.package = hyprlandPackage;
     environment.systemPackages = with pkgs; [
       (import ./scripts/launcher.nix { inherit lib pkgs; })
-      inputs'.noctalia.packages.default
+      ncInputs.noctalia.packages.${pkgs.stdenv.hostPlatform.system}.default
 
       eog
       nautilus
@@ -244,7 +244,6 @@ in
         blueman
         hyprpolkitagent
         hyprsysteminfo
-        inputs'.niri-screen-time.packages.default
       ];
 
       xdg.configFile."hypr/icons" = {
