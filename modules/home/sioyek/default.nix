@@ -44,6 +44,16 @@ in
         default = "mocha";
         description = "Catppuccin flavor for sioyek.";
       };
+      extraPrefs = lib.mkOption {
+        type = lib.types.lines;
+        default = "";
+        description = "Extra lines appended to prefs_user.config (e.g. new_command hooks).";
+      };
+      extraKeys = lib.mkOption {
+        type = lib.types.lines;
+        default = "";
+        description = "Extra lines appended to keys_user.config (e.g. command bindings).";
+      };
     };
   };
 
@@ -53,11 +63,18 @@ in
       package = sioyekPkg;
     };
 
-    xdg.configFile."sioyek/prefs_user.config" = lib.mkIf cfg.catppuccin {
-      text = ''
-        ${builtins.readFile theme}
-        startup_commands toggle_custom_color
-      '';
+    xdg.configFile."sioyek/prefs_user.config" = lib.mkIf (cfg.catppuccin || cfg.extraPrefs != "") {
+      text = lib.concatStringsSep "\n" (
+        lib.optionals cfg.catppuccin [
+          (builtins.readFile theme)
+          "startup_commands toggle_custom_color"
+        ]
+        ++ lib.optional (cfg.extraPrefs != "") cfg.extraPrefs
+      );
+    };
+
+    xdg.configFile."sioyek/keys_user.config" = lib.mkIf (cfg.extraKeys != "") {
+      text = cfg.extraKeys;
     };
   };
 }
