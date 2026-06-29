@@ -28,7 +28,8 @@
   config,
   pkgs,
   ...
-}: let
+}:
+let
   cfg = config.mine.home.ai-skills;
 
   sourceType = lib.types.submodule {
@@ -60,19 +61,13 @@
   };
 
   # Quote for embedding into shell scripts.
-  shQuote = s: "'${lib.replaceStrings ["'"] ["'\\''"] s}'";
+  shQuote = s: "'${lib.replaceStrings [ "'" ] [ "'\\''" ] s}'";
 
   # Render the source list as a bash array of pipe-separated entries.
   # Each entry: "<name>|<url>|<layout>|<subpath>".
-  sourcesArrayLines =
-    lib.concatMapStringsSep "\n" (
-      s: "  ${shQuote "${s.name}|${s.url}|${s.layout}|${
-        if s.subpath == null
-        then ""
-        else s.subpath
-      }"}"
-    )
-    cfg.sources;
+  sourcesArrayLines = lib.concatMapStringsSep "\n" (
+    s: "  ${shQuote "${s.name}|${s.url}|${s.layout}|${if s.subpath == null then "" else s.subpath}"}"
+  ) cfg.sources;
 
   destinationsArrayLines = lib.concatMapStringsSep "\n" (d: "  ${shQuote d}") cfg.destinations;
 
@@ -228,24 +223,21 @@
   '';
 
   # home.file entries for inline skills, replicated across every destination.
-  inlineFiles =
-    lib.foldl' (
-      acc: dest:
-        acc
-        // lib.mapAttrs' (
-          name: text:
-            lib.nameValuePair "${dest}/${name}/SKILL.md" {inherit text;}
-        )
-        cfg.inlineSkills
-    ) {}
-    cfg.destinations;
-in {
+  inlineFiles = lib.foldl' (
+    acc: dest:
+    acc
+    // lib.mapAttrs' (
+      name: text: lib.nameValuePair "${dest}/${name}/SKILL.md" { inherit text; }
+    ) cfg.inlineSkills
+  ) { } cfg.destinations;
+in
+{
   options.mine.home.ai-skills = {
     enable = lib.mkEnableOption "AI agent skills (cache + redistribute)";
 
     destinations = lib.mkOption {
       type = lib.types.listOf lib.types.str;
-      default = [".config/opencode/skills"];
+      default = [ ".config/opencode/skills" ];
       description = ''
         Skill destination directories, relative to $HOME. Cached skills are
         copied into each destination on activation. Inline skills are written
@@ -362,7 +354,7 @@ in {
 
     inlineSkills = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {};
+      default = { };
       description = ''
         Inline SKILL.md content. Keys are skill directory names, values are the
         full SKILL.md text (including YAML frontmatter).
@@ -371,11 +363,11 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [updateSkills];
+    home.packages = [ updateSkills ];
 
     home.file = inlineFiles;
 
-    home.activation.installAiSkills = lib.hm.dag.entryAfter ["writeBoundary"] ''
+    home.activation.installAiSkills = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       destinations=(
       ${destinationsArrayLines}
       )
@@ -405,43 +397,42 @@ in {
       ai_skills_failed=0
 
       ${lib.concatMapStringsSep "\n\n" (
-          s: let
-            # Paths are built in shell so $HOME expands at activation time.
-            dirShell = ''"$cache_root/${s.name}"'';
-            cloneCmd = ''
-              if [ ! -d ${dirShell}/.git ]; then
-                _ai_skills_log "clone:        ${s.name} (${s.url})"
-                $DRY_RUN_CMD ${pkgs.coreutils}/bin/mkdir -p "$cache_root"
-                if $DRY_RUN_CMD ${pkgs.git}/bin/git clone --quiet ${shQuote s.url} ${dirShell}; then
-                  ai_skills_cloned=$((ai_skills_cloned + 1))
-                else
-                  _ai_skills_log "FAILED clone: ${s.name}"
-                  ai_skills_failed=$((ai_skills_failed + 1))
-                fi
+        s:
+        let
+          # Paths are built in shell so $HOME expands at activation time.
+          dirShell = ''"$cache_root/${s.name}"'';
+          cloneCmd = ''
+            if [ ! -d ${dirShell}/.git ]; then
+              _ai_skills_log "clone:        ${s.name} (${s.url})"
+              $DRY_RUN_CMD ${pkgs.coreutils}/bin/mkdir -p "$cache_root"
+              if $DRY_RUN_CMD ${pkgs.git}/bin/git clone --quiet ${shQuote s.url} ${dirShell}; then
+                ai_skills_cloned=$((ai_skills_cloned + 1))
+              else
+                _ai_skills_log "FAILED clone: ${s.name}"
+                ai_skills_failed=$((ai_skills_failed + 1))
               fi
-            '';
-            dispatch =
-              {
-                skills-subdir = ''_copy_skills_subdir "$cache_root/${s.name}/skills"'';
-                marker = ''_copy_skills_marker ${dirShell}'';
-                single = ''_copy_skills_single ${dirShell} ${shQuote s.name}'';
-                nested = ''_copy_skills_nested ${dirShell}'';
-                subpath = ''_copy_skills_subdir "$cache_root/${s.name}/${toString s.subpath}"'';
-              }
-            .${
-                s.layout
-              };
-          in ''
-            # ── ${s.name} (${s.layout}) ──
-            ai_skills_total=$((ai_skills_total + 1))
-            ${cloneCmd}
-            if ! ${dispatch}; then
-              _ai_skills_log "FAILED copy:  ${s.name}"
-              ai_skills_failed=$((ai_skills_failed + 1))
             fi
-          ''
-        )
-        cfg.sources}
+          '';
+          dispatch =
+            {
+              skills-subdir = ''_copy_skills_subdir "$cache_root/${s.name}/skills"'';
+              marker = "_copy_skills_marker ${dirShell}";
+              single = "_copy_skills_single ${dirShell} ${shQuote s.name}";
+              nested = "_copy_skills_nested ${dirShell}";
+              subpath = ''_copy_skills_subdir "$cache_root/${s.name}/${toString s.subpath}"'';
+            }
+            .${s.layout};
+        in
+        ''
+          # ── ${s.name} (${s.layout}) ──
+          ai_skills_total=$((ai_skills_total + 1))
+          ${cloneCmd}
+          if ! ${dispatch}; then
+            _ai_skills_log "FAILED copy:  ${s.name}"
+            ai_skills_failed=$((ai_skills_failed + 1))
+          fi
+        ''
+      ) cfg.sources}
 
       for dest_rel in "''${destinations[@]}"; do
         _ai_skills_log "deployed:     $(_ai_skills_count "$HOME/$dest_rel") skill(s) in $HOME/$dest_rel"

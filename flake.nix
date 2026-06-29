@@ -13,6 +13,8 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
+
     nixvim-custom = {
       url = "github:dembitskyi/nvim.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -27,6 +29,7 @@
         imports = [
           inputs.flake-root.flakeModule
           inputs.treefmt-nix.flakeModule
+          inputs.pre-commit-hooks.flakeModule
           ./overlays/flake-module.nix
         ];
 
@@ -61,7 +64,7 @@
           flakeModules.overlays = ./overlays/flake-module.nix;
 
           flakeModules.treefmt =
-            { config, ... }:
+            { ... }:
             {
               imports = [
                 inputs.flake-root.flakeModule
@@ -73,10 +76,39 @@
                   treefmt.config = {
                     inherit (config.flake-root) projectRootFile;
                     package = pkgs.treefmt;
+
+                    # Patterns are matched against paths relative to the repo root.
+                    settings.global.excludes = [
+                      # Vendored adi1090x rofi themes (rasi + launcher scripts).
+                      "modules/nixos/desktop/hyprland/programs/rofi/**"
+                      # Dummy TLS material for nginx test configs.
+                      "*.crt"
+                      "*.key"
+                      "*.patch"
+                      "*.diff"
+                    ];
+
                     programs = {
-                      alejandra.enable = true;
+                      nixfmt.enable = true;
                       deadnix.enable = true;
                       statix.enable = true;
+                      shfmt.enable = true;
+                      shellcheck.enable = true;
+                      ruff-format.enable = true;
+                      ruff-check.enable = true;
+                      mdformat.enable = true;
+                      yamlfmt.enable = true;
+                    };
+
+                    # Shebang scripts with no extension; list includes merge with
+                    # each formatter's defaults rather than replacing them.
+                    settings.formatter = {
+                      shellcheck.includes = [ "**/clip-text-refiner" ];
+                      shfmt.includes = [ "**/clip-text-refiner" ];
+                      ruff-check.includes = [ "**/qute-keepassxc" ];
+                      ruff-format.includes = [ "**/qute-keepassxc" ];
+                      # Prompt files are model inputs; keep them verbatim.
+                      mdformat.excludes = [ "**/prompts/**" ];
                     };
                   };
                   formatter = config.treefmt.build.wrapper;
@@ -102,14 +134,59 @@
               inherit (config.flake-root) projectRootFile;
               package = pkgs.treefmt;
 
+              # Patterns are matched against paths relative to the repo root.
+              settings.global.excludes = [
+                # Vendored adi1090x rofi themes (rasi + launcher scripts).
+                "modules/nixos/desktop/hyprland/programs/rofi/**"
+                # Dummy TLS material for nginx test configs.
+                "*.crt"
+                "*.key"
+                "*.patch"
+                "*.diff"
+              ];
+
               programs = {
-                alejandra.enable = true;
+                nixfmt.enable = true;
                 deadnix.enable = true;
                 statix.enable = true;
+                shfmt.enable = true;
+                shellcheck.enable = true;
+                ruff-format.enable = true;
+                ruff-check.enable = true;
+                mdformat.enable = true;
+                yamlfmt.enable = true;
+              };
+
+              # Shebang scripts with no extension; list includes merge with each
+              # formatter's defaults rather than replacing them.
+              settings.formatter = {
+                shellcheck.includes = [ "**/clip-text-refiner" ];
+                shfmt.includes = [ "**/clip-text-refiner" ];
+                ruff-check.includes = [ "**/qute-keepassxc" ];
+                ruff-format.includes = [ "**/qute-keepassxc" ];
+                # Prompt files are model inputs; keep them verbatim.
+                mdformat.excludes = [ "**/prompts/**" ];
               };
             };
 
             formatter = config.treefmt.build.wrapper;
+
+            pre-commit.settings.hooks = {
+              treefmt = {
+                enable = true;
+                package = config.treefmt.build.wrapper;
+              };
+            };
+
+            devShells.default = pkgs.mkShell {
+              inputsFrom = [ config.pre-commit.devShell ];
+              packages = [ config.treefmt.build.wrapper ];
+            };
+
+            checks = {
+              formatting = config.treefmt.build.check inputs.self;
+              git-hooks = config.pre-commit.settings.run;
+            };
           };
       }
     );

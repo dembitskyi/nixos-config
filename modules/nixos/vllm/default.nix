@@ -7,7 +7,6 @@
 {
   lib,
   config,
-  pkgs,
   ...
 }:
 let
@@ -99,10 +98,12 @@ let
       "--max-num-seqs ${toString m.maxNumSeqs}"
     ]
     ++ lib.optional (m.quantization != null) "--quantization ${m.quantization}"
-    ++ lib.optional (cfg.enableToolCalling && m.toolCallParser != null)
-      "--tool-call-parser ${m.toolCallParser} --enable-auto-tool-choice"
-    ++ lib.optional (cfg.enableReasoningParser && m.reasoningParser != null)
-      "--reasoning-parser ${m.reasoningParser}"
+    ++ lib.optional (
+      cfg.enableToolCalling && m.toolCallParser != null
+    ) "--tool-call-parser ${m.toolCallParser} --enable-auto-tool-choice"
+    ++ lib.optional (
+      cfg.enableReasoningParser && m.reasoningParser != null
+    ) "--reasoning-parser ${m.reasoningParser}"
     ++ lib.optional (
       m.speculativeConfig != null
     ) "--speculative-config ${lib.escapeShellArg (builtins.toJSON m.speculativeConfig)}"

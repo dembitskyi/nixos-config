@@ -32,8 +32,12 @@ let
 
   # Per-server client overrides (e.g. timeout).
   clientOverrides = {
-    playwright = { timeout = 300000; };
-    browseruse = { timeout = 300000; };
+    playwright = {
+      timeout = 300000;
+    };
+    browseruse = {
+      timeout = 300000;
+    };
   };
 
   # Uncomment to connect a manually-started browser-use dev instance:
@@ -146,7 +150,10 @@ in
       description = "Default model used by opencode.";
     };
     mine.home.opencode.searchProvider = lib.mkOption {
-      type = lib.types.enum [ "perplexity" "google" ];
+      type = lib.types.enum [
+        "perplexity"
+        "google"
+      ];
       default = "perplexity";
       description = "Provider used by the /search command (perplexity or google).";
     };
@@ -214,7 +221,11 @@ in
       categories = [ "Utility" ];
     };
 
-    home.packages = [ opencode-usage ai-search pkgs.rtk ];
+    home.packages = [
+      opencode-usage
+      ai-search
+      pkgs.rtk
+    ];
 
     xdg.configFile = {
       "opencode/plugin/env-protection.js" = {
@@ -312,17 +323,19 @@ in
             mode = "primary";
             model = "github-copilot/claude-opus-4.7";
             prompt = "{file:${buildPrompt}}";
-            tools = withExtraTools "build" (lib.mergeAttrsList [
-              tools.taskTool
-              tools.readTools
-              tools.writeTools
-              tools.sessionId
-              tools.aiSearch
-              tools.memoryMcp
-              tools.context7Mcp
-              tools.githubMcpSearch
-              tools.githubMcpWrite
-            ]);
+            tools = withExtraTools "build" (
+              lib.mergeAttrsList [
+                tools.taskTool
+                tools.readTools
+                tools.writeTools
+                tools.sessionId
+                tools.aiSearch
+                tools.memoryMcp
+                tools.context7Mcp
+                tools.githubMcpSearch
+                tools.githubMcpWrite
+              ]
+            );
             permission = withExtraPerms "build" {
               task = {
                 "pr" = "allow";

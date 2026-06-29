@@ -35,10 +35,12 @@ def _pretty_body(raw: bytes) -> str:
     result: list[str] = []
     for line in lines:
         if line.startswith("data: "):
-            payload = line[len("data: "):]
+            payload = line[len("data: ") :]
             try:
                 parsed = json.loads(payload)
-                result.append("data: " + json.dumps(parsed, indent=2, ensure_ascii=False))
+                result.append(
+                    "data: " + json.dumps(parsed, indent=2, ensure_ascii=False)
+                )
             except (json.JSONDecodeError, ValueError):
                 result.append(line)
         else:

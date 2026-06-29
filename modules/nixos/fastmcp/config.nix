@@ -157,13 +157,13 @@ let
   };
 
   # Canonical port assignment: the single source of truth for server → port.
-  serverPorts = lib.listToAttrs (
-    lib.imap0 (i: name: lib.nameValuePair name (8000 + i)) serverOrder
-  );
+  serverPorts = lib.listToAttrs (lib.imap0 (i: name: lib.nameValuePair name (8000 + i)) serverOrder);
 
   # URLs for only the built-in (default) servers.
   defaultServerUrls = lib.listToAttrs (
-    map (name: lib.nameValuePair name "http://127.0.0.1:${toString serverPorts.${name}}/${name}") defaultServerOrder
+    map (
+      name: lib.nameValuePair name "http://127.0.0.1:${toString serverPorts.${name}}/${name}"
+    ) defaultServerOrder
   );
 
   # Serialized extra config for the automation opencode instance.
@@ -183,9 +183,7 @@ in
   ) servers;
 
   # All server URLs (built-in + extra). Exposed as mine.fastmcp.serverUrls.
-  serverUrls = lib.mapAttrs (
-    name: port: "http://127.0.0.1:${toString port}/${name}"
-  ) serverPorts;
+  serverUrls = lib.mapAttrs (name: port: "http://127.0.0.1:${toString port}/${name}") serverPorts;
 
   # Only built-in server URLs, passed to the home-manager opencode module.
   inherit defaultServerUrls;

@@ -32,51 +32,54 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable (lib.mkMerge [
-    {
-      systemd.tmpfiles.rules = [
-        "d /mnt/psf 0755 root root -"
-        "d ${cfg.sharedPath} 0755 root root -"
-      ];
-
-      home-manager.users.${config.variables.username} = hmArgs: {
-        home.file = {
-          "Shared".source = hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
-          ".local/state/fastmcp/workspace/Shared".source = hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
-        };
-      };
-    }
-
-    (lib.mkIf cfg.clipboard.enable {
-      home-manager.users.${config.variables.username}.systemd.user.services.prlcp = {
-        Unit = {
-          Description = "Parallels clipboard sharing";
-          After = [ "graphical-session.target" ];
-          PartOf = [ "graphical-session.target" ];
-        };
-
-        Install = {
-          WantedBy = [ "graphical-session.target" ];
-        };
-
-        Service = {
-          ExecStart = "${pkgs.prl-tools}/bin/prlcp";
-          Restart = "on-failure";
-          RestartSec = 3;
-        };
-      };
-    })
-
-    (lib.mkIf cfg.fastmcpBind.enable {
-      home-manager.users.${config.variables.username} = {
-        systemd.user.tmpfiles.rules = [
-          "d ${workspacePath} 0755 - - -"
+  config = lib.mkIf cfg.enable (
+    lib.mkMerge [
+      {
+        systemd.tmpfiles.rules = [
+          "d /mnt/psf 0755 root root -"
+          "d ${cfg.sharedPath} 0755 root root -"
         ];
 
-        systemd.user.services.fastmcp.Service.BindPaths = [
-          "-${cfg.sharedPath}:${cfg.sharedPath}"
-        ];
-      };
-    })
-  ]);
+        home-manager.users.${config.variables.username} = hmArgs: {
+          home.file = {
+            "Shared".source = hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
+            ".local/state/fastmcp/workspace/Shared".source =
+              hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
+          };
+        };
+      }
+
+      (lib.mkIf cfg.clipboard.enable {
+        home-manager.users.${config.variables.username}.systemd.user.services.prlcp = {
+          Unit = {
+            Description = "Parallels clipboard sharing";
+            After = [ "graphical-session.target" ];
+            PartOf = [ "graphical-session.target" ];
+          };
+
+          Install = {
+            WantedBy = [ "graphical-session.target" ];
+          };
+
+          Service = {
+            ExecStart = "${pkgs.prl-tools}/bin/prlcp";
+            Restart = "on-failure";
+            RestartSec = 3;
+          };
+        };
+      })
+
+      (lib.mkIf cfg.fastmcpBind.enable {
+        home-manager.users.${config.variables.username} = {
+          systemd.user.tmpfiles.rules = [
+            "d ${workspacePath} 0755 - - -"
+          ];
+
+          systemd.user.services.fastmcp.Service.BindPaths = [
+            "-${cfg.sharedPath}:${cfg.sharedPath}"
+          ];
+        };
+      })
+    ]
+  );
 }

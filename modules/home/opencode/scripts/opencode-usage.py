@@ -63,7 +63,9 @@ def get_all_sessions(host: str, start_ts: int | None = None) -> list:
     return sessions
 
 
-def get_messages_page(host: str, session_id: str, limit: int, before: str | None = None) -> tuple[list, str | None]:
+def get_messages_page(
+    host: str, session_id: str, limit: int, before: str | None = None
+) -> tuple[list, str | None]:
     """Fetch a page of messages. Returns (messages, next_cursor)."""
     params = f"limit={limit}"
     if before:
@@ -91,7 +93,9 @@ def aggregate_session_into(agg: dict, host: str, session_id: str):
     first_page = True
 
     while True:
-        messages, next_cursor = get_messages_page(host, session_id, MESSAGE_PAGE_SIZE, cursor if not first_page else None)
+        messages, next_cursor = get_messages_page(
+            host, session_id, MESSAGE_PAGE_SIZE, cursor if not first_page else None
+        )
         first_page = False
 
         if not messages:
@@ -205,17 +209,24 @@ def estimate_ai_credits(agg: dict, pricing: dict) -> dict:
         rates = token_rates.get(model)
         if not rates:
             # Fallback: use gpt-5.4 rates for unknown models.
-            rates = token_rates.get("gpt-5.4", {
-                "input_per_1m": 2.50,
-                "output_per_1m": 10.00,
-                "cache_read_per_1m": 0.625,
-                "cache_write_per_1m": 2.50,
-            })
+            rates = token_rates.get(
+                "gpt-5.4",
+                {
+                    "input_per_1m": 2.50,
+                    "output_per_1m": 10.00,
+                    "cache_read_per_1m": 0.625,
+                    "cache_write_per_1m": 2.50,
+                },
+            )
 
         cost_input = (data["input"] / 1_000_000) * rates["input_per_1m"]
-        cost_output = ((data["output"] + data["reasoning"]) / 1_000_000) * rates["output_per_1m"]
+        cost_output = ((data["output"] + data["reasoning"]) / 1_000_000) * rates[
+            "output_per_1m"
+        ]
         cost_cache_read = (data["cache_read"] / 1_000_000) * rates["cache_read_per_1m"]
-        cost_cache_write = (data["cache_write"] / 1_000_000) * rates["cache_write_per_1m"]
+        cost_cache_write = (data["cache_write"] / 1_000_000) * rates[
+            "cache_write_per_1m"
+        ]
         model_total = cost_input + cost_output + cost_cache_read + cost_cache_write
 
         model_costs[model] = {
@@ -256,24 +267,36 @@ def print_usage_table(agg: dict, date_range: tuple[str, str]):
     print(header)
     print(f"  {'─' * 100}")
 
-    totals = {"steps": 0, "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0, "total": 0}
+    totals = {
+        "steps": 0,
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "total": 0,
+    }
 
     for model in sorted(agg.keys()):
         d = agg[model]
-        print(f"  {model:<22} {fmt_num(d['steps']):>7} {fmt_num(d['input']):>12} {fmt_num(d['output']):>12} "
-              f"{fmt_num(d['reasoning']):>11} {fmt_num(d['cache_read']):>14} {fmt_num(d['cache_write']):>13} {fmt_num(d['total']):>14}")
+        print(
+            f"  {model:<22} {fmt_num(d['steps']):>7} {fmt_num(d['input']):>12} {fmt_num(d['output']):>12} "
+            f"{fmt_num(d['reasoning']):>11} {fmt_num(d['cache_read']):>14} {fmt_num(d['cache_write']):>13} {fmt_num(d['total']):>14}"
+        )
         for k in totals:
             totals[k] += d[k]
 
     print(f"  {'─' * 100}")
-    print(f"  {'TOTAL':<22} {fmt_num(totals['steps']):>7} {fmt_num(totals['input']):>12} {fmt_num(totals['output']):>12} "
-          f"{fmt_num(totals['reasoning']):>11} {fmt_num(totals['cache_read']):>14} {fmt_num(totals['cache_write']):>13} {fmt_num(totals['total']):>14}")
+    print(
+        f"  {'TOTAL':<22} {fmt_num(totals['steps']):>7} {fmt_num(totals['input']):>12} {fmt_num(totals['output']):>12} "
+        f"{fmt_num(totals['reasoning']):>11} {fmt_num(totals['cache_read']):>14} {fmt_num(totals['cache_write']):>13} {fmt_num(totals['total']):>14}"
+    )
     print()
 
 
 def print_cost_table_premium(estimate: dict):
     """Print cost breakdown for premium-request billing."""
-    print(f"  Billing Mode: Premium Requests")
+    print("  Billing Mode: Premium Requests")
     print(f"  {'─' * 70}")
     header = f"  {'Model':<22} {'Steps':>7} {'Multiplier':>11} {'Weighted Req':>13}"
     print(header)
@@ -281,7 +304,9 @@ def print_cost_table_premium(estimate: dict):
 
     for model in sorted(estimate["model_costs"].keys()):
         mc = estimate["model_costs"][model]
-        print(f"  {model:<22} {fmt_num(mc['steps']):>7} {mc['multiplier']:>11.2f} {fmt_num(mc['weighted_requests']):>13}")
+        print(
+            f"  {model:<22} {fmt_num(mc['steps']):>7} {mc['multiplier']:>11.2f} {fmt_num(mc['weighted_requests']):>13}"
+        )
 
     print(f"  {'─' * 70}")
     print(f"  Total weighted requests:  {fmt_num(estimate['total_weighted_requests'])}")
@@ -295,7 +320,7 @@ def print_cost_table_premium(estimate: dict):
 
 def print_cost_table_credits(estimate: dict):
     """Print cost breakdown for AI credits billing."""
-    print(f"  Billing Mode: AI Credits (token-based)")
+    print("  Billing Mode: AI Credits (token-based)")
     print(f"  {'─' * 85}")
     header = f"  {'Model':<22} {'Input $':>9} {'Output $':>10} {'Cache Rd $':>11} {'Cache Wr $':>11} {'Total $':>9}"
     print(header)
@@ -303,8 +328,10 @@ def print_cost_table_credits(estimate: dict):
 
     for model in sorted(estimate["model_costs"].keys()):
         mc = estimate["model_costs"][model]
-        print(f"  {model:<22} {mc['cost_input']:>9.2f} {mc['cost_output']:>10.2f} "
-              f"{mc['cost_cache_read']:>11.2f} {mc['cost_cache_write']:>11.2f} {mc['total_usd']:>9.2f}")
+        print(
+            f"  {model:<22} {mc['cost_input']:>9.2f} {mc['cost_output']:>10.2f} "
+            f"{mc['cost_cache_read']:>11.2f} {mc['cost_cache_write']:>11.2f} {mc['total_usd']:>9.2f}"
+        )
 
     print(f"  {'─' * 85}")
     print(f"  Total token cost:         ${estimate['total_token_cost_usd']:,.2f}")
@@ -326,7 +353,9 @@ def current_month_boundaries() -> tuple[str, str]:
     return first_of_month.strftime("%Y-%m-%d"), first_of_next.strftime("%Y-%m-%d")
 
 
-def resolve_date_range(days: int | None, since: str | None, until: str | None) -> tuple[int | None, int | None]:
+def resolve_date_range(
+    days: int | None, since: str | None, until: str | None
+) -> tuple[int | None, int | None]:
     """Resolve date arguments into (start_ts_ms, end_ts_ms). Defaults to current month."""
     if days is not None:
         now = datetime.now(timezone.utc)
@@ -339,9 +368,19 @@ def resolve_date_range(days: int | None, since: str | None, until: str | None) -
     start_ts = None
     end_ts = None
     if since:
-        start_ts = int(datetime.strptime(since, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        start_ts = int(
+            datetime.strptime(since, "%Y-%m-%d")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+            * 1000
+        )
     if until:
-        end_ts = int(datetime.strptime(until, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        end_ts = int(
+            datetime.strptime(until, "%Y-%m-%d")
+            .replace(tzinfo=timezone.utc)
+            .timestamp()
+            * 1000
+        )
 
     return start_ts, end_ts
 
@@ -351,15 +390,37 @@ def main():
         prog="opencode-usage",
         description="Monitor OpenCode AI token usage and estimate GitHub Copilot costs.",
     )
-    parser.add_argument("--host", default=DEFAULT_HOST, help="OpenCode server address (default: %(default)s)")
-    parser.add_argument("--days", type=int, default=None, help="Show usage for the last N days (default: current month)")
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        help="OpenCode server address (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Show usage for the last N days (default: current month)",
+    )
     parser.add_argument("--since", default=None, help="Start date filter (YYYY-MM-DD)")
     parser.add_argument("--until", default=None, help="End date filter (YYYY-MM-DD)")
-    parser.add_argument("--pricing", default=str(PRICING_PATH), help="Path to pricing JSON file")
-    parser.add_argument("--mode", choices=["premium_requests", "ai_credits", "both"], default=None,
-                        help="Force billing mode (default: auto-detect by date)")
-    parser.add_argument("--json", action="store_true", help="Output raw JSON instead of tables")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Show debug logs with memory usage per request")
+    parser.add_argument(
+        "--pricing", default=str(PRICING_PATH), help="Path to pricing JSON file"
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["premium_requests", "ai_credits", "both"],
+        default=None,
+        help="Force billing mode (default: auto-detect by date)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Output raw JSON instead of tables"
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Show debug logs with memory usage per request",
+    )
     args = parser.parse_args()
 
     global VERBOSE
@@ -389,13 +450,21 @@ def main():
 
     # Determine date range for display.
     if start_ts:
-        earliest = datetime.fromtimestamp(start_ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        earliest = datetime.fromtimestamp(start_ts / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%d"
+        )
     else:
-        earliest = datetime.fromtimestamp(min(s["time"]["updated"] for s in sessions) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        earliest = datetime.fromtimestamp(
+            min(s["time"]["updated"] for s in sessions) / 1000, tz=timezone.utc
+        ).strftime("%Y-%m-%d")
     if end_ts:
-        latest = datetime.fromtimestamp(end_ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        latest = datetime.fromtimestamp(end_ts / 1000, tz=timezone.utc).strftime(
+            "%Y-%m-%d"
+        )
     else:
-        latest = datetime.fromtimestamp(max(s["time"]["updated"] for s in sessions) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        latest = datetime.fromtimestamp(
+            max(s["time"]["updated"] for s in sessions) / 1000, tz=timezone.utc
+        ).strftime("%Y-%m-%d")
 
     print(f"  Processing {len(sessions)} sessions ({earliest} → {latest})...")
 
@@ -406,12 +475,14 @@ def main():
         if VERBOSE and (i + 1) % 10 == 0:
             elapsed = time.monotonic() - t0
             steps_so_far = sum(d["steps"] for d in agg.values())
-            log(f"Processed {i + 1}/{len(sessions)} sessions, {steps_so_far} steps ({elapsed:.1f}s)")
+            log(
+                f"Processed {i + 1}/{len(sessions)} sessions, {steps_so_far} steps ({elapsed:.1f}s)"
+            )
 
     total_steps = sum(d["steps"] for d in agg.values())
     elapsed = time.monotonic() - t0
     print(f"  Done: {total_steps} steps collected in {elapsed:.1f}s.")
-    log(f"Final memory check")
+    log("Final memory check")
 
     if not agg:
         print("  No usage data found.")

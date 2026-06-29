@@ -1,5 +1,4 @@
 {
-  inputs,
   lib,
   config,
   variables,
@@ -13,7 +12,7 @@
 
   config = lib.mkIf config.mine.home.home-manager.enable {
     home = {
-      username = variables.username;
+      inherit (variables) username;
       homeDirectory = "/${variables.homePrefix}/${variables.username}";
       sessionVariables = {
         EDITOR = variables.editor;

@@ -32,7 +32,7 @@ let
         _module.args = {
           inherit pkgs;
           inherit variables;
-          inputs = flake.inputs;
+          inherit (flake) inputs;
           inputs' = { };
           nixvim-custom = flake.inputs.nixvim-custom;
           self' = {
@@ -48,9 +48,18 @@ let
         {
           options = {
             home = {
-              username = lib.mkOption { type = lib.types.str; default = "testuser"; };
-              homeDirectory = lib.mkOption { type = lib.types.str; default = "/home/testuser"; };
-              stateVersion = lib.mkOption { type = lib.types.str; default = "25.05"; };
+              username = lib.mkOption {
+                type = lib.types.str;
+                default = "testuser";
+              };
+              homeDirectory = lib.mkOption {
+                type = lib.types.str;
+                default = "/home/testuser";
+              };
+              stateVersion = lib.mkOption {
+                type = lib.types.str;
+                default = "25.05";
+              };
               packages = lib.mkOption {
                 type = lib.types.listOf lib.types.package;
                 default = [ ];
@@ -115,11 +124,7 @@ let
   cfg = hmEval.config;
 
   assertEnabled =
-    name: value:
-    if value then
-      "${name}=OK"
-    else
-      throw "${name} should be enabled but is not";
+    name: value: if value then "${name}=OK" else throw "${name} should be enabled but is not";
 
   results = builtins.concatStringsSep ", " [
     (assertEnabled "starship" cfg.mine.home.starship.enable)

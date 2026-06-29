@@ -66,9 +66,7 @@ def run_search(
         from playwright.sync_api import sync_playwright
         from playwright.sync_api import Error as PlaywrightError
     except ImportError as e:
-        raise SearchError(
-            "playwright is not installed in this environment."
-        ) from e
+        raise SearchError("playwright is not installed in this environment.") from e
 
     driver = {"perplexity": _drive_perplexity, "google": _drive_google}.get(provider)
     if driver is None:
@@ -124,7 +122,11 @@ def _drive_perplexity(context, page, query, timeout_ms, settle_ms):
     page.keyboard.press("Enter")
 
     text, completed = _wait_until_done(
-        page, _PPLX_DONE, lambda: _longest_text(page, _PPLX_ANSWER), timeout_ms, settle_ms
+        page,
+        _PPLX_DONE,
+        lambda: _longest_text(page, _PPLX_ANSWER),
+        timeout_ms,
+        settle_ms,
     )
     if not text:
         raise SearchError("No answer appeared before the timeout.")
@@ -354,10 +356,16 @@ def main(argv=None):
         choices=["perplexity", "google"],
         help="Search provider (default: $AI_SEARCH_PROVIDER or perplexity).",
     )
-    parser.add_argument("--cdp-url", default=os.environ.get("AI_SEARCH_CDP_URL", DEFAULT_CDP_URL))
-    parser.add_argument("--timeout", type=float, default=60.0, help="Max seconds to wait")
     parser.add_argument(
-        "--settle", type=float, default=0.8,
+        "--cdp-url", default=os.environ.get("AI_SEARCH_CDP_URL", DEFAULT_CDP_URL)
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=60.0, help="Max seconds to wait"
+    )
+    parser.add_argument(
+        "--settle",
+        type=float,
+        default=0.8,
         help="Grace seconds after the completion signal, to let the last token render.",
     )
     args = parser.parse_args(argv)
@@ -365,8 +373,11 @@ def main(argv=None):
     query = " ".join(args.query)
     try:
         result = run_search(
-            query, args.provider, cdp_url=args.cdp_url,
-            timeout_ms=int(args.timeout * 1000), settle_ms=int(args.settle * 1000),
+            query,
+            args.provider,
+            cdp_url=args.cdp_url,
+            timeout_ms=int(args.timeout * 1000),
+            settle_ms=int(args.settle * 1000),
         )
     except SearchError as e:
         # Print to stdout (not just stderr): opencode's command shell injection

@@ -79,7 +79,7 @@
                 inherit inputs;
                 nixpkgs = nixpkgsInput;
                 patches = _: nixpkgsPatches;
-                system = hostConfig.system;
+                inherit (hostConfig) system;
               }
             else
               nixpkgsInput;

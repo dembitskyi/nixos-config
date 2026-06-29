@@ -35,7 +35,9 @@ def parse_body(body: str) -> tuple[str, str]:
     return "", body
 
 
-def invoke_hook(hook_script: str | None, app_name: str, summary: str, body: str) -> None:
+def invoke_hook(
+    hook_script: str | None, app_name: str, summary: str, body: str
+) -> None:
     """Log the notification and optionally fire the hook script."""
     origin, body = parse_body(body)
     if origin:

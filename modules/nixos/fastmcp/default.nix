@@ -296,7 +296,8 @@ in
         "d ${userHome}/.local/state/fastmcp/workspace 0755 - - -"
       ];
 
-      home.file."workspace".source = hmArgs.config.lib.file.mkOutOfStoreSymlink "${userHome}/.local/state/fastmcp/workspace";
+      home.file."workspace".source =
+        hmArgs.config.lib.file.mkOutOfStoreSymlink "${userHome}/.local/state/fastmcp/workspace";
 
       systemd.user.services.fastmcp-ssh-agent = {
         Unit = {

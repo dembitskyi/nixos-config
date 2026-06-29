@@ -158,7 +158,6 @@ pkgs.python3Packages.callPackage
   (
     {
       lib,
-      pkgs,
       fetchFromGitHub,
       nix-update-script,
       buildPythonApplication,

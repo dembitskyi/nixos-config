@@ -12,7 +12,7 @@ let
   theme = {
     name = "${catppuccin}-compact";
     package = pkgs.catppuccin-gtk.override {
-      variant = variant;
+      inherit variant;
       accents = [ accent ];
       size = "compact";
     };

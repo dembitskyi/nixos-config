@@ -16,8 +16,7 @@ let
   # >=111 returns 403 on the WebSocket upgrade otherwise) and it loosens
   # DNS-rebinding protection, so gate it on remote.enable.
   cdpFlags =
-    "--remote-debugging-port=9222"
-    + lib.optionalString cfg.remote.enable " --remote-allow-origins=*";
+    "--remote-debugging-port=9222" + lib.optionalString cfg.remote.enable " --remote-allow-origins=*";
 in
 {
 
@@ -89,7 +88,10 @@ in
     systemd.user.services.ai-browser-cdp-proxy = lib.mkIf cfg.remote.enable {
       Unit = {
         Description = "Expose ai-browser CDP (127.0.0.1:9222) on ${cfg.remote.listenAddress}:${toString cfg.remote.listenPort} via socat";
-        After = [ "ai-browser.service" "graphical-session.target" ];
+        After = [
+          "ai-browser.service"
+          "graphical-session.target"
+        ];
         Wants = [ "ai-browser.service" ];
         PartOf = [ "graphical-session.target" ];
       };

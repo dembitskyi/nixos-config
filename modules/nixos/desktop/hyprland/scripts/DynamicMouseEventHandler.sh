@@ -4,11 +4,11 @@
 TYPE=$1
 
 windowInfo=$(hyprctl activewindow -j)
-if echo $windowInfo | jq -e '.initialClass == "chromium-browser"' > /dev/null; then
+if echo "$windowInfo" | jq -e '.initialClass == "chromium-browser"' >/dev/null; then
   if [ "$TYPE" == "mouse_down" ]; then
     hyprctl dispatch workspace e+1
   fi
-elif echo $windowInfo | jq -e '.initialClass == "org.qutebrowser.qutebrowser"' > /dev/null; then
+elif echo "$windowInfo" | jq -e '.initialClass == "org.qutebrowser.qutebrowser"' >/dev/null; then
   if [ "$TYPE" == "mouse_left" ]; then
     qutebrowser :tab-next
   elif [ "$TYPE" == "mouse_press_down" ]; then

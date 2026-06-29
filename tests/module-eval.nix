@@ -77,11 +77,7 @@ let
   cfg = testSystem.config;
 
   assertEnabled =
-    name: value:
-    if value then
-      "${name}=OK"
-    else
-      throw "${name} should be enabled but is not";
+    name: value: if value then "${name}=OK" else throw "${name} should be enabled but is not";
 
   results = builtins.concatStringsSep ", " [
     (assertEnabled "coreutils" cfg.mine.coreutils.enable)

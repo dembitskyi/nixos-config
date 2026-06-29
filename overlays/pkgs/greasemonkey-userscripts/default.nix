@@ -13,7 +13,6 @@ let
 
   userstyleToGreasemonkeyScript =
     {
-      src,
 
       # Some styles are dependent on their script loading order,
       # and since we don't really have much control over the
@@ -121,7 +120,7 @@ let
       '';
 
   mkUserstyle =
-    { src, ... }@args:
+    args:
     let
       src' = userstyleToGreasemonkeyScript args;
     in
@@ -131,8 +130,6 @@ let
     {
       pname ? null,
       version ? null,
-      src ? null,
-      file ? null,
 
       url ? null,
       hash ? null,
