@@ -33,6 +33,7 @@ in
     mine.home.sioyek = {
       enable = lib.mkEnableOption "enable sioyek pdf viewer";
       nvidia = lib.mkEnableOption "run via XWayland + GLX (fixes NVIDIA EGL error 3009)";
+      catppuccin = lib.mkEnableOption "apply catppuccin theme";
       flavor = lib.mkOption {
         type = lib.types.enum [
           "latte"
@@ -52,9 +53,11 @@ in
       package = sioyekPkg;
     };
 
-    xdg.configFile."sioyek/prefs_user.config".text = ''
-      ${builtins.readFile theme}
-      startup_commands toggle_custom_color
-    '';
+    xdg.configFile."sioyek/prefs_user.config" = lib.mkIf cfg.catppuccin {
+      text = ''
+        ${builtins.readFile theme}
+        startup_commands toggle_custom_color
+      '';
+    };
   };
 }
