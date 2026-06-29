@@ -90,6 +90,7 @@
 
                     programs = {
                       nixfmt.enable = true;
+                      nixfmt.package = pkgs.nixfmt;
                       deadnix.enable = true;
                       statix.enable = true;
                       shfmt.enable = true;
@@ -147,6 +148,7 @@
 
               programs = {
                 nixfmt.enable = true;
+                nixfmt.package = pkgs.nixfmt;
                 deadnix.enable = true;
                 statix.enable = true;
                 shfmt.enable = true;
@@ -181,6 +183,8 @@
             devShells.default = pkgs.mkShell {
               inputsFrom = [ config.pre-commit.devShell ];
               packages = [ config.treefmt.build.wrapper ];
+              # Share the pre-push gate with every clone via tracked hooks.
+              shellHook = "git config core.hooksPath .githooks";
             };
 
             checks = {

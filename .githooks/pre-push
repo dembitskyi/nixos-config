@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Tracked pre-push gate (shared via core.hooksPath = .githooks).
+set -euo pipefail
+
+system=$(nix eval --raw --impure --expr 'builtins.currentSystem')
+echo "pre-push: checking formatting + git-hooks (${system})…"
+nix build --no-link \
+  ".#checks.${system}.formatting" \
+  ".#checks.${system}.git-hooks"
