@@ -107,6 +107,11 @@ in
       }
     );
 
+    # nixpkgs flipped programs.fuse.enable to default false, dropping the SUID
+    # fusermount3 wrapper that xdg-document-portal needs; without it the portal
+    # exits 6/NOTCONFIGURED. xdg.portal doesn't pull fuse in, so enable it here.
+    programs.fuse.enable = true;
+
     services.displayManager.defaultSession = "hyprland-uwsm";
     programs.hyprland = {
       enable = true;
