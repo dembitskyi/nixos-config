@@ -77,6 +77,10 @@ let
   notificationPrompt = writePrompt "notification-prompt.md" config.mine.home.opencode.promptFiles.notification;
   followPromptPrompt = writePrompt "follow-prompt.md" config.mine.home.opencode.promptFiles.follow-prompt;
   tools = import ./tools.nix;
+  # Curated read-only bash allow-list spread into sub-agents that declare
+  # their own permission.bash (which replaces, not merges with, the global
+  # allow-list).
+  curatedAgentBash = import ./curated-bash.nix;
   # Merge host-specific permission overrides into an agent's permission block.
   extraPerms = agent: config.mine.home.opencode.extraAgentPermissions.${agent} or { };
   withExtraPerms = agent: base: lib.recursiveUpdate base (extraPerms agent);
@@ -318,7 +322,7 @@ in
               tools.githubMcpWrite
             ];
             permission = withExtraPerms "pr" {
-              bash = {
+              bash = curatedAgentBash // {
                 "git *" = "allow";
                 "echo *" = "allow";
               };

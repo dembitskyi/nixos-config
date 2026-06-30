@@ -6,7 +6,6 @@ Your job is to take an existing local git branch, push that branch to GitHub ove
 
 - Use **bash running `git`** for all local and repository operations.
 - Use **SSH** for every GitHub repository operation, including clone, fetch, pull, and push.
-- Always run git GitHub operations with `GIT_SSH_COMMAND="ssh -F /dev/null"`.
 - Use **MCP GitHub tools** to create or update the pull request.
 - **Do not** use `gh pr create`.
 - **Do not** use `mcp_github_push_files` as a substitute for `git push` when the goal is to preserve the real local branch commits.
@@ -18,8 +17,8 @@ When the user asks you to create a pull request, follow this exact flow:
 1. Determine the repository path, current branch name, remote name, owner, repo, and base branch.
 2. Verify the local branch has changes or commits worth opening as a PR.
 3. Draft a clear PR title and body based on the branch changes.
-4. Push the **real current branch** to the remote with `GIT_SSH_COMMAND="ssh -F /dev/null" git push` over SSH.
-5. Use the same `GIT_SSH_COMMAND="ssh -F /dev/null"` convention for clone, fetch, pull, and push.
+4. Push the **real current branch** to the remote with `git push` over SSH.
+5. Use SSH for clone, fetch, pull, and push.
 6. Check whether a PR already exists for the current branch.
 7. If a PR exists, update it if needed and return the PR URL.
 8. If no PR exists, create it with `mcp_github_create_pull_request` and return the PR URL.
@@ -40,7 +39,7 @@ Useful commands include:
 - `git log --oneline <base>..HEAD`
 - `git diff <base>...HEAD`
 - `git remote -v`
-- `GIT_SSH_COMMAND="ssh -F /dev/null" git push -u origin <branch>`
+- `git push -u origin <branch>`
 
 Use SSH URLs for GitHub remotes, for example:
 
@@ -75,7 +74,7 @@ Avoid extra probing unless a previous step failed.
 
 - Push the current branch exactly as it exists locally.
 - Preserve the real local commits.
-- Prefer `GIT_SSH_COMMAND="ssh -F /dev/null" git push -u origin <branch>` when upstream is not set.
+- Prefer `git push -u origin <branch>` when upstream is not set.
 - If push succeeds, do not do extra remote branch investigation.
 - If push still fails, stop and clearly report the failure to the user.
 
@@ -93,7 +92,7 @@ Avoid extra probing unless a previous step failed.
 
 1. Inspect the current branch and base branch.
 2. If there are no relevant changes, stop.
-3. Push the branch over SSH with `GIT_SSH_COMMAND="ssh -F /dev/null"`.
+3. Push the branch over SSH with `git push`.
 4. If push fails, stop and report the error.
 5. Check for an existing PR for `head=<owner>:<branch>` and `base=<base>`.
 6. If a PR exists, update it if needed and return the URL.
@@ -106,7 +105,6 @@ Avoid extra probing unless a previous step failed.
 - ALWAYS use MCP GitHub tools to create or update the PR.
 - ALWAYS use bash running `git` for clone, fetch, pull, and push.
 - ALWAYS prefer SSH remotes for GitHub repository operations.
-- ALWAYS run git GitHub operations with `GIT_SSH_COMMAND="ssh -F /dev/null"`.
 - NEVER silently switch to a synthetic snapshot workflow when real `git push` is available.
 - NEVER push directly to `main` or `master`.
 - NEVER force-push unless the user explicitly asks.
