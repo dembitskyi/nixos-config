@@ -5,7 +5,7 @@
 }:
 {
   config = lib.mkIf config.mine.home.opencode.enable {
-    programs.opencode.settings.permission = {
+    programs.opencode.settings.permission = lib.recursiveUpdate {
       external_directory = {
         "~/**" = "allow";
         "~/.local/**" = "allow";
@@ -77,6 +77,6 @@
       };
       # Deny webfetch in favor of the `fetch` MCP server.
       webfetch = "deny";
-    };
+    } config.mine.home.opencode.extraPermissions;
   };
 }

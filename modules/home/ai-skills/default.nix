@@ -65,9 +65,10 @@ let
 
   # Render the source list as a bash array of pipe-separated entries.
   # Each entry: "<name>|<url>|<layout>|<subpath>".
+  allSources = cfg.sources ++ cfg.extraSources;
   sourcesArrayLines = lib.concatMapStringsSep "\n" (
     s: "  ${shQuote "${s.name}|${s.url}|${s.layout}|${if s.subpath == null then "" else s.subpath}"}"
-  ) cfg.sources;
+  ) allSources;
 
   destinationsArrayLines = lib.concatMapStringsSep "\n" (d: "  ${shQuote d}") cfg.destinations;
 
@@ -352,6 +353,16 @@ in
       description = "Skill source repositories to clone and redistribute.";
     };
 
+    extraSources = lib.mkOption {
+      type = lib.types.listOf sourceType;
+      default = [ ];
+      description = ''
+        Additional skill sources, concatenated with `sources`. Use this to add
+        sources without overriding the curated `sources` default (e.g. from
+        other modules).
+      '';
+    };
+
     inlineSkills = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
@@ -432,7 +443,7 @@ in
             ai_skills_failed=$((ai_skills_failed + 1))
           fi
         ''
-      ) cfg.sources}
+      ) allSources}
 
       for dest_rel in "''${destinations[@]}"; do
         _ai_skills_log "deployed:     $(_ai_skills_count "$HOME/$dest_rel") skill(s) in $HOME/$dest_rel"

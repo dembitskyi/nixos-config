@@ -129,6 +129,11 @@ in
       default = { };
       description = "Per-agent permission overrides, deep-merged into the corresponding agent's permission block. Keyed by agent name.";
     };
+    mine.home.opencode.extraPermissions = lib.mkOption {
+      type = lib.types.attrsOf lib.types.anything;
+      default = { };
+      description = "Extra global permission rules, deep-merged into the top-level opencode permission set.";
+    };
     mine.home.opencode.extraAgentTools = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
@@ -166,7 +171,7 @@ in
         mode = "primary";
         model = "github-copilot/claude-opus-4.8";
         prompt = "{file:${followPromptPrompt}}";
-        tools = lib.mergeAttrsList [
+        tools = withExtraTools "follow-prompt" (lib.mergeAttrsList [
           tools.taskTool
           tools.readTools
           tools.writeTools
@@ -174,7 +179,7 @@ in
           tools.context7Mcp
           tools.githubMcpSearch
           tools.githubMcpWrite
-        ];
+        ]);
       };
     };
 
@@ -279,7 +284,7 @@ in
             mode = "primary";
             model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${localPrompt}}";
-            tools = lib.mergeAttrsList [
+            tools = withExtraTools "local" (lib.mergeAttrsList [
               tools.taskTool
               tools.readTools
               tools.timeMcp
@@ -288,7 +293,7 @@ in
               tools.memoryMcp
               tools.gitReadMcp
               tools.context7Mcp
-            ];
+            ]);
           };
           refine = {
             description = "Writing Analyzing and Improving Prompt";
@@ -350,7 +355,7 @@ in
             mode = "primary";
             model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${debugPrompt}}";
-            tools = lib.mergeAttrsList [
+            tools = withExtraTools "debug" (lib.mergeAttrsList [
               tools.taskTool
               tools.readTools
               tools.writeTools
@@ -360,14 +365,14 @@ in
               tools.context7Mcp
               tools.githubMcpSearch
               tools.githubMcpWrite
-            ];
+            ]);
           };
           generic = {
             description = "General-purpose assistant with web access via browser subagent.";
             mode = "primary";
             model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${genericPrompt}}";
-            tools = lib.mergeAttrsList [
+            tools = withExtraTools "generic" (lib.mergeAttrsList [
               tools.taskTool
               tools.readTools
               tools.writeTools
@@ -377,7 +382,7 @@ in
               tools.memoryMcp
               tools.context7Mcp
               tools.githubMcpSearch
-            ];
+            ]);
             permission = withExtraPerms "generic" {
               task = {
                 "browser" = "allow";

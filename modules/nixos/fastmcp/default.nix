@@ -128,7 +128,8 @@ let
     "cpp-pro"
     "hyprland"
     "nixos"
-  ];
+  ]
+  ++ lib.optionals config.mine.jfrog.enable config.mine.jfrog.skills;
   extraPackages = with pkgs; [
     bash
     bat
@@ -340,7 +341,11 @@ in
             "UV_CACHE_DIR=${userHome}/.cache/uv"
             "UV_STATE_DIR=${userHome}/.local/state/uv"
             "UV_DATA_DIR=${userHome}/.local/share/uv"
-            "PATH=${lib.makeBinPath (extraPackages ++ config.mine.fastmcp.extraPackages)}"
+            "PATH=${lib.makeBinPath (
+              extraPackages
+              ++ config.mine.fastmcp.extraPackages
+              ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
+            )}"
           ];
           NoNewPrivileges = true;
           ProtectClock = true;
@@ -369,7 +374,9 @@ in
           ]
           ++ map (
             skill: "${userHome}/.config/opencode/skills/${skill}:${userHome}/.config/opencode/skills/${skill}"
-          ) allowedSkills;
+          ) allowedSkills
+          # Make the declarative jf config available to sandboxed `jf`.
+          ++ lib.optional config.mine.jfrog.enable "${config.mine.jfrog.confPath}:${config.mine.jfrog.targetPath}";
           ProtectHostname = true;
           ProtectKernelLogs = true;
           ProtectKernelModules = true;
