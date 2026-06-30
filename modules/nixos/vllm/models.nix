@@ -41,4 +41,23 @@
       "shm"
     ];
   };
+
+  # Small vision model; runs resident alongside the swapped chat models, so it
+  # must fit in the GPU memory they leave free (fraction is of total VRAM).
+  "granite-docling" = {
+    huggingfaceId = "ibm-granite/granite-docling-258M";
+    servedName = "granite-docling";
+    quantization = null;
+    maxModelLen = 8192;
+    maxNumSeqs = 16;
+    gpuMemoryUtilization = 0.025;
+    toolCallParser = null;
+    reasoningParser = null;
+    speculativeConfig = null;
+    extraArgs = [
+      "--enable-chunked-prefill"
+      "--max-num-batched-tokens"
+      "2048"
+    ];
+  };
 }

@@ -1,10 +1,47 @@
 {
   lib,
   fetchFromGitHub,
-  python3Packages,
+  buildPythonPackage,
+  hatchling,
+  pydantic,
+  docling-core,
+  pydantic-settings,
+  filetype,
+  requests,
+  certifi,
+  pluggy,
+  tqdm,
+  typer,
+  rich,
+  numpy,
+  pillow,
+  scipy,
+  rtree,
+  pypdfium2,
+  python-docx,
+  python-pptx,
+  openpyxl,
+  beautifulsoup4,
+  lxml,
+  marko,
+  pylatexenc,
+  polyfactory,
+  torch,
+  torchvision,
+  docling-ibm-models,
+  accelerate,
+  huggingface-hub,
+  defusedxml,
+  httpx,
+  websockets,
+  typing-extensions,
+  rapidocr,
+  onnxruntime,
 }:
 
-python3Packages.buildPythonApplication rec {
+# buildPythonPackage (not Application) so it is importable as a library while
+# still installing the docling console script.
+buildPythonPackage rec {
   pname = "docling";
   version = "2.93.0";
   pyproject = true;
@@ -20,9 +57,9 @@ python3Packages.buildPythonApplication rec {
   # so swap the backend for a stub that falls back to pypdfium2.
   patches = [ ./disable-docling-parse.patch ];
 
-  build-system = with python3Packages; [ hatchling ];
+  build-system = [ hatchling ];
 
-  dependencies = with python3Packages; [
+  dependencies = [
     pydantic
     docling-core
     pydantic-settings
