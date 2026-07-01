@@ -112,6 +112,13 @@ in
     # exits 6/NOTCONFIGURED. xdg.portal doesn't pull fuse in, so enable it here.
     programs.fuse.enable = true;
 
+    # udisks2 hardcodes the automount base to /run/media/$USER; it cannot mount
+    # into an arbitrary path. Symlink ~/mnt to that base so removable media
+    # auto-mounted by udiskie shows up under the home directory as ~/mnt/<label>.
+    systemd.tmpfiles.rules = [
+      "L+ ${userHome}/mnt - - - - /run/media/${config.variables.username}"
+    ];
+
     services.displayManager.defaultSession = "hyprland-uwsm";
     programs.hyprland = {
       enable = true;
@@ -126,6 +133,16 @@ in
     };
 
     home-manager.users.${config.variables.username} = {
+
+      # Auto-mount removable media (USB drives) via the udisks2 backend. tray is
+      # "never" to avoid a Requires=tray.target dependency the Noctalia bar does
+      # not provide; notifications still report mount/unmount events.
+      services.udiskie = {
+        enable = true;
+        automount = true;
+        notify = true;
+        tray = "never";
+      };
 
       xdg = {
         userDirs = {
