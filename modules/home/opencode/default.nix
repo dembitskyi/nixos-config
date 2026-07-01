@@ -322,10 +322,7 @@ in
               tools.githubMcpWrite
             ];
             permission = withExtraPerms "pr" {
-              bash = curatedAgentBash // {
-                "git *" = "allow";
-                "echo *" = "allow";
-              };
+              bash = curatedAgentBash;
             };
           };
           build = {
