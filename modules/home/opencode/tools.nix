@@ -254,7 +254,7 @@
     "mcp_playwright_browser_navigate" = true;
     "mcp_playwright_browser_navigate_back" = true;
     "mcp_playwright_browser_network_requests" = true;
-    "mcp_playwright_browser_run_code" = true;
+    "mcp_playwright_browser_run_code_unsafe" = true;
     "mcp_playwright_browser_take_screenshot" = true;
     "mcp_playwright_browser_snapshot" = true;
     "mcp_playwright_browser_click" = true;
