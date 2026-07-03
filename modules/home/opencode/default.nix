@@ -28,6 +28,18 @@ let
   # Shared with the fastmcp sandbox so the /search command resolves there too.
   ai-search = pkgs.callPackage ./ai-search.nix { };
 
+  # fzf picker backing the /skill TUI plugin (runs host-side in the TUI).
+  skill-picker = pkgs.callPackage ./skill-picker.nix { };
+
+  # /skill TUI plugin, with the picker's store path baked in. Declared in the
+  # TUI plugin list (programs.opencode.tui.plugin) rather than the plugin drop-in
+  # dir: the server auto-loads ~/.config/opencode/plugin, but the TUI only loads
+  # plugins listed in tui.json. Listing it here also keeps it out of the
+  # sandboxed server, which has no terminal to drive fzf.
+  skillPlugin = pkgs.replaceVars ./plugins/skill.ts {
+    skillPicker = lib.getExe skill-picker;
+  };
+
   searchProvider = config.mine.home.opencode.searchProvider;
 
   # Per-server client overrides (e.g. timeout).
@@ -234,6 +246,7 @@ in
     home.packages = [
       opencode-usage
       ai-search
+      skill-picker
       pkgs.rtk
     ];
 
@@ -271,6 +284,9 @@ in
           session_child_first = "ctrl+g";
         };
         theme = "catppuccin";
+        # The TUI does not auto-load the plugin drop-in dir (only the server
+        # does), so the /skill picker plugin is listed here explicitly.
+        plugin = [ "${skillPlugin}" ];
       };
       settings = {
         share = "disabled";

@@ -296,6 +296,9 @@ in
         "d ${userHome}/.config/rtk 0700 - - -"
         "d ${userHome}/.local/share/opencode 0700 - - -"
         "d ${userHome}/.local/state/fastmcp/workspace 0755 - - -"
+        # Ensure the skill pool exists so the read-only bind below never fails,
+        # even before the ai-skills module has populated it.
+        "d ${userHome}/.cache/ai-skills 0755 - - -"
       ];
 
       home.file."workspace".source =
@@ -371,6 +374,9 @@ in
           BindReadOnlyPaths = [
             "${userHome}/.config/rtk:${userHome}/.config/rtk"
             "${sandboxSshConfig}:/etc/ssh/ssh_config"
+            # Skill pool, so a loaded skill's helper files (scripts/, reference/)
+            # resolve at the same path inside the sandbox as on the host.
+            "${userHome}/.cache/ai-skills:${userHome}/.cache/ai-skills"
           ]
           ++ map (
             skill: "${userHome}/.config/opencode/skills/${skill}:${userHome}/.config/opencode/skills/${skill}"
