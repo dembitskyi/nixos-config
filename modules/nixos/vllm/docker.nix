@@ -15,6 +15,10 @@ let
     let
       m = cfg.models.${modelKey};
       port = cfg.activeModels.${modelKey}.port;
+      image = if m.image != null then m.image else cfg.docker.image;
+      hasPlugin = cfg.enableReasoningParser && m.reasoningParserPlugin != null;
+      # In-container path the reasoning-parser plugin is bind-mounted to.
+      containerPluginPath = "/app/${modelKey}-reasoning-parser.py";
       args = lib.concatStringsSep " " (
         [
           (lib.escapeShellArg m.huggingfaceId)
@@ -22,7 +26,11 @@ let
           "--port ${toString port}"
         ]
         ++ (cfg._mkModelArgs modelKey)
+        ++ lib.optional hasPlugin "--reasoning-parser-plugin ${containerPluginPath}"
       );
+      pluginMount = lib.optionalString hasPlugin ''
+        -v ${m.reasoningParserPlugin}:${containerPluginPath}:ro \
+      '';
     in
     pkgs.writeShellScript "vllm-docker-start-${modelKey}" ''
       HF_TOKEN=$(< ${config.sops.secrets.huggingface_token.path})
@@ -42,10 +50,10 @@ let
         -v /etc/passwd:/etc/passwd:ro \
         -v /etc/group:/etc/group:ro \
         -v "${cfg._stateDir}:${cfg._stateDir}" \
-        -e HOME="${cfg._stateDir}" \
+        ${pluginMount}-e HOME="${cfg._stateDir}" \
         -e VLLM_LOG_STATS_INTERVAL=1 \
         -e HF_TOKEN="$HF_TOKEN" \
-        ${cfg.docker.image} \
+        ${image} \
         ${args}
     '';
 in
@@ -71,6 +79,13 @@ in
               ${pkgs.docker}/bin/docker rm -f ${cfg._unitName modelKey} 2>/dev/null || true
             '';
             ExecStart = mkExecStart modelKey;
+            # `docker run` is attached, but the container lives in dockerd's
+            # cgroup — not this unit's. If vLLM wedges (e.g. after an OOM),
+            # systemd only SIGKILLs the client and the container keeps holding
+            # VRAM. Force-remove it on every stop so swaps/TTL/restarts always
+            # reclaim VRAM, not just the next ExecStartPre.
+            ExecStopPost = "-${pkgs.docker}/bin/docker rm -f ${cfg._unitName modelKey}";
+            TimeoutStopSec = "30s";
           };
         };
       }) (lib.attrNames cfg.activeModels)

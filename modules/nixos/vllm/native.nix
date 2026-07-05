@@ -14,6 +14,7 @@ let
     let
       m = cfg.models.${modelKey};
       port = cfg.activeModels.${modelKey}.port;
+      hasPlugin = cfg.enableReasoningParser && m.reasoningParserPlugin != null;
       args = lib.concatStringsSep " " (
         [
           (lib.escapeShellArg m.huggingfaceId)
@@ -21,6 +22,7 @@ let
           "--port ${toString port}"
         ]
         ++ (cfg._mkModelArgs modelKey)
+        ++ lib.optional hasPlugin "--reasoning-parser-plugin ${m.reasoningParserPlugin}"
       );
     in
     pkgs.writeShellScript "vllm-native-start-${modelKey}" ''

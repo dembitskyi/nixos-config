@@ -7,12 +7,13 @@
 {
   lib,
   config,
+  pkgs,
   ...
 }:
 let
   cfg = config.mine.vllm;
 
-  defaultModels = import ./models.nix;
+  defaultModels = import ./models.nix { inherit pkgs; };
 
   modelType = lib.types.submodule {
     options = {
@@ -73,6 +74,27 @@ let
         default = [ ];
         description = "Additional CLI arguments passed to vLLM.";
       };
+
+      reasoningParserPlugin = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        description = ''
+          Path to a custom reasoning-parser plugin .py file, loaded via vLLM's
+          --reasoning-parser-plugin flag. The plugin's registered parser name
+          still goes in reasoningParser. The Docker backend mounts the file
+          into the container; the native backend passes the store path directly.
+        '';
+      };
+
+      image = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = ''
+          Per-model Docker image override (Docker backend only). Null uses
+          mine.vllm.docker.image. Useful when a model requires a specific vLLM
+          version.
+        '';
+      };
     };
   };
 
@@ -120,6 +142,7 @@ in
     ./docker.nix
     ./native.nix
     ./swap.nix
+    ./sync.nix
   ];
 
   options.mine.vllm = {
@@ -212,6 +235,16 @@ in
         assertion = lib.length (lib.unique activePorts) == lib.length activePorts;
         message = "mine.vllm.activeModels ports must be unique.";
       }
+      {
+        assertion = lib.all (
+          k:
+          let
+            m = cfg.models.${k};
+          in
+          m.reasoningParserPlugin == null || m.reasoningParser != null
+        ) activeModelKeys;
+        message = "mine.vllm: a model with reasoningParserPlugin set must also set reasoningParser (the plugin's registered parser name).";
+      }
     ];
 
     sops.secrets.huggingface_token.owner = "vllm";
@@ -227,6 +260,8 @@ in
     users.groups.vllm = { };
 
     systemd.tmpfiles.rules = [
+      # 0755 so `vllm-sync list` can stat the (public) model cache without sudo.
+      "d ${cfg._stateDir} 0755 vllm vllm -"
       "d ${cfg._stateDir}/.cache 0755 vllm vllm -"
       "d ${cfg._stateDir}/.cache/huggingface 0755 vllm vllm -"
     ];

@@ -161,7 +161,39 @@ let
     openssh
     diffutils
     gh
-    python313
+    (python313.withPackages (
+      ps: with ps; [
+        numpy
+        scipy
+        sympy
+        mpmath
+        matplotlib
+        pandas
+        networkx
+        seaborn
+        statsmodels
+        scikit-learn
+        scikit-image
+        control
+        pint
+        uncertainties
+        tabulate
+        shapely
+        pyproj
+        geopandas
+        trimesh
+        spatialmath-python
+        pyquaternion
+        transforms3d
+        pymc
+        emcee
+        arviz
+        cvxpy
+        pyomo
+        pulp
+        casadi
+      ]
+    ))
     readline
     binutils
     gitSshWrapper
@@ -344,11 +376,13 @@ in
             "UV_CACHE_DIR=${userHome}/.cache/uv"
             "UV_STATE_DIR=${userHome}/.local/state/uv"
             "UV_DATA_DIR=${userHome}/.local/share/uv"
-            "PATH=${lib.makeBinPath (
-              extraPackages
-              ++ config.mine.fastmcp.extraPackages
-              ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
-            )}"
+            "PATH=${
+              lib.makeBinPath (
+                extraPackages
+                ++ config.mine.fastmcp.extraPackages
+                ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
+              )
+            }"
           ];
           NoNewPrivileges = true;
           ProtectClock = true;

@@ -187,15 +187,17 @@ in
         mode = "primary";
         model = "github-copilot/claude-opus-4.8";
         prompt = "{file:${followPromptPrompt}}";
-        tools = withExtraTools "follow-prompt" (lib.mergeAttrsList [
-          tools.taskTool
-          tools.readTools
-          tools.writeTools
-          tools.aiSearch
-          tools.context7Mcp
-          tools.githubMcpSearch
-          tools.githubMcpWrite
-        ]);
+        tools = withExtraTools "follow-prompt" (
+          lib.mergeAttrsList [
+            tools.taskTool
+            tools.readTools
+            tools.writeTools
+            tools.aiSearch
+            tools.context7Mcp
+            tools.githubMcpSearch
+            tools.githubMcpWrite
+          ]
+        );
       };
     };
 
@@ -304,16 +306,18 @@ in
             mode = "primary";
             model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${localPrompt}}";
-            tools = withExtraTools "local" (lib.mergeAttrsList [
-              tools.taskTool
-              tools.readTools
-              tools.timeMcp
-              tools.sessionId
-              tools.aiSearch
-              tools.memoryMcp
-              tools.gitReadMcp
-              tools.context7Mcp
-            ]);
+            tools = withExtraTools "local" (
+              lib.mergeAttrsList [
+                tools.taskTool
+                tools.readTools
+                tools.timeMcp
+                tools.sessionId
+                tools.aiSearch
+                tools.memoryMcp
+                tools.gitReadMcp
+                tools.context7Mcp
+              ]
+            );
           };
           refine = {
             description = "Writing Analyzing and Improving Prompt";
@@ -372,34 +376,38 @@ in
             mode = "primary";
             model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${debugPrompt}}";
-            tools = withExtraTools "debug" (lib.mergeAttrsList [
-              tools.taskTool
-              tools.readTools
-              tools.writeTools
-              tools.sessionId
-              tools.aiSearch
-              tools.memoryMcp
-              tools.context7Mcp
-              tools.githubMcpSearch
-              tools.githubMcpWrite
-            ]);
+            tools = withExtraTools "debug" (
+              lib.mergeAttrsList [
+                tools.taskTool
+                tools.readTools
+                tools.writeTools
+                tools.sessionId
+                tools.aiSearch
+                tools.memoryMcp
+                tools.context7Mcp
+                tools.githubMcpSearch
+                tools.githubMcpWrite
+              ]
+            );
           };
           generic = {
             description = "General-purpose assistant with web access via browser subagent.";
             mode = "primary";
             model = "github-copilot/claude-opus-4.8";
             prompt = "{file:${genericPrompt}}";
-            tools = withExtraTools "generic" (lib.mergeAttrsList [
-              tools.taskTool
-              tools.readTools
-              tools.writeTools
-              tools.disableSkill
-              tools.sessionId
-              tools.aiSearch
-              tools.memoryMcp
-              tools.context7Mcp
-              tools.githubMcpSearch
-            ]);
+            tools = withExtraTools "generic" (
+              lib.mergeAttrsList [
+                tools.taskTool
+                tools.readTools
+                tools.writeTools
+                tools.disableSkill
+                tools.sessionId
+                tools.aiSearch
+                tools.memoryMcp
+                tools.context7Mcp
+                tools.githubMcpSearch
+              ]
+            );
             permission = withExtraPerms "generic" {
               task = {
                 "browser" = "allow";

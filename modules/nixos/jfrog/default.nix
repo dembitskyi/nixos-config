@@ -86,7 +86,7 @@ in
         version = "6";
         servers = [
           {
-            serverId = cfg.serverId;
+            inherit (cfg) serverId;
             url = "${cfg.url}/";
             artifactoryUrl = "${cfg.url}/artifactory/";
             xrayUrl = "${cfg.url}/xray/";

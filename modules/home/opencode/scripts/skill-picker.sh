@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Fuzzy-pick a skill from the local pool and print its SKILL.md to stdout.
 #
 # Driven by the /skill opencode TUI plugin: the plugin suspends the renderer,
