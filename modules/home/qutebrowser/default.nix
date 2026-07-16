@@ -125,6 +125,11 @@
           c.colors.statusbar.caret.fg = "#ffffff"
           c.colors.statusbar.passthrough.bg = "#a40000"
           c.colors.statusbar.passthrough.fg = "#ffffff"
+
+          c.colors.tabs.selected.odd.bg = "#a40000"
+          c.colors.tabs.selected.odd.fg = "#ffffff"
+          c.colors.tabs.selected.even.bg = "#a40000"
+          c.colors.tabs.selected.even.fg = "#ffffff"
         '';
       };
     };
