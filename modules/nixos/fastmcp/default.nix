@@ -192,6 +192,7 @@ let
         pyomo
         pulp
         casadi
+        openpyxl
       ]
     ))
     readline
@@ -199,6 +200,7 @@ let
     gitSshWrapper
     gnutar
     gzip
+    unzip
     curl
     wget
   ];
