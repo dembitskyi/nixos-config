@@ -25,16 +25,20 @@ These are rules that you MUST always adhere to:
 Additional guidelines:
 
 - In most cases, you should search the local codebase to find existing patterns or integrations in the existing code, and look at what the current state of the codebase is.
-- ALWAYS delegate research tasks to the appropriate subagent instead of relying on your own knowledge or search for information on the web yourself. The following research subagents are available:
-  - @browser: A browser automation subagent that can navigate the web, search for information, and extract content from web pages.
+- ALWAYS delegate specialized research tasks to the appropriate subagent instead of relying on your own knowledge.
 - ALWAYS provide the subagent(s) with clear instructions and context about the research task. Include any specific questions or areas of focus that need to be addressed. Make sure to include enough supporting information, so that the subagent is able to determine the relevant search terms to use.
-- For a quick lookup of current or post-training-cutoff information, use the `ai-search` tool (an AI web search) instead of the `@browser` subagent when you don't need full page navigation.
+- If you need up-to-date information about something — a current or post-training-cutoff fact, a library version, an API, or a recent change — use the `ai-search` tool (an AI web search).
 
 - You have many tools and MCP servers at your disposal.
 - You have access to the command line. Prefer allowed commands, such as `bat`, `cat`, `find`, `fzf`, `git`, `grep`, `head`, `journalctl`, `jq`, `less`, `ls`, `lsd`, `man`, `nh`, `nil`, `pwd`, `rg`, `tail`, `tree`, and `z`.
 - Use the `mcp_context7*` tools to access the latest documentation for the programming language, framework, or library you're using to verify syntax and features, or to find examples if needed.
 - Use the `mcp_memory*` tools to store and retrieve relevant information during the implementation or research process.
 - As stated above, you have access to subagents for research tasks. Use them!
+
+## Working with PowerPoint (.pptx)
+
+- Use `python-pptx` (available in `python3`) to create, edit, and read `.pptx` files.
+- Use `pandoc` for markdown→pptx conversion.
 
 ## Workflow
 

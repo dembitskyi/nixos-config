@@ -80,7 +80,8 @@ let
     "playwright"
     "time"
     "browseruse"
-  ];
+  ]
+  ++ lib.optional config.mine.fastmcp.ghidra.enable "ghidra";
 
   builtInServers = {
     time = uvxServerWithArgs "mcp-server-time" [ "--local-timezone=America/Chicago" ];
@@ -143,7 +144,25 @@ let
     };
   };
 
-  servers = builtInServers // config.mine.fastmcp.extraServers;
+  ghidraServer = {
+    ghidra = {
+      command = lib.getExe' pkgs.uv "uvx";
+      args = [
+        "pyghidra-mcp"
+        "--project-path"
+        "${userHome}/ghidra-projects"
+      ];
+      env = {
+        GHIDRA_INSTALL_DIR = "${pkgs.ghidra}/lib/ghidra";
+        JAVA_HOME = "${pkgs.jdk21.home}";
+      };
+    };
+  };
+
+  servers =
+    builtInServers
+    // lib.optionalAttrs config.mine.fastmcp.ghidra.enable ghidraServer
+    // config.mine.fastmcp.extraServers;
 
   extraServerNames = lib.subtractLists defaultServerOrder (builtins.attrNames servers);
   serverOrder = defaultServerOrder ++ extraServerNames;

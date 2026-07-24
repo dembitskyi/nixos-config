@@ -193,8 +193,10 @@ let
         pulp
         casadi
         openpyxl
+        python-pptx
       ]
     ))
+    pandoc
     readline
     binutils
     gitSshWrapper
@@ -221,6 +223,8 @@ in
   options = {
     mine.fastmcp = {
       enable = lib.mkEnableOption "enable fastmcp server";
+
+      ghidra.enable = lib.mkEnableOption "the headless pyghidra-mcp reverse-engineering server (pulls ghidra + a JDK into the closure)";
 
       serverUrls = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
@@ -255,7 +259,7 @@ in
         };
         opencode.model = lib.mkOption {
           type = lib.types.str;
-          default = "claude-opus-4.8";
+          default = "claude-opus-4.8-fast";
           description = "Model name passed to browser-use when using the opencode backend.";
         };
         opencode.provider = lib.mkOption {

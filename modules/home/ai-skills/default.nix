@@ -189,7 +189,7 @@ let
       if [ ! -d "$dir/.git" ]; then
         echo "  Cloning: $name"
         ${pkgs.coreutils}/bin/mkdir -p "$cache_root"
-        if ${pkgs.git}/bin/git clone --quiet "$url" "$dir"; then
+        if ${pkgs.git}/bin/git clone --quiet --depth 1 --single-branch "$url" "$dir"; then
           cloned=$((cloned + 1))
         else
           echo "  Failed:  $name"
@@ -197,7 +197,7 @@ let
         fi
       else
         before=$(${pkgs.git}/bin/git -C "$dir" rev-parse HEAD 2>/dev/null)
-        if ${pkgs.git}/bin/git -C "$dir" pull --ff-only --quiet 2>/dev/null; then
+        if ${pkgs.git}/bin/git -C "$dir" pull --ff-only --depth 1 --quiet 2>/dev/null; then
           after=$(${pkgs.git}/bin/git -C "$dir" rev-parse HEAD 2>/dev/null)
           if [ "$before" != "$after" ]; then
             echo "  Updated: $name"
@@ -416,7 +416,7 @@ in
             if [ ! -d ${dirShell}/.git ]; then
               _ai_skills_log "clone:        ${s.name} (${s.url})"
               $DRY_RUN_CMD ${pkgs.coreutils}/bin/mkdir -p "$cache_root"
-              if $DRY_RUN_CMD ${pkgs.git}/bin/git clone --quiet ${shQuote s.url} ${dirShell}; then
+              if $DRY_RUN_CMD ${pkgs.git}/bin/git clone --quiet --depth 1 --single-branch ${shQuote s.url} ${dirShell}; then
                 ai_skills_cloned=$((ai_skills_cloned + 1))
               else
                 _ai_skills_log "FAILED clone: ${s.name}"

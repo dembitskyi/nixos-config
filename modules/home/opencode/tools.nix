@@ -112,6 +112,28 @@
   fetchMcp = {
     "mcp_fetch_fetch" = true;
   };
+
+  ghidraMcp = {
+    "mcp_ghidra_import_binary" = true;
+    "mcp_ghidra_list_project_binaries" = true;
+    "mcp_ghidra_list_project_binary_metadata" = true;
+    "mcp_ghidra_delete_project_binary" = true;
+    "mcp_ghidra_decompile_function" = true;
+    "mcp_ghidra_search_code" = true;
+    "mcp_ghidra_list_xrefs" = true;
+    "mcp_ghidra_gen_callgraph" = true;
+    "mcp_ghidra_list_exports" = true;
+    "mcp_ghidra_list_imports" = true;
+    "mcp_ghidra_read_bytes" = true;
+    "mcp_ghidra_search_strings" = true;
+    "mcp_ghidra_search_symbols_by_name" = true;
+    "mcp_ghidra_rename_function" = true;
+    "mcp_ghidra_rename_variable" = true;
+    "mcp_ghidra_set_variable_type" = true;
+    "mcp_ghidra_set_function_prototype" = true;
+    "mcp_ghidra_set_comment" = true;
+  };
+
   nixosMcp = {
     "mcp_nixos_nix" = true;
     "mcp_nixos_nix_versions" = true;
