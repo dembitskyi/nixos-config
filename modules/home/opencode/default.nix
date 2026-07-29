@@ -111,10 +111,6 @@ let
   fixerPrompt = writePrompt "fixer-prompt.md" ./prompts/orchestrator/fixer.md;
   councillorPrompt = writePrompt "councillor-prompt.md" ./prompts/orchestrator/councillor.md;
   tools = import ./tools.nix;
-  # Curated read-only bash allow-list spread into sub-agents that declare
-  # their own permission.bash (which replaces, not merges with, the global
-  # allow-list).
-  curatedAgentBash = import ./curated-bash.nix;
   # Deny-by-default inspection-only bash for background research sub-agents,
   # where an `ask` cannot reach the user and only wastes a turn.
   readonlyAgentBash = import ./readonly-bash.nix;
@@ -267,9 +263,6 @@ let
           tools.readTools
           tools.writeTools
         ];
-        permission = withExtraPerms "fixer" {
-          bash = curatedAgentBash;
-        };
       };
 
       council = {
@@ -582,9 +575,6 @@ in
               tools.githubMcpSearch
               tools.githubMcpWrite
             ];
-            permission = withExtraPerms "pr" {
-              bash = curatedAgentBash;
-            };
           };
           build = {
             description = "Builds complex new features or entire applications based on a high-level description of what needs to be done.";
