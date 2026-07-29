@@ -210,7 +210,7 @@ in
   execStartScript = pkgs.writeShellScript "fastmcp-server" ''
     mkdir -p ~/workspace
     cd ~/workspace
-    ${proxyPrefix}${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
+    ${proxyPrefix}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
     ${proxyPrefix}${automationEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (

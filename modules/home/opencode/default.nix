@@ -299,6 +299,8 @@ in
         autoupdate = false;
         model = config.mine.home.opencode.defaultModel;
         default_agent = "local";
+        # Allow nested subagents (e.g. council dispatching councillors).
+        subagent_depth = 2;
         provider = config.mine.home.opencode.extraProviders;
         agent = {
           plan = {

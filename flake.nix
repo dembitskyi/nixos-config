@@ -6,6 +6,11 @@
 
     # Pins playwright-mcp to 0.0.76.
     nixpkgs-playwright-mcp.url = "github:NixOS/nixpkgs/e73de5be04e0eff4190a1432b946d469c794e7b4";
+
+    # opencode pinned via upstream's flake; bump the tag to update. No nixpkgs
+    # follows: its node_modules FOD needs upstream's own pinned bun.
+    opencode.url = "github:anomalyco/opencode/v1.18.9";
+
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-root.url = "github:srid/flake-root";
     nixpkgs-patcher.url = "github:gepbird/nixpkgs-patcher";
