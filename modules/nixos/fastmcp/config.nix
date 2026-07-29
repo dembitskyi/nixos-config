@@ -5,6 +5,7 @@
   placeholder,
   proxyEnv ? false,
   automationConfig ? { },
+  backgroundSubagents ? false,
 }:
 let
   fastmcp = lib.getExe' (pkgs.python313.withPackages (ps: [ ps.fastmcp ])) "fastmcp";
@@ -193,6 +194,11 @@ let
     else
       "";
 
+  # Enables native OpenCode background subagents on the interactive server so
+  # the parallel orchestrator can dispatch task(background:true) lanes. Harmless
+  # to existing flows: no agent uses background tasks unless its prompt does.
+  bgSubagentsEnv = lib.optionalString backgroundSubagents "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true ";
+
 in
 {
   templates = builtins.listToAttrs (lib.mapAttrsToList mkTemplate servers);
@@ -210,7 +216,7 @@ in
   execStartScript = pkgs.writeShellScript "fastmcp-server" ''
     mkdir -p ~/workspace
     cd ~/workspace
-    ${proxyPrefix}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
+    ${proxyPrefix}${bgSubagentsEnv}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
     ${proxyPrefix}${automationEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (

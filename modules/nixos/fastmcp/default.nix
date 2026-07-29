@@ -133,6 +133,9 @@ let
   extraPackages = with pkgs; [
     bash
     bat
+    # Runtime and test runner for the TypeScript opencode plugins under
+    # modules/home/opencode/plugins (bun test, bun x tsc, bun x biome).
+    bun
     coreutils-full
     fd
     file
@@ -215,6 +218,7 @@ let
     placeholder = config.sops.placeholder;
     proxyEnv = config.mine.fastmcp.proxy.enable;
     automationConfig = config.mine.fastmcp.automationConfig;
+    backgroundSubagents = config.mine.fastmcp.backgroundSubagents.enable;
   };
 in
 {
@@ -225,6 +229,8 @@ in
       enable = lib.mkEnableOption "enable fastmcp server";
 
       ghidra.enable = lib.mkEnableOption "the headless pyghidra-mcp reverse-engineering server (pulls ghidra + a JDK into the closure)";
+
+      backgroundSubagents.enable = lib.mkEnableOption "OpenCode experimental background subagents on the interactive (:4096) server, enabling task(background:true) for parallel multi-agent orchestration";
 
       serverUrls = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;

@@ -11,6 +11,12 @@
     todoread = true;
   };
 
+  # Bash for inspection-only sub-agents; pair with readonly-bash.nix, which
+  # denies everything except read-only commands.
+  readonlyBash = {
+    bash = true;
+  };
+
   disableSkill = {
     skill = false;
   };
@@ -146,6 +152,12 @@
 
   sessionId = {
     "session-id" = true;
+  };
+
+  # Registered by the orchestrator plugin; aborts a tracked background lane.
+  # Orchestrator-only — cancelling another agent's lane is never correct.
+  cancelTask = {
+    cancel_task = true;
   };
 
   aiSearch = {
