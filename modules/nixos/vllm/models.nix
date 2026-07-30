@@ -21,9 +21,14 @@
     ];
   };
 
+  # NVIDIA Qwen3.6-35B-A3B: official mixed NVFP4/FP8 ModelOpt checkpoint.
+  # Quantization is auto-detected from hf_quant_config.json (no explicit
+  # --quantization needed); vision stays multimodal.
   "qwen3.6-35b-a3b" = {
-    huggingfaceId = "Qwen/Qwen3.6-35B-A3B";
+    huggingfaceId = "nvidia/Qwen3.6-35B-A3B-NVFP4";
     servedName = "Qwen3.6-35B-A3B";
+    # v0.24.0-ubuntu2404, pinned by digest for a reproducible vLLM runtime.
+    image = "vllm/vllm-openai@sha256:bfdefe75b5c3fb83f4f0fcaae8f39fac87941cbadb05cd2203f44a1689236c71";
     quantization = null;
     maxModelLen = 200000;
     maxNumSeqs = 8;
@@ -34,6 +39,8 @@
     extraArgs = [
       "--kv-cache-dtype"
       "fp8_e4m3"
+      "--moe-backend"
+      "marlin"
       "--trust-remote-code"
       # Multimodal: run vision encoder data-parallel and use shared-mem image cache.
       "--mm-encoder-tp-mode"
