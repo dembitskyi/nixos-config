@@ -47,12 +47,30 @@ let
     skillPicker = lib.getExe skill-picker;
   };
 
+  # /preset TUI plugin: picks the active orchestrator model preset via a
+  # DialogSelect, persisted for new sessions. Same TUI-only rationale as
+  # skillPlugin above — listed in tui.json, not the server plugin drop-in dir.
+  # The preset name list is baked in from `parallelOrchestration.presets`, so
+  # this reusable module carries no host-specific preset names. Written to a
+  # JSON *file* and the store path substituted (rather than inlining the JSON
+  # text itself) so arbitrary preset names containing `"` or `` ` `` can
+  # never break out of the TS string literal the token sits in.
+  presetNamesFile = pkgs.writeText "orchestrator-preset-names.json" (
+    builtins.toJSON (builtins.attrNames parallelCfg.presets)
+  );
+  presetPlugin = pkgs.replaceVars ./plugins/preset.ts {
+    presetNamesFile = "${presetNamesFile}";
+  };
+
   searchProvider = config.mine.home.opencode.searchProvider;
 
+  # Same file-path rationale as presetNamesFile above.
+  presetsFile = pkgs.writeText "orchestrator-presets.json" (builtins.toJSON parallelCfg.presets);
   orchestratorPlugin = pkgs.replaceVars ./plugins/orchestrator/plugin.ts {
     fallbackChain = lib.optionalString parallelCfg.fallback.enable (
       lib.concatStringsSep "," parallelCfg.fallback.chain
     );
+    presetsFile = "${presetsFile}";
   };
 
   # Per-server client overrides (e.g. timeout).
@@ -176,6 +194,7 @@ let
         description = "Plans and delegates work to specialist subagents, running independent lanes in parallel.";
         mode = "primary";
         model = parallelModels.orchestrator;
+        variant = parallelCfg.variants.orchestrator;
         prompt = "{file:${orchestratorPrompt}}";
         tools = withExtraTools "orchestrator" (
           lib.mergeAttrsList [
@@ -354,6 +373,11 @@ in
       default = "github-copilot/claude-opus-4.8-fast";
       description = "Default model used by opencode.";
     };
+    mine.home.opencode.defaultAgent = lib.mkOption {
+      type = lib.types.str;
+      default = "local";
+      description = "Default primary agent used by opencode.";
+    };
     mine.home.opencode.searchProvider = lib.mkOption {
       type = lib.types.enum [
         "perplexity"
@@ -381,6 +405,11 @@ in
           description = "Council seats: map of seat name to model. Each seat runs a different model for cross-model diversity.";
         };
       };
+      variants.orchestrator = lib.mkOption {
+        type = lib.types.str;
+        default = "high";
+        description = "Reasoning variant used by the orchestrator when no preset is selected.";
+      };
       fallback = {
         enable = lib.mkOption {
           type = lib.types.bool;
@@ -396,6 +425,34 @@ in
           ];
           description = "Ordered models tried on rate-limit failover.";
         };
+      };
+      presets = lib.mkOption {
+        type = lib.types.attrsOf (
+          lib.types.attrsOf (
+            lib.types.submodule {
+              options = {
+                model = lib.mkOption {
+                  type = lib.types.str;
+                  description = "Model (provider/model) used by this agent when the preset is active.";
+                };
+                variant = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = "Optional model variant (e.g. \"high\", \"max\") for this agent.";
+                };
+              };
+            }
+          )
+        );
+        default = { };
+        description = ''
+          Named orchestration model presets, switchable at runtime via the
+          /preset TUI command. Each preset is a sparse or full map of managed
+          agent name (orchestrator, explorer, librarian, oracle, fixer) to
+          the model (and optional variant) it should use while that preset
+          is active; only agents present in a preset are overridden. Empty
+          by default: hosts opt in by defining their own preset table.
+        '';
       };
     };
   };
@@ -518,13 +575,16 @@ in
         theme = "catppuccin";
         # The TUI does not auto-load the plugin drop-in dir (only the server
         # does), so the /skill picker plugin is listed here explicitly.
-        plugin = [ "${skillPlugin}" ];
+        plugin = [
+          "${skillPlugin}"
+        ]
+        ++ lib.optional (parallelCfg.enable && parallelCfg.presets != { }) "${presetPlugin}";
       };
       settings = {
         share = "disabled";
         autoupdate = false;
         model = config.mine.home.opencode.defaultModel;
-        default_agent = "local";
+        default_agent = config.mine.home.opencode.defaultAgent;
         # Allow nested subagents (e.g. council dispatching councillors).
         subagent_depth = 2;
         provider = config.mine.home.opencode.extraProviders;

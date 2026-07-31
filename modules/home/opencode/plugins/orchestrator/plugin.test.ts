@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -22,9 +22,73 @@ import { ParallelOrchestrator } from "./plugin"
 afterEach(() => {
   delete process.env.OPENCODE_ORCHESTRATOR_FALLBACK_CHAIN
   delete process.env.OPENCODE_ORCHESTRATOR_CLOCK_MS
+  delete process.env.XDG_DATA_HOME
+  delete process.env.OPENCODE_ORCHESTRATOR_PRESETS_FILE
 })
 
 const TEST_CHAIN = ["prov/a", "prov/b", "prov/c"]
+
+// Fake, generic preset fixture (provider/model values are not real — this
+// exercises the parsing/validation contract only; the reusable module never
+// ships preset content of its own). Mirrors the shape `builtins.toJSON` would
+// produce from `parallelOrchestration.presets` in Nix: name -> agent ->
+// { model, variant? }.
+const TEST_PRESETS = {
+  zeus: {
+    orchestrator: { model: "acme/gpt-big", variant: "high" },
+    explorer: { model: "acme/gpt-big" },
+    librarian: { model: "acme/gpt-big" },
+    oracle: { model: "acme/claude-big", variant: "high" },
+    fixer: { model: "github-copilot/claude-opus-4.8-fast" },
+  },
+  ra: {
+    orchestrator: { model: "github-copilot/claude-opus-4.8-fast", variant: "max" },
+    explorer: { model: "acme/gpt-big" },
+    librarian: { model: "acme/gpt-big" },
+    oracle: { model: "github-copilot/claude-opus-4.8-fast", variant: "high" },
+    fixer: { model: "github-copilot/claude-opus-4.8-fast" },
+  },
+  tor: {
+    orchestrator: { model: "github-copilot/claude-opus-4.8-fast", variant: "max" },
+    explorer: { model: "github-copilot/claude-opus-4.8-fast" },
+    librarian: { model: "github-copilot/claude-opus-4.8-fast" },
+    oracle: { model: "github-copilot/claude-opus-4.8-fast", variant: "high" },
+    fixer: { model: "github-copilot/claude-opus-4.8-fast" },
+  },
+  loki: {
+    orchestrator: { model: "acme/claude-big", variant: "high" },
+    explorer: { model: "acme/claude-mid" },
+    librarian: { model: "acme/claude-small" },
+    oracle: { model: "acme/claude-small", variant: "high" },
+    fixer: { model: "acme/claude-small" },
+  },
+  odin: {
+    orchestrator: { model: "acme/gpt-big", variant: "high" },
+    explorer: { model: "acme/gpt-big" },
+    librarian: { model: "acme/claude-big" },
+    oracle: { model: "acme/claude-big", variant: "high" },
+    fixer: { model: "acme/gpt-big" },
+  },
+}
+
+// The plugin reads the preset table from a file path (the substituted token
+// is a Nix store path, never inlined JSON text — see the module doc above
+// PRESETS_FILE_TOKEN in plugin.ts). Tests write a fixture file to a scratch
+// dir and point OPENCODE_ORCHESTRATOR_PRESETS_FILE at it.
+function writePresetsFile(data: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "orchestrator-presets-"))
+  const path = join(dir, "presets.json")
+  writeFileSync(path, JSON.stringify(data))
+  return path
+}
+
+function setTestPresetsFile(data: unknown): void {
+  process.env.OPENCODE_ORCHESTRATOR_PRESETS_FILE = writePresetsFile(data)
+}
+
+function setTestPresets(): void {
+  setTestPresetsFile(TEST_PRESETS)
+}
 
 function setClock(ms: number): void {
   process.env.OPENCODE_ORCHESTRATOR_CLOCK_MS = String(ms)
@@ -649,5 +713,426 @@ describe("cancel_task tool structural shape (isPluginTool / legacyJsonSchema)", 
     // Must NOT be a Zod schema (fromPlugin picks Zod vs. legacy JSON Schema
     // based on this): a plain JSON-Schema field has no `.parse`/`._def`.
     expect((cancelTask.args.task_id as { parse?: unknown }).parse).toBeUndefined()
+  })
+})
+
+// ─── PresetManager, exercised through chat.message / session.created /
+// session.deleted hooks ───────────────────────────────────────────────────────
+
+describe("PresetManager (via plugin hooks)", () => {
+  function setupXdg(): string {
+    const dataHome = mkdtempSync(join(tmpdir(), "orchestrator-xdg-"))
+    process.env.XDG_DATA_HOME = dataHome
+    return dataHome
+  }
+
+  function writePreset(dataHome: string, preset: string): void {
+    const dir = join(dataHome, "opencode")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, "orchestrator-preset.json"), JSON.stringify({ preset }))
+  }
+
+  async function chatMsg(hooks: any, sessionID: string, agent: string) {
+    const output = { message: { agent } as any }
+    await hooks["chat.message"]?.({ sessionID, agent } as any, output)
+    return output.message
+  }
+
+  test("no state file → no mutation of output.message.model", async () => {
+    setupXdg()
+    setTestPresets()
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "s1", "orchestrator")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("zeus preset: applies mappings for all five managed agents, variant present/absent as specified", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    expect((await chatMsg(hooks, "o", "orchestrator")).model).toEqual({
+      providerID: "acme",
+      modelID: "gpt-big",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "e", "explorer")).model).toEqual({
+      providerID: "acme",
+      modelID: "gpt-big",
+    })
+    expect((await chatMsg(hooks, "l", "librarian")).model).toEqual({
+      providerID: "acme",
+      modelID: "gpt-big",
+    })
+    expect((await chatMsg(hooks, "or", "oracle")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-big",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "f", "fixer")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+    })
+  })
+
+  test("ra preset: orchestrator variant max, oracle variant high, others no variant", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "ra")
+    const hooks = await makePlugin()
+    expect((await chatMsg(hooks, "o", "orchestrator")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+      variant: "max",
+    })
+    expect((await chatMsg(hooks, "e", "explorer")).model).toEqual({
+      providerID: "acme",
+      modelID: "gpt-big",
+    })
+    expect((await chatMsg(hooks, "or", "oracle")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "f", "fixer")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+    })
+  })
+
+  test("tor preset: all five agents on github-copilot/claude-opus-4.8-fast, orchestrator max, oracle high, others no variant", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "tor")
+    const hooks = await makePlugin()
+    expect((await chatMsg(hooks, "o", "orchestrator")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+      variant: "max",
+    })
+    expect((await chatMsg(hooks, "e", "explorer")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+    })
+    expect((await chatMsg(hooks, "l", "librarian")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+    })
+    expect((await chatMsg(hooks, "or", "oracle")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "f", "fixer")).model).toEqual({
+      providerID: "github-copilot",
+      modelID: "claude-opus-4.8-fast",
+    })
+  })
+
+  test("loki preset: applies mappings", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "loki")
+    const hooks = await makePlugin()
+    expect((await chatMsg(hooks, "o", "orchestrator")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-big",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "e", "explorer")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-mid",
+    })
+    expect((await chatMsg(hooks, "l", "librarian")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-small",
+    })
+    expect((await chatMsg(hooks, "or", "oracle")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-small",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "f", "fixer")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-small",
+    })
+  })
+
+  test("odin preset: applies mappings", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "odin")
+    const hooks = await makePlugin()
+    expect((await chatMsg(hooks, "o", "orchestrator")).model).toEqual({
+      providerID: "acme",
+      modelID: "gpt-big",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "e", "explorer")).model).toEqual({
+      providerID: "acme",
+      modelID: "gpt-big",
+    })
+    expect((await chatMsg(hooks, "l", "librarian")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-big",
+    })
+    expect((await chatMsg(hooks, "or", "oracle")).model).toEqual({
+      providerID: "acme",
+      modelID: "claude-big",
+      variant: "high",
+    })
+    expect((await chatMsg(hooks, "f", "fixer")).model).toEqual({
+      providerID: "acme",
+      modelID: "gpt-big",
+    })
+  })
+
+  test("unknown preset name → no mutation, logs a warning (does not throw)", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "nonexistent")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "s1", "orchestrator")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("malformed JSON in state file → no mutation, does not throw", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    const dir = join(dataHome, "opencode")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, "orchestrator-preset.json"), "{not valid json")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "s1", "orchestrator")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("state read once per top-level session: file change after first message is ignored for that session", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    const first = await chatMsg(hooks, "s1", "fixer")
+    expect(first.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.8-fast" })
+    writePreset(dataHome, "loki")
+    const second = await chatMsg(hooks, "s1", "fixer")
+    expect(second.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.8-fast" })
+  })
+
+  test("new top-level session sees a changed preset file", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    await chatMsg(hooks, "s1", "fixer")
+    writePreset(dataHome, "loki")
+    const second = await chatMsg(hooks, "s2", "fixer")
+    expect(second.model).toEqual({ providerID: "acme", modelID: "claude-small" })
+  })
+
+  test("child session inherits parent snapshot even after the state file changes", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    await chatMsg(hooks, "parent", "orchestrator")
+    await fire(hooks, ...created("child1", "parent", "task (@fixer subagent)"))
+    writePreset(dataHome, "loki")
+    const childMsg = await chatMsg(hooks, "child1", "fixer")
+    expect(childMsg.model).toEqual({ providerID: "github-copilot", modelID: "claude-opus-4.8-fast" })
+  })
+
+  test("child of a session with no snapshot yet stays unmodified rather than reading disk", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    // Parent never sent chat.message, so it has no snapshot when the child is created.
+    await fire(hooks, ...created("child2", "parentNoMsg", "task (@fixer subagent)"))
+    const childMsg = await chatMsg(hooks, "child2", "fixer")
+    expect(childMsg.model).toBeUndefined()
+  })
+
+  test("council (unmanaged) agent is left unchanged even with an active preset", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "s1", "councillor-gpt")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("session.deleted clears the snapshot; a re-created session id re-reads the state file", async () => {
+    const dataHome = setupXdg()
+    setTestPresets()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    await chatMsg(hooks, "s1", "fixer")
+    await fire(hooks, ...deleted("s1"))
+    writePreset(dataHome, "loki")
+    const msg = await chatMsg(hooks, "s1", "fixer")
+    expect(msg.model).toEqual({ providerID: "acme", modelID: "claude-small" })
+  })
+})
+
+// ─── preset table parsing/validation (host-provided via @presetsFile@ /
+// OPENCODE_ORCHESTRATOR_PRESETS_FILE) ─────────────────────────────────────────
+
+describe("preset table parsing (OPENCODE_ORCHESTRATOR_PRESETS_FILE)", () => {
+  function setupXdg(): string {
+    const dataHome = mkdtempSync(join(tmpdir(), "orchestrator-xdg-"))
+    process.env.XDG_DATA_HOME = dataHome
+    return dataHome
+  }
+
+  function writePreset(dataHome: string, preset: string): void {
+    const dir = join(dataHome, "opencode")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, "orchestrator-preset.json"), JSON.stringify({ preset }))
+  }
+
+  async function chatMsg(hooks: any, sessionID: string, agent: string) {
+    const output = { message: { agent } as any }
+    await hooks["chat.message"]?.({ sessionID, agent } as any, output)
+    return output.message
+  }
+
+  test("no OPENCODE_ORCHESTRATOR_PRESETS_FILE set (unsubstituted @presetsFile@ token) → empty table, no override", async () => {
+    const dataHome = setupXdg()
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin() // no setTestPresets(): token stays literal, same as an un-replaced build.
+    const msg = await chatMsg(hooks, "s1", "orchestrator")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("presets file path set but file does not exist → empty table, no override, no throw", async () => {
+    const dataHome = setupXdg()
+    writePreset(dataHome, "zeus")
+    process.env.OPENCODE_ORCHESTRATOR_PRESETS_FILE = join(dataHome, "does-not-exist.json")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "s1", "orchestrator")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("invalid JSON in presets file → empty table, no override, no throw", async () => {
+    const dataHome = setupXdg()
+    writePreset(dataHome, "zeus")
+    const badFile = join(mkdtempSync(join(tmpdir(), "orchestrator-presets-")), "presets.json")
+    writeFileSync(badFile, "{not valid json")
+    process.env.OPENCODE_ORCHESTRATOR_PRESETS_FILE = badFile
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "s1", "orchestrator")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("non-object presets JSON root (array) → empty table, no override", async () => {
+    const dataHome = setupXdg()
+    writePreset(dataHome, "zeus")
+    setTestPresetsFile(["zeus"])
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "s1", "orchestrator")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("sparse preset (only some managed agents present) overrides only those agents", async () => {
+    const dataHome = setupXdg()
+    setTestPresetsFile({
+      sparse: {
+        fixer: { model: "acme/gpt-big" },
+      },
+    })
+    writePreset(dataHome, "sparse")
+    const hooks = await makePlugin()
+    expect((await chatMsg(hooks, "o", "orchestrator")).model).toBeUndefined()
+    expect((await chatMsg(hooks, "f", "fixer")).model).toEqual({ providerID: "acme", modelID: "gpt-big" })
+  })
+
+  test("preset entry with an unknown (unmanaged) agent key is rejected as a whole", async () => {
+    const dataHome = setupXdg()
+    setTestPresetsFile({
+      broken: {
+        fixer: { model: "acme/gpt-big" },
+        "not-a-managed-agent": { model: "acme/gpt-big" },
+      },
+    })
+    writePreset(dataHome, "broken")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "f", "fixer")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("preset entry with a malformed model spec (no slash) is rejected as a whole", async () => {
+    const dataHome = setupXdg()
+    setTestPresetsFile({
+      broken: {
+        fixer: { model: "not-a-valid-spec" },
+      },
+    })
+    writePreset(dataHome, "broken")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "f", "fixer")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("preset entry with a non-string variant is rejected as a whole", async () => {
+    const dataHome = setupXdg()
+    setTestPresetsFile({
+      broken: {
+        fixer: { model: "acme/gpt-big", variant: 5 },
+      },
+    })
+    writePreset(dataHome, "broken")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "f", "fixer")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("a null variant is accepted (equivalent to absent)", async () => {
+    const dataHome = setupXdg()
+    setTestPresetsFile({
+      ok: {
+        fixer: { model: "acme/gpt-big", variant: null },
+      },
+    })
+    writePreset(dataHome, "ok")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "f", "fixer")
+    expect(msg.model).toEqual({ providerID: "acme", modelID: "gpt-big" })
+  })
+
+  test("one malformed preset in the table does not affect other, valid presets", async () => {
+    const dataHome = setupXdg()
+    setTestPresetsFile({
+      broken: { fixer: { model: "no-slash" } },
+      ok: { fixer: { model: "acme/gpt-big" } },
+    })
+    writePreset(dataHome, "ok")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "f", "fixer")
+    expect(msg.model).toEqual({ providerID: "acme", modelID: "gpt-big" })
+  })
+
+  test("empty presets table ({}) → inert, no override for any agent", async () => {
+    const dataHome = setupXdg()
+    setTestPresetsFile({})
+    writePreset(dataHome, "zeus")
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "f", "fixer")
+    expect(msg.model).toBeUndefined()
+  })
+
+  test("a preset name containing quote and backtick characters round-trips through the file safely", async () => {
+    // Regression: this scenario is exactly what breaks when the JSON is
+    // inlined directly into a TS string/template literal at build time
+    // instead of being read from a file.
+    const dataHome = setupXdg()
+    const trickyName = `weird"name\`with'quotes`
+    setTestPresetsFile({
+      [trickyName]: { fixer: { model: "acme/gpt-big" } },
+    })
+    writePreset(dataHome, trickyName)
+    const hooks = await makePlugin()
+    const msg = await chatMsg(hooks, "f", "fixer")
+    expect(msg.model).toEqual({ providerID: "acme", modelID: "gpt-big" })
   })
 })

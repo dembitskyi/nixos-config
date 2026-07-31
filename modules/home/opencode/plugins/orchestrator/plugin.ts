@@ -16,13 +16,23 @@
  *   model self-corrects instead of repeating the same bad call.
  * - a `cancel_task` tool: lets the orchestrator abort a known-bad lane. This is
  *   NOT a rollback — a cancelled writer lane may have already touched files.
+ * - {@link PresetManager}: snapshots a server-side orchestration model preset
+ *   (from a small JSON state file) once per new top-level session, and
+ *   applies it to the managed agents' model on every message. Child sessions
+ *   inherit the parent's snapshot rather than re-reading state. The preset
+ *   table itself is host-provided (see `parallelOrchestration.presets` in
+ *   the Nix module) — this file defines no presets of its own.
  *
  * Everything is injection-only except the failover re-prompt and the
  * cancel_task abort call, and every branch is defensive (never throws). All
  * activity is written to a dedicated log file
  * (`~/.local/share/opencode/log/orchestrator.log`) for debugging.
  *
- * The `@fallbackChain@` token is substituted at build time by Nix `replaceVars`.
+ * The `@fallbackChain@` and `@presetsFile@` tokens are substituted at build
+ * time by Nix `replaceVars`. `@presetsFile@` is a Nix store path (never
+ * user-controlled JSON text), so it is always a syntactically-safe string
+ * literal — unlike substituting raw JSON, which can contain quote/backtick
+ * characters that break the surrounding TS literal.
  *
  * Exports exactly one runtime value and imports no packages at runtime.
  *
@@ -30,7 +40,7 @@
  * this file somewhere without node_modules and `opencode run` it via OPENCODE_CONFIG.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { Hooks, Plugin } from "@opencode-ai/plugin"
@@ -908,6 +918,226 @@ class DelegateRetry {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PresetManager: per-session orchestration model preset application
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Agents whose model the preset may override. Council seats are excluded. */
+const MANAGED_AGENTS = new Set(["orchestrator", "explorer", "librarian", "oracle", "fixer"])
+
+interface ModelRef {
+  readonly providerID: string
+  readonly modelID: string
+  readonly variant?: string
+}
+type Preset = Readonly<Record<string, ModelRef>>
+
+/** Parses "provider/model" at the first slash (model ids may contain dots/dashes). */
+function m(spec: string, variant?: string): ModelRef {
+  const slash = spec.indexOf("/")
+  const providerID = slash >= 0 ? spec.slice(0, slash) : ""
+  const modelID = slash >= 0 ? spec.slice(slash + 1) : ""
+  if (!providerID || !modelID) throw new Error(`invalid model spec: ${spec}`)
+  return variant ? { providerID, modelID, variant } : { providerID, modelID }
+}
+
+/**
+ * Preset table file, substituted at build time by Nix `replaceVars` with the
+ * store path of a JSON file written from `builtins.toJSON
+ * parallelCfg.presets` (see `presetsFile` in default.nix). This file defines
+ * no presets itself — they are entirely host-provided, so a reusable
+ * checkout of this module carries no host-specific model IDs.
+ *
+ * A file path (rather than inlining the JSON text into the source) is used
+ * deliberately: JSON can contain `"` and `` ` `` characters that would break
+ * out of a quoted or template-literal TS string once substituted, while a
+ * Nix store path is always a plain, quote-free string.
+ *
+ * Overridable via `OPENCODE_ORCHESTRATOR_PRESETS_FILE` — read lazily inside
+ * the plugin entry (not at module scope) so tests can point at a synthetic
+ * fixture file without a module reload.
+ */
+const PRESETS_FILE_TOKEN = "@presetsFile@"
+
+/**
+ * Reads and validates the host-provided preset table from `path`. Malformed
+ * input never throws: an unsubstituted token, empty path, unreadable file,
+ * invalid JSON, or a non-object root all fall back to an empty table (no
+ * presets, no overrides). A malformed *individual* preset (unknown
+ * managed-agent key, missing/invalid `model`, or invalid `variant`) is
+ * rejected as a whole — partial application of a broken preset would be
+ * worse than none.
+ */
+function loadPresets(path: string, log: Log): Readonly<Record<string, Preset>> {
+  if (path.trim().length === 0 || (path.startsWith("@") && path.endsWith("@"))) return {}
+
+  let raw: string
+  try {
+    raw = readFileSync(path, "utf8")
+  } catch (err) {
+    log.warn("preset", "presets file unreadable; ignoring", { path, err: String(err) })
+    return {}
+  }
+
+  let data: unknown
+  try {
+    data = JSON.parse(raw)
+  } catch (err) {
+    log.warn("preset", "invalid presets JSON; ignoring", { err: String(err) })
+    return {}
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    log.warn("preset", "presets JSON root must be an object; ignoring")
+    return {}
+  }
+
+  const result: Record<string, Preset> = {}
+  for (const [name, entryRaw] of Object.entries(data as Record<string, unknown>)) {
+    if (!entryRaw || typeof entryRaw !== "object" || Array.isArray(entryRaw)) {
+      log.warn("preset", "malformed preset entry; rejecting", { name })
+      continue
+    }
+    const preset: Record<string, ModelRef> = {}
+    let ok = true
+    for (const [agent, refRaw] of Object.entries(entryRaw as Record<string, unknown>)) {
+      if (!MANAGED_AGENTS.has(agent)) {
+        log.warn("preset", "unknown agent key in preset; rejecting whole preset", { name, agent })
+        ok = false
+        break
+      }
+      if (!refRaw || typeof refRaw !== "object") {
+        ok = false
+        break
+      }
+      const { model, variant } = refRaw as { model?: unknown; variant?: unknown }
+      if (typeof model !== "string" || model.indexOf("/") <= 0) {
+        ok = false
+        break
+      }
+      if (variant !== undefined && variant !== null && typeof variant !== "string") {
+        ok = false
+        break
+      }
+      try {
+        preset[agent] = m(model, typeof variant === "string" ? variant : undefined)
+      } catch {
+        ok = false
+        break
+      }
+    }
+    if (!ok) {
+      log.warn("preset", "invalid preset entry; rejecting whole preset", { name })
+      continue
+    }
+    result[name] = preset
+  }
+  return result
+}
+
+/** Resolves the preset state file path lazily, honoring XDG_DATA_HOME (and
+ * test overrides), never at module scope. */
+function presetStatePath(): string {
+  const dataHome = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share")
+  return join(dataHome, "opencode", "orchestrator-preset.json")
+}
+
+/**
+ * Reads the preset name from disk, once per call site. Returns `null` for a
+ * missing file (silent — this is the normal "no override" state, host Nix
+ * config stays effective) or a malformed/unknown value (logs a warning).
+ */
+function readPresetName(log: Log, presets: Readonly<Record<string, Preset>>): string | null {
+  let raw: string
+  try {
+    raw = readFileSync(presetStatePath(), "utf8")
+  } catch {
+    return null // missing/unreadable file: fail-open, no override, no log.
+  }
+  try {
+    const data: unknown = JSON.parse(raw)
+    const preset = (data as { preset?: unknown } | null)?.preset
+    if (typeof preset === "string" && preset in presets) return preset
+    log.warn("preset", "unknown or malformed preset value", { preset })
+    return null
+  } catch (err) {
+    log.warn("preset", "malformed preset state file", { err: String(err) })
+    return null
+  }
+}
+
+/**
+ * Snapshots the orchestration preset once per new top-level session (on its
+ * first chat.message) and applies it to every subsequent message for that
+ * session and its descendants, mutating only the managed agents' model.
+ *
+ * Child sessions inherit the parent's already-taken snapshot rather than
+ * re-reading the state file, so a mid-conversation preset change on disk
+ * never splits one logical run across two presets. A `null` snapshot means
+ * "no override" (missing file, malformed value, empty preset table, or an
+ * uninherited parent) and is cached just like a real preset so it is never
+ * rechecked.
+ */
+class PresetManager {
+  private readonly snapshots = new Map<string, Preset | null>()
+  private readonly childParent = new Map<string, string>()
+
+  constructor(
+    private readonly log: Log,
+    private readonly presets: Readonly<Record<string, Preset>>,
+  ) {}
+
+  onEvent(event: OpencodeEvent): void {
+    const { type, properties: props } = event
+    if (!props) return
+    if (type === "session.created") {
+      const parent = props.info?.parentID
+      const child = props.info?.id
+      if (parent && child) this.childParent.set(child, parent)
+      return
+    }
+    if (type === "session.deleted") {
+      const sid = props.info?.id ?? props.sessionID
+      if (sid) {
+        this.snapshots.delete(sid)
+        this.childParent.delete(sid)
+      }
+    }
+  }
+
+  /** Mutates `message.model` in place for managed agents, per the session's
+   * snapshotted preset (taken lazily on first use, see class doc). */
+  apply(
+    sessionID: string | undefined,
+    agent: string | undefined,
+    message: { model?: unknown } | undefined,
+  ): void {
+    if (!sessionID) return
+    this.ensureSnapshot(sessionID)
+    const preset = this.snapshots.get(sessionID)
+    if (!preset || !message || !agent || !MANAGED_AGENTS.has(agent)) return
+    const entry = preset[agent]
+    if (!entry) return
+    message.model = entry.variant
+      ? { providerID: entry.providerID, modelID: entry.modelID, variant: entry.variant }
+      : { providerID: entry.providerID, modelID: entry.modelID }
+  }
+
+  private ensureSnapshot(sessionID: string): void {
+    if (this.snapshots.has(sessionID)) return
+    const parent = this.childParent.get(sessionID)
+    if (parent !== undefined) {
+      // Child: inherit whatever the parent already snapshotted (possibly
+      // `null`), never re-read the state file for a child session.
+      this.snapshots.set(sessionID, this.snapshots.get(parent) ?? null)
+      return
+    }
+    const name = readPresetName(this.log, this.presets)
+    const preset = name ? this.presets[name] : null
+    this.snapshots.set(sessionID, preset ?? null)
+    if (preset) this.log.info("preset", "snapshot taken", { sessionID, preset: name })
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Plugin entry
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -933,15 +1163,29 @@ export const ParallelOrchestrator: Plugin = async (ctx): Promise<Hooks> => {
   // module doc and ModelFailover's own comment for the fail-closed rationale.
   const failover = new ModelFailover(client, chain, log, (sid) => board.isOrchestratorSession(sid), now)
   const retry = new DelegateRetry(log)
+  // Read lazily so tests can inject a synthetic table via the environment;
+  // see the module-scope comment above PRESETS_FILE_TOKEN.
+  const presetsPath = process.env.OPENCODE_ORCHESTRATOR_PRESETS_FILE ?? PRESETS_FILE_TOKEN
+  const presetsTable = loadPresets(presetsPath, log)
+  const presets = new PresetManager(log, presetsTable)
 
   return {
     "chat.message": async (input, output) => {
       board.observeAgent(input.sessionID, input.agent ?? output?.message?.agent)
+      // /model policy: the preset is authoritative for managed agents and is
+      // reapplied every message — no attempt to detect an explicit /model
+      // override, which would be unreliable from this hook alone.
+      presets.apply(
+        input.sessionID,
+        input.agent ?? output?.message?.agent,
+        output?.message as { model?: unknown } | undefined,
+      )
     },
 
     event: async (input) => {
       const event = input.event as OpencodeEvent
       board.onEvent(event)
+      presets.onEvent(event)
       await failover.onEvent(event)
     },
 
