@@ -18,6 +18,8 @@
         aws.disabled = true;
         gcloud.disabled = true;
         line_break.disabled = true;
+        # Drop the default ❄️ symbol (its U+FE0F emoji width breaks readline redraw); keep the impure/pure indicator.
+        nix_shell.symbol = "";
       };
     };
   };
