@@ -19,12 +19,18 @@ in
       default = "home";
       description = "Which nvim.nix profile to install (home uses local LLM, work uses Copilot).";
     };
+    minuet.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = cfg.profile == "home";
+      description = "Enable the minuet AI (local LLM via vLLM) completion source. Defaults on for the home profile; set false to keep the home profile without the local LLM completion.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
     programs.nvim-nix = {
       enable = true;
       inherit (cfg) profile;
+      ai.minuet.enable = cfg.minuet.enable;
     };
 
     home.packages = with pkgs; [
