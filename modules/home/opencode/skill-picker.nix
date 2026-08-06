@@ -6,6 +6,7 @@
   fzf,
   findutils,
   coreutils,
+  gawk,
 }:
 writeShellApplication {
   name = "skill-picker";
@@ -13,6 +14,7 @@ writeShellApplication {
     fzf
     findutils
     coreutils
+    gawk
   ];
   text = builtins.readFile ./scripts/skill-picker.sh;
 }

@@ -123,9 +123,8 @@ let
   # inflating the permission ruleset (each skill adds a rule that gets
   # logged on every evaluate() call).
   allowedSkills = [
-    "bash-pro"
-    "c-pro"
     "cpp-pro"
+    "python-pro"
     "hyprland"
     "nixos"
   ]

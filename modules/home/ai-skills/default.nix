@@ -168,6 +168,7 @@ let
     cache_root=${cacheRootShell}
     cloned=0
     updated=0
+    failed=0
     total=0
 
     echo ""
@@ -181,40 +182,64 @@ let
       exit 0
     fi
 
-    for entry in "''${sources[@]}"; do
-      IFS='|' read -r name url layout subpath <<< "$entry"
-      total=$((total + 1))
-      dir="$cache_root/$name"
+    workdir=$(${pkgs.coreutils}/bin/mktemp -d)
+    trap '${pkgs.coreutils}/bin/rm -rf "$workdir"' EXIT
+    jobs_max=8
+    active=0
 
-      if [ ! -d "$dir/.git" ]; then
-        echo "  Cloning: $name"
-        ${pkgs.coreutils}/bin/mkdir -p "$cache_root"
-        if ${pkgs.git}/bin/git clone --quiet --depth 1 --single-branch "$url" "$dir"; then
-          cloned=$((cloned + 1))
-        else
-          echo "  Failed:  $name"
-          continue
+    for entry in "''${sources[@]}"; do
+      IFS='|' read -r name url _ <<< "$entry"
+      total=$((total + 1))
+      (
+        trap - EXIT
+        dir="$cache_root/$name"
+        if [ ! -d "$dir/.git" ]; then
+          ${pkgs.coreutils}/bin/mkdir -p "$cache_root"
+          if ${pkgs.git}/bin/git clone --quiet --depth 1 --single-branch "$url" "$dir"; then
+            echo "  Cloning: $name"; echo cloned > "$workdir/$name"
+          else
+            echo "  Failed:  $name (clone)"; echo failed > "$workdir/$name"
+          fi
+          exit 0
         fi
-      else
+        branch=$(${pkgs.git}/bin/git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
         before=$(${pkgs.git}/bin/git -C "$dir" rev-parse HEAD 2>/dev/null)
-        if ${pkgs.git}/bin/git -C "$dir" pull --ff-only --depth 1 --quiet 2>/dev/null; then
+        if ${pkgs.git}/bin/git -C "$dir" fetch --quiet --depth 1 origin "$branch" 2>/dev/null \
+          && ${pkgs.git}/bin/git -C "$dir" reset --hard --quiet FETCH_HEAD 2>/dev/null; then
           after=$(${pkgs.git}/bin/git -C "$dir" rev-parse HEAD 2>/dev/null)
           if [ "$before" != "$after" ]; then
-            echo "  Updated: $name"
-            updated=$((updated + 1))
+            echo "  Updated: $name"; echo updated > "$workdir/$name"
+          else
+            echo current > "$workdir/$name"
           fi
         else
-          echo "  Failed:  $name (pull)"
+          echo "  Failed:  $name (fetch)"; echo failed > "$workdir/$name"
         fi
+      ) &
+      active=$((active + 1))
+      if [ "$active" -ge "$jobs_max" ]; then
+        wait -n
+        active=$((active - 1))
       fi
+    done
+    wait
+
+    for entry in "''${sources[@]}"; do
+      IFS='|' read -r name _ <<< "$entry"
+      case "$(${pkgs.coreutils}/bin/cat "$workdir/$name" 2>/dev/null)" in
+        cloned)  cloned=$((cloned + 1)) ;;
+        updated) updated=$((updated + 1)) ;;
+        failed)  failed=$((failed + 1)) ;;
+      esac
     done
 
     echo ""
-    if [ $cloned -gt 0 ] || [ $updated -gt 0 ]; then
-      [ $cloned  -gt 0 ] && echo "  Cloned:  $cloned new repo(s)"
-      [ $updated -gt 0 ] && echo "  Updated: $updated repo(s)"
-      echo "  Total:   $total skill repo(s)"
-      echo ""
+    [ $cloned  -gt 0 ] && echo "  Cloned:  $cloned new repo(s)"
+    [ $updated -gt 0 ] && echo "  Updated: $updated repo(s)"
+    [ $failed  -gt 0 ] && echo "  Failed:  $failed of $total repo(s)"
+    if [ $failed -gt 0 ]; then
+      exit 1
+    elif [ $cloned -gt 0 ] || [ $updated -gt 0 ]; then
       echo "  Run \`update\` to redistribute the updated cache."
       exit 2
     else
@@ -328,8 +353,13 @@ in
           layout = "skills-subdir";
         }
         {
-          name = "antigravity-awesome";
-          url = "https://github.com/sickn33/antigravity-awesome-skills";
+          name = "wshobson";
+          url = "https://github.com/wshobson/agents";
+          layout = "nested";
+        }
+        {
+          name = "jeffallan";
+          url = "https://github.com/jeffallan/claude-skills";
           layout = "skills-subdir";
         }
         {

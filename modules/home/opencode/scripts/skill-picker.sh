@@ -15,12 +15,32 @@ if [ ! -d "$pool" ]; then
   exit 2
 fi
 
-# Emit "path<TAB>name" for every SKILL.md in the pool. The name is the skill's
-# directory; the path (hidden from the list) backs the preview.
+# Emit "path<TAB>label" for every distinct skill. De-duplicate byte-identical
+# SKILL.md copies (fzf cannot); tag same-name/different-source skills. Field 1
+# (the path, hidden via --with-nth=2) backs the preview.
 list_skills() {
-  find -L "$pool" -type f -name SKILL.md 2>/dev/null | while IFS= read -r file; do
-    printf '%s\t%s\n' "$file" "$(basename "$(dirname "$file")")"
-  done
+  find -L "$pool" -type f -name SKILL.md -print0 2>/dev/null \
+    | xargs -0 -r md5sum 2>/dev/null \
+    | awk -v pool="$pool" '
+        {
+          hash = $1
+          path = substr($0, length(hash) + 3)  # md5sum prints "<hash>  <path>".
+          if (seen[hash]++) next                # Collapse identical copies.
+          dir = path; sub(/\/SKILL\.md$/, "", dir)
+          name = dir; sub(/.*\//, "", name)
+          rel = substr(path, length(pool) + 2)
+          src = rel; sub(/\/.*/, "", src)
+          n++; paths[n] = path; names[n] = name; srcs[n] = src
+          collide[name]++
+        }
+        END {
+          for (i = 1; i <= n; i++) {
+            label = names[i]
+            if (collide[names[i]] > 1) label = label " (" srcs[i] ")"
+            print paths[i] "\t" label
+          }
+        }
+      '
 }
 
 selection=$(
