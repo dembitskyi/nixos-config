@@ -18,9 +18,11 @@
     };
 
     default = inputs.nixpkgs.lib.composeManyExtensions [
+      # opencode-pin MUST precede custom-packages: custom-packages appends a TUI
+      # postPatch
+      inputs.self.overlays.opencode-pin
       inputs.self.overlays.custom-packages
       inputs.self.overlays.playwright-mcp-pin
-      inputs.self.overlays.opencode-pin
     ];
   };
 }
