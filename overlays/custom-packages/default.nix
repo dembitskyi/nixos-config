@@ -4,7 +4,6 @@
   # Patched docling (docling-parse disabled). The library lives in
   # pythonPackagesExtensions below; expose the CLI the nixpkgs way.
   docling = final.python3Packages.toPythonApplication final.python3Packages.docling;
-  greasemonkeyUserscripts = import ../pkgs/greasemonkey-userscripts/default.nix { pkgs = final; };
   lnav = prev.lnav.overrideAttrs (old: {
     postPatch = (old.postPatch or "") + ''
       # Make Ctrl-C a no-op so it cannot accidentally quit lnav.

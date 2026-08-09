@@ -60,38 +60,6 @@
         loadAutoconfig = true;
         settings.spellcheck.languages = [ "en-US" ];
 
-        greasemonkey = [
-          # keep-sorted start
-          pkgs.greasemonkeyUserscripts.always-on-focus
-          pkgs.greasemonkeyUserscripts.anchor-links
-          pkgs.greasemonkeyUserscripts.bandcamp-extended-album-history
-          pkgs.greasemonkeyUserscripts.bandcamp-volume-bar
-          pkgs.greasemonkeyUserscripts.better-osm-org
-          pkgs.greasemonkeyUserscripts.betterttv
-          pkgs.greasemonkeyUserscripts.collapse-hackernews-parent-comments
-          pkgs.greasemonkeyUserscripts.ctrl-enter-is-submit-everywhere
-          pkgs.greasemonkeyUserscripts.fastmail-without-bevels
-          pkgs.greasemonkeyUserscripts.fb-clean-my-feeds
-          pkgs.greasemonkeyUserscripts.hacker-news-date-tooltips
-          pkgs.greasemonkeyUserscripts.hacker-news-highlighter
-          pkgs.greasemonkeyUserscripts.imdb-full-summary
-          pkgs.greasemonkeyUserscripts.instagram-video-controls
-          pkgs.greasemonkeyUserscripts.lobsters-highlighter
-          pkgs.greasemonkeyUserscripts.lobsters-open-in-new-tab
-          pkgs.greasemonkeyUserscripts.quirks
-          pkgs.greasemonkeyUserscripts.recaptcha-unpaid-labor
-          pkgs.greasemonkeyUserscripts.reddit-comment-auto-expander
-          pkgs.greasemonkeyUserscripts.reddit-highlighter
-          pkgs.greasemonkeyUserscripts.rewrite-smolweb
-          pkgs.greasemonkeyUserscripts.select-text-inside-a-link-like-opera
-          pkgs.greasemonkeyUserscripts.show-password-onmouseover
-          pkgs.greasemonkeyUserscripts.speed-up-google-captcha
-          pkgs.greasemonkeyUserscripts.substack-popup-dismisser
-          pkgs.greasemonkeyUserscripts.twitter-direct
-          pkgs.greasemonkeyUserscripts.video-quality-fixer-for-twitter
-          pkgs.greasemonkeyUserscripts.video-swap-new
-          pkgs.greasemonkeyUserscripts.youtube-autoskip
-        ];
         extraConfig = ''
           import catppuccin
 
