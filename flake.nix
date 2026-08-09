@@ -49,7 +49,6 @@
       url = "github:dembitskyi/eyeblink-monitor";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    nixified-ai.url = "github:dembitskyi/nixified-ai-flake";
 
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
@@ -88,7 +87,6 @@
           nixosModules.default = {
             imports = [
               ./modules/nixos
-              inputs.nixified-ai.nixosModules.comfyui
             ];
             _module.args.ncInputs = inputs;
           };
