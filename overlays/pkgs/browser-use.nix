@@ -247,6 +247,9 @@ pkgs.python3Packages.callPackage
         sed -i -E 's/(anyio)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(ollama)[^"]*"/\1"/g' pyproject.toml
         sed -i -E 's/(python-dotenv)[^"]*"/\1"/g' pyproject.toml
+        sed -i -E 's/(click)[^"]*"/\1"/g' pyproject.toml
+        sed -i -E 's/(markdownify)[^"]*"/\1"/g' pyproject.toml
+        sed -i -E 's/(typing-extensions)[^"]*"/\1"/g' pyproject.toml
       '';
 
       dependencies = [
