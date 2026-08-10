@@ -181,9 +181,7 @@ let
 
   # `task` allow-map letting the council dispatch only its own councillors.
   councilTaskPerms =
-    (lib.mapAttrs' (name: _: lib.nameValuePair "councillor-${name}" "allow")
-      parallelModels.councillors
-    )
+    (lib.mapAttrs' (name: _: lib.nameValuePair "councillor-${name}" "allow") parallelModels.councillors)
     // {
       "*" = "deny";
     };

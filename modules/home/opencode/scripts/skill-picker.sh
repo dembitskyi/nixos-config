@@ -19,9 +19,9 @@ fi
 # SKILL.md copies (fzf cannot); tag same-name/different-source skills. Field 1
 # (the path, hidden via --with-nth=2) backs the preview.
 list_skills() {
-  find -L "$pool" -type f -name SKILL.md -print0 2>/dev/null \
-    | xargs -0 -r md5sum 2>/dev/null \
-    | awk -v pool="$pool" '
+  find -L "$pool" -type f -name SKILL.md -print0 2>/dev/null |
+    xargs -0 -r md5sum 2>/dev/null |
+    awk -v pool="$pool" '
         {
           hash = $1
           path = substr($0, length(hash) + 3)  # md5sum prints "<hash>  <path>".
