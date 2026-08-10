@@ -6,10 +6,30 @@
   ncInputs,
   ...
 }:
+let
+  cfg = config.mine.home.qutebrowser;
+
+  basePackage = pkgs.qutebrowser.override {
+    withPdfReader = true;
+    enableWideVine = variables.qb-enableWideVine;
+  };
+
+  qutePackage =
+    if cfg.forceXWayland then
+      basePackage.overrideAttrs (old: {
+        nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pkgs.makeWrapper ];
+        postFixup = (old.postFixup or "") + ''
+          wrapProgram $out/bin/qutebrowser --set QT_QPA_PLATFORM xcb
+        '';
+      })
+    else
+      basePackage;
+in
 {
 
   options = {
     mine.home.qutebrowser.enable = lib.mkEnableOption "enable qutebrowser";
+    mine.home.qutebrowser.forceXWayland = lib.mkEnableOption "run qutebrowser under XWayland";
     mine.home.qutebrowser.bookmarks = lib.mkOption {
       type = lib.types.lines;
       default = ''
@@ -41,7 +61,7 @@
       };
   };
 
-  config = lib.mkIf config.mine.home.qutebrowser.enable {
+  config = lib.mkIf cfg.enable {
     xdg.configFile."qutebrowser/bookmarks/urls".text = config.mine.home.qutebrowser.bookmarks;
     home.file.".local/share/qutebrowser/qtwebengine_dictionaries/en-US-10-1.bdic".source =
       pkgs.hunspellDictsChromium.en_US;
@@ -52,10 +72,7 @@
     programs = {
       qutebrowser = {
         enable = true;
-        package = pkgs.qutebrowser.override {
-          withPdfReader = true;
-          enableWideVine = variables.qb-enableWideVine;
-        };
+        package = qutePackage;
         searchEngines = config.mine.home.qutebrowser.searchEngines;
         loadAutoconfig = true;
         settings.spellcheck.languages = [ "en-US" ];
