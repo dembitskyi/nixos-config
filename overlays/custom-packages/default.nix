@@ -26,8 +26,16 @@
   # Patched docling as an importable library (across Python sets); the
   # top-level `docling` above wraps this as the CLI.
   pythonPackagesExtensions = (prev.pythonPackagesExtensions or [ ]) ++ [
-    (python-final: _python-prev: {
+    (python-final: python-prev: {
       docling = python-final.callPackage ../pkgs/docling { };
+      # These two plots/nyquist tests are sensitive to matplotlib/numpy
+      # versions and fail on the current nixpkgs; skip just those.
+      control = python-prev.control.overridePythonAttrs (old: {
+        disabledTests = (old.disabledTests or [ ]) ++ [
+          "test_pole_zero_subplots"
+          "test_nyquist_basic"
+        ];
+      });
     })
   ];
 })
