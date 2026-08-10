@@ -23,7 +23,6 @@
     ./thunderbird
     ./fastmcp
     ./steam
-    ./jellyfin
     ./dnsmasq
     ./vllm
     ./oom-swap
