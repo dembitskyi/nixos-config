@@ -21,6 +21,73 @@
     ];
   };
 
+  "qwen3.8-27b-nvfp4" = {
+    huggingfaceId = "unsloth/Qwen3.8-27B-NVFP4";
+    servedName = "Qwen3.8-27B-NVFP4";
+    # NVFP4 on Blackwell needs a CUDA 13 build. vLLM ships no versioned
+    # v0.25.x-cu130 release tag; cu130 support for this model rides in the
+    # model-specific image.
+    image = "vllm/vllm-openai:qwen38-x86_64-cu130";
+    quantization = null;
+    maxModelLen = 200000;
+    maxNumSeqs = 64;
+    gpuMemoryUtilization = 0.80;
+    toolCallParser = "qwen3_coder";
+    reasoningParser = "qwen3";
+    speculativeConfig = {
+      method = "mtp";
+      num_speculative_tokens = 2;
+    };
+    # Pin the default reasoning effort to xhigh (also the checkpoint's chat
+    # template default). Clients can override per-request via chat_template_kwargs.
+    extraArgs = [
+      "--default-chat-template-kwargs ${pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "xhigh"; })}"
+    ];
+  };
+
+  # Official Qwen3.8-27B (BF16), two profiles from one checkpoint: full
+  # multimodal below, and a text-only variant (--language-model-only) to save VRAM.
+  "qwen3.8-27b" = {
+    huggingfaceId = "Qwen/Qwen3.8-27B";
+    servedName = "Qwen3.8-27B";
+    image = "vllm/vllm-openai:qwen38-x86_64-cu130";
+    quantization = null;
+    maxModelLen = 200000;
+    maxNumSeqs = 8;
+    gpuMemoryUtilization = 0.90;
+    toolCallParser = "qwen3_coder";
+    reasoningParser = "qwen3";
+    speculativeConfig = {
+      method = "mtp";
+      num_speculative_tokens = 1;
+    };
+    # Default reasoning effort medium (override per-request via chat_template_kwargs).
+    extraArgs = [
+      "--default-chat-template-kwargs ${pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "medium"; })}"
+    ];
+  };
+
+  # Text-only profile of Qwen3.8-27B (vision tower dropped).
+  "qwen3.8-27b-text" = {
+    huggingfaceId = "Qwen/Qwen3.8-27B";
+    servedName = "Qwen3.8-27B-text";
+    image = "vllm/vllm-openai:qwen38-x86_64-cu130";
+    quantization = null;
+    maxModelLen = 200000;
+    maxNumSeqs = 16;
+    gpuMemoryUtilization = 0.90;
+    toolCallParser = "qwen3_coder";
+    reasoningParser = "qwen3";
+    speculativeConfig = {
+      method = "mtp";
+      num_speculative_tokens = 1;
+    };
+    extraArgs = [
+      "--language-model-only"
+      "--default-chat-template-kwargs ${pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "medium"; })}"
+    ];
+  };
+
   # NVIDIA Qwen3.6-35B-A3B: official mixed NVFP4/FP8 ModelOpt checkpoint.
   # Quantization is auto-detected from hf_quant_config.json (no explicit
   # --quantization needed); vision stays multimodal.
