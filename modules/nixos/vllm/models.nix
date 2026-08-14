@@ -29,7 +29,7 @@
     # model-specific image.
     image = "vllm/vllm-openai:qwen38-x86_64-cu130";
     quantization = null;
-    maxModelLen = 200000;
+    maxModelLen = 262144;
     maxNumSeqs = 64;
     gpuMemoryUtilization = 0.80;
     toolCallParser = "qwen3_coder";
@@ -54,7 +54,7 @@
     servedName = "Qwen3.8-27B";
     image = "vllm/vllm-openai:qwen38-x86_64-cu130";
     quantization = null;
-    maxModelLen = 200000;
+    maxModelLen = 262144;
     maxNumSeqs = 8;
     gpuMemoryUtilization = 0.90;
     toolCallParser = "qwen3_coder";
@@ -77,7 +77,7 @@
     servedName = "Qwen3.8-27B-text";
     image = "vllm/vllm-openai:qwen38-x86_64-cu130";
     quantization = null;
-    maxModelLen = 200000;
+    maxModelLen = 262144;
     maxNumSeqs = 16;
     gpuMemoryUtilization = 0.90;
     toolCallParser = "qwen3_coder";
