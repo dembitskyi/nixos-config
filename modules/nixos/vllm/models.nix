@@ -41,7 +41,9 @@
     # Pin the default reasoning effort to xhigh (also the checkpoint's chat
     # template default). Clients can override per-request via chat_template_kwargs.
     extraArgs = [
-      "--default-chat-template-kwargs ${pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "xhigh"; })}"
+      "--default-chat-template-kwargs ${
+        pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "xhigh"; })
+      }"
     ];
   };
 
@@ -63,7 +65,9 @@
     };
     # Default reasoning effort medium (override per-request via chat_template_kwargs).
     extraArgs = [
-      "--default-chat-template-kwargs ${pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "medium"; })}"
+      "--default-chat-template-kwargs ${
+        pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "medium"; })
+      }"
     ];
   };
 
@@ -84,7 +88,9 @@
     };
     extraArgs = [
       "--language-model-only"
-      "--default-chat-template-kwargs ${pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "medium"; })}"
+      "--default-chat-template-kwargs ${
+        pkgs.lib.escapeShellArg (builtins.toJSON { reasoning_effort = "medium"; })
+      }"
     ];
   };
 

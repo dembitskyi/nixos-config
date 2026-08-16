@@ -58,6 +58,11 @@ in
       default = false;
       description = "Use the pinned hyprland version (v0.53.3) instead of the latest.";
     };
+    mine.hyprland.noctalia.extraPlugins = lib.mkOption {
+      type = lib.types.attrsOf lib.types.path;
+      default = { };
+      description = "Extra Noctalia plugins, plugin id -> plugin directory path. Each plugin is enabled in plugins.json and its bar widget (plugin:<id>) is added to the right section after KeyboardLayout.";
+    };
     mine.hyprland.package = lib.mkOption {
       type = lib.types.package;
       readOnly = true;

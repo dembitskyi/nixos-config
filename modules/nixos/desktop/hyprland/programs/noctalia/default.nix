@@ -1,8 +1,14 @@
 {
   lib,
   config,
+  pkgs,
+  ncInputs,
   ...
 }:
+let
+  extraPlugins = config.mine.hyprland.noctalia.extraPlugins;
+  pluginIds = lib.attrNames extraPlugins;
+in
 {
   config = lib.mkIf config.mine.hyprland.enable {
     home-manager.users.${config.variables.username} = {
@@ -15,9 +21,41 @@
           defaultWallpaper = ../../wallpapers/wallhaven_433729.jpg;
         };
       };
-      imports = [
-        ./plugins.nix
-      ];
+
+      home.file.".config/noctalia/plugins" = {
+        source = pkgs.runCommand "noctalia-plugins-custom" { } ''
+          cp -r --no-preserve=mode ${ncInputs.noctalia-plugins} $out
+          cp -r ${./corner-alert} $out/corner-alert
+          ${lib.concatStringsSep "\n" (
+            lib.mapAttrsToList (name: path: "cp -r ${path} $out/${name}") extraPlugins
+          )}
+        '';
+      };
+
+      home.file.".config/noctalia/plugins.json" = {
+        text = builtins.toJSON {
+          sources = [
+            {
+              enabled = true;
+              name = "Official Noctalia Plugins";
+              url = "https://github.com/noctalia-dev/noctalia-plugins";
+            }
+          ];
+          states = {
+            corner-alert = {
+              enabled = true;
+            };
+          }
+          // (lib.listToAttrs (
+            lib.map (name: {
+              inherit name;
+              value = {
+                enabled = true;
+              };
+            }) pluginIds
+          ));
+        };
+      };
 
       programs.noctalia-shell = {
         enable = true;
@@ -96,6 +134,9 @@
                   displayMode = "forceOpen";
                   id = "KeyboardLayout";
                 }
+              ]
+              ++ (lib.map (id: { id = "plugin:${id}"; }) pluginIds)
+              ++ [
                 {
                   displayMode = "onhover";
                   id = "Volume";
