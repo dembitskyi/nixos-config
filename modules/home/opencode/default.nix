@@ -128,6 +128,7 @@ let
   oraclePrompt = writePrompt "oracle-prompt.md" ./prompts/orchestrator/oracle.md;
   fixerPrompt = writePrompt "fixer-prompt.md" ./prompts/orchestrator/fixer.md;
   councillorPrompt = writePrompt "councillor-prompt.md" ./prompts/orchestrator/councillor.md;
+  grillMePrompt = writePrompt "grill-me-prompt.md" ./prompts/grill-me.md;
   tools = import ./tools.nix;
   # Deny-by-default inspection-only bash for background research sub-agents,
   # where an `ask` cannot reach the user and only wastes a turn.
@@ -777,6 +778,14 @@ in
               context for the conversation; cite sources where relevant.
 
               !`ai-search --provider ${searchProvider} "$ARGUMENTS"`
+            '';
+          };
+          grill-me = {
+            description = "Relentless design-tree interview to stress-test a plan before building.";
+            template = ''
+              {file:${grillMePrompt}}
+
+              Subject (if empty, grill me on the current plan/conversation): $ARGUMENTS
             '';
           };
         };
