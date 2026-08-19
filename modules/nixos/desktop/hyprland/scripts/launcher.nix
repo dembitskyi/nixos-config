@@ -4,143 +4,46 @@
   ...
 }:
 let
-  # wallpaperDir = "${../themes/wallpapers}";
-  # wallpaperThumbs =
-  #   pkgs.runCommand "wallpaper-thumbnails"
-  #     {
-  #       buildInputs = [ pkgs.imagemagick ];
-  #     }
-  #     ''
-  #       mkdir -p $out
-  #       for wallpaper in "${wallpaperDir}"/*.{webp,jxl,jpg,jpeg,png,gif}; do
-  #         if [ -f "$wallpaper" ]; then
-  #           wallpaper_name=$(basename "$wallpaper")
-  #           wallpaper_name="''${wallpaper_name%.*}"
-  #           thumbnail_size="320x180"
-  #           if [ ! -f "$out/''${wallpaper_name}.jpg" ]; then
-  #             magick "$wallpaper[0]" -strip -gravity center -thumbnail "''${thumbnail_size}^" -extent "$thumbnail_size" "$out/''${wallpaper_name}.jpg"
-  #           fi
-  #         fi
-  #       done
-  #     '';
-  wallpaperDir = "";
-  wallpaperThumbs = "";
-  terminal = "alacritty";
+  fuzzel = "${pkgs.fuzzel}/bin/fuzzel";
+  sudoRun = pkgs.writeShellScriptBin "sudo-run" ''
+    [ "$#" -gt 0 ] || exit 0
+    bin=$(command -v "$1") || exit 1
+    shift
+    case "$WAYLAND_DISPLAY" in
+      /*) wl=$WAYLAND_DISPLAY ;;
+      *) wl="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" ;;
+    esac
+    exec run0 \
+      --setenv=WAYLAND_DISPLAY="$wl" \
+      --setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+      --setenv=PATH="$PATH" \
+      "$bin" "$@"
+  '';
 in
 pkgs.writeShellScriptBin "launcher" ''
-  # check if rofi is already running
-  if pidof rofi >/dev/null; then
-    pkill rofi
+  if pidof fuzzel >/dev/null; then
+    pkill fuzzel
     exit 0
   fi
 
-  case $1 in
-  drun)
-    # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-7.rasi"
-    # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-3.rasi"
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-2/style-2.rasi"
-    r_override="entry{placeholder:'Search Applications...';}listview{lines:9;}"
+  bins() {
+    find -L ''${PATH//:/ } -maxdepth 1 -type f -executable -printf '%f\n' 2>/dev/null | sort -u
+  }
 
-    rofi -show drun -theme-str "$r_override" -theme "$rofi_theme"
-    ;;
+  case $1 in
   drun-sudo)
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-2/style-2.rasi"
-    r_override="entry{placeholder:'Search Applications...';}listview{lines:9;}"
-    pkexec env WAYLAND_DISPLAY=$WAYLAND_DISPLAY XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR PATH=$PATH QT_QPA_PLATFORM=wayland rofi -show drun -theme-str "$r_override" -theme "$rofi_theme"
+    exec ${fuzzel} --prompt "root  " --launch-prefix "${lib.getExe sudoRun}"
     ;;
   run)
-    # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-7.rasi"
-    # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-3.rasi"
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-2/style-2.rasi"
-    r_override="entry{placeholder:'Search Applications...';}listview{lines:9;}"
-
-    rofi -show run -theme-str "$r_override" -theme "$rofi_theme"
+    bin=$(bins | ${fuzzel} --dmenu --prompt "run  ") || exit 0
+    [ -n "$bin" ] && setsid -f $bin >/dev/null 2>&1
     ;;
   run-sudo)
-    # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-7.rasi"
-    # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-3.rasi"
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-2/style-2.rasi"
-    r_override="entry{placeholder:'Search Applications...';}listview{lines:9;}"
-
-    pkexec env WAYLAND_DISPLAY=$WAYLAND_DISPLAY XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR PATH=$PATH QT_QPA_PLATFORM=wayland rofi -show run -theme-str "$r_override" -theme "$rofi_theme"
+    bin=$(bins | ${fuzzel} --dmenu --prompt "root  ") || exit 0
+    [ -n "$bin" ] && setsid -f ${lib.getExe sudoRun} $bin >/dev/null 2>&1
     ;;
-  window)
-    # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-2/style-2.rasi"
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-4.rasi"
-    r_override="entry{placeholder:'Search Windows...';}listview{lines:12;}"
-
-    rofi -show window -theme-str "$r_override" -theme "$rofi_theme"
+  *)
+    exec ${fuzzel}
     ;;
-  file)
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-2/style-2.rasi"
-    r_override="entry{placeholder:'Search Files...';}listview{lines:8;}"
-
-    rofi -show filebrowser -theme-str "$r_override" -theme "$rofi_theme"
-    ;;
-  tmux)
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-4.rasi"
-    r_override="entry{placeholder:'Search Tmux Sessions...';}listview{lines:15;}"
-
-    sessions=$(tmux ls -F '#{session_name}: #{session_path} (#{session_windows} windows)' |
-      rofi -dmenu -i -theme-str "$r_override" -theme "$rofi_theme" | cut -d: -f1)
-    if [[ $sessions ]]; then
-       ${terminal} --hold -e tmux attach -t $sessions
-    fi
-    ;;
-  wallpaper)
-      rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/wallpaper-select.rasi"
-      r_override="entry{placeholder:'Search Wallpapers...';}"
-      # rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-4.rasi"
-      # r_override="entry{placeholder:'Search Wallpapers...';}listview{lines:15;}"
-
-      CACHE_DIR=${wallpaperThumbs}
-      WALLPAPER_DIR="${wallpaperDir}"
-
-      rofi_cmd() {
-        rofi -dmenu \
-          -i \
-          -theme-str "$r_override" \
-          -theme "$rofi_theme"
-      }
-
-      CHOICE=$(${lib.getExe pkgs.fd} --type f . "''${WALLPAPER_DIR}" \
-        | sed 's/.*\///' \
-        | while read -r A ; do echo -en "$A\x00icon\x1f""''${CACHE_DIR}"/"''${A%.*}.jpg\n" ; done \
-        | rofi_cmd)
-      [ -z "$CHOICE" ] && exit 0
-
-   swww img "$WALLPAPER_DIR/$CHOICE" --transition-step 90 --transition-duration 1 --transition-fps 60 --transition-type wipe
-    ;;
-  emoji)
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-4/style-4.rasi"
-    r_override="entry{placeholder:'Search Emojis...';}listview{lines:15;}"
-
-    rofi -modi emoji -show emoji -theme "''${rofi_theme}" -theme-str "$r_override"
-    ;;
-  games)
-    r_override="entry{placeholder:'Search Games...';}listview{lines:15;}"
-    rofi_theme="''${XDG_CONFIG_HOME:-$HOME/.config}/rofi/launchers/type-1/style-5.rasi"
-
-    rofi -show games -modi games -theme "''${rofi_theme}" -theme-str "$r_override"
-    ;;
-  help | --help | -h)
-    echo "Usage: launcher [ACTION]"
-    echo "Launch various rofi modes with custom themes and settings."
-    echo ""
-    echo "Actions:"
-    echo "  drun         Launch application search mode"
-    echo "  window       Switch between open windows"
-    echo "  file         Browse and search files"
-    echo "  tmux         Search active tmux sessions"
-    echo "  wallpaper    Search and set wallpapers"
-    echo "  emoji        Search and insert emojis"
-    echo "  games        Launch games menu"
-    echo "  help         Display this help message"
-    echo "  --help       Same as 'help'"
-    echo ""
-    echo "If no action is specified, defaults to 'drun' mode."
-    exit 0
-    ;;
-  *) exec "$0" drun ;;
   esac
 ''

@@ -74,7 +74,7 @@ in
     ./themes/Catppuccin
     ./programs/greetd
     ./programs/noctalia
-    ./programs/rofi
+    ./programs/fuzzel
   ];
 
   config = lib.mkIf config.mine.hyprland.enable {
@@ -266,12 +266,8 @@ in
         blueman
         hyprpolkitagent
         hyprsysteminfo
+        papirus-icon-theme
       ];
-
-      xdg.configFile."hypr/icons" = {
-        source = ./icons;
-        recursive = true;
-      };
 
       wayland.windowManager.hyprland = {
         enable = true;

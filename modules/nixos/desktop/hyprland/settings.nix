@@ -36,7 +36,6 @@ in
     "${getExe' pkgs.wl-clipboard "wl-paste"} --type text --watch cliphist store"
     "${getExe' pkgs.wl-clipboard "wl-paste"} --type image --watch cliphist store"
     "rm '$XDG_CACHE_HOME/cliphist/db'"
-    "polkit-agent-helper-1"
   ];
 
   input = {

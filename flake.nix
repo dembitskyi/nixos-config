@@ -137,8 +137,6 @@
 
                     # Patterns are matched against paths relative to the repo root.
                     settings.global.excludes = [
-                      # Vendored adi1090x rofi themes (rasi + launcher scripts).
-                      "modules/nixos/desktop/hyprland/programs/rofi/**"
                       # Dummy TLS material for nginx test configs.
                       "*.crt"
                       "*.key"
@@ -195,8 +193,6 @@
 
               # Patterns are matched against paths relative to the repo root.
               settings.global.excludes = [
-                # Vendored adi1090x rofi themes (rasi + launcher scripts).
-                "modules/nixos/desktop/hyprland/programs/rofi/**"
                 # Dummy TLS material for nginx test configs.
                 "*.crt"
                 "*.key"
