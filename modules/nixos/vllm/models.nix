@@ -36,7 +36,7 @@
     reasoningParser = "qwen3";
     speculativeConfig = {
       method = "mtp";
-      num_speculative_tokens = 2;
+      num_speculative_tokens = 3;
     };
     # Pin the default reasoning effort to xhigh (also the checkpoint's chat
     # template default). Clients can override per-request via chat_template_kwargs.
@@ -61,7 +61,7 @@
     reasoningParser = "qwen3";
     speculativeConfig = {
       method = "mtp";
-      num_speculative_tokens = 1;
+      num_speculative_tokens = 3;
     };
     # Default reasoning effort medium (override per-request via chat_template_kwargs).
     extraArgs = [
@@ -84,7 +84,7 @@
     reasoningParser = "qwen3";
     speculativeConfig = {
       method = "mtp";
-      num_speculative_tokens = 1;
+      num_speculative_tokens = 3;
     };
     extraArgs = [
       "--language-model-only"
