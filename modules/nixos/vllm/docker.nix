@@ -21,7 +21,7 @@ let
       containerPluginPath = "/app/${modelKey}-reasoning-parser.py";
       args = lib.concatStringsSep " " (
         [
-          (lib.escapeShellArg m.huggingfaceId)
+          (lib.escapeShellArg (cfg._modelSource modelKey))
           "--host ${cfg.host}"
           "--port ${toString port}"
         ]

@@ -18,8 +18,15 @@ let
   modelType = lib.types.submodule {
     options = {
       huggingfaceId = lib.mkOption {
-        type = lib.types.str;
-        description = "HuggingFace model identifier.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "HuggingFace model identifier. Mutually exclusive with localPath.";
+      };
+
+      localPath = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Local model dir to load instead of huggingfaceId. Fill via `vllm-sync download <repo> <name>`.";
       };
 
       servedName = lib.mkOption {
@@ -131,6 +138,14 @@ let
     ) "--speculative-config ${lib.escapeShellArg (builtins.toJSON m.speculativeConfig)}"
     ++ m.extraArgs;
 
+  # localPath if set, else huggingfaceId.
+  mkModelSource =
+    modelKey:
+    let
+      m = cfg.models.${modelKey};
+    in
+    if m.localPath != null then m.localPath else m.huggingfaceId;
+
   # Unit name for the backend vLLM server for a given model key.
   unitName = modelKey: "vllm-${modelKey}";
 
@@ -206,6 +221,13 @@ in
       default = mkModelArgs;
     };
 
+    _modelSource = lib.mkOption {
+      type = lib.types.functionTo lib.types.str;
+      internal = true;
+      readOnly = true;
+      default = mkModelSource;
+    };
+
     _unitName = lib.mkOption {
       type = lib.types.functionTo lib.types.str;
       internal = true;
@@ -230,6 +252,16 @@ in
       {
         assertion = lib.all (k: cfg.models ? ${k}) activeModelKeys;
         message = "mine.vllm.activeModels references keys missing from mine.vllm.models.";
+      }
+      {
+        assertion = lib.all (
+          k:
+          let
+            m = cfg.models.${k};
+          in
+          (m.huggingfaceId != null) != (m.localPath != null)
+        ) activeModelKeys;
+        message = "mine.vllm: each active model must set exactly one of huggingfaceId or localPath.";
       }
       {
         assertion = lib.length (lib.unique activePorts) == lib.length activePorts;
@@ -264,6 +296,8 @@ in
       "d ${cfg._stateDir} 0755 vllm vllm -"
       "d ${cfg._stateDir}/.cache 0755 vllm vllm -"
       "d ${cfg._stateDir}/.cache/huggingface 0755 vllm vllm -"
+      # localPath models.
+      "d ${cfg._stateDir}/models 0755 vllm vllm -"
     ];
 
     # Generate one shared service skeleton per active model. Backends

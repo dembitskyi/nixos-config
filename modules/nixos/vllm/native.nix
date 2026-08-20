@@ -17,7 +17,7 @@ let
       hasPlugin = cfg.enableReasoningParser && m.reasoningParserPlugin != null;
       args = lib.concatStringsSep " " (
         [
-          (lib.escapeShellArg m.huggingfaceId)
+          (lib.escapeShellArg (cfg._modelSource modelKey))
           "--host ${cfg.host}"
           "--port ${toString port}"
         ]
