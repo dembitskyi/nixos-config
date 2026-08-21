@@ -9,7 +9,7 @@
 
     # opencode pinned via upstream's flake; bump the tag to update. No nixpkgs
     # follows: its node_modules FOD needs upstream's own pinned bun.
-    opencode.url = "github:anomalyco/opencode/v1.18.9";
+    opencode.url = "github:anomalyco/opencode/v1.18.20";
 
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-root.url = "github:srid/flake-root";
