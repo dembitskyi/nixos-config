@@ -31,9 +31,9 @@
 
     services.comfyui = {
       enable = true;
-      package = pkgs.comfyui;
-      # Upstream binds to localhost; nginx above reverse-proxies port 8188.
+      package = pkgs.comfyui.override { withManager = true; };
       listen = [ "127.0.0.1" ];
+      extraArgs = [ "--enable-manager" ];
     };
   };
 }
