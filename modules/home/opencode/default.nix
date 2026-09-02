@@ -615,7 +615,7 @@ in
             description = "Writing Analyzing and Improving Prompt";
             hidden = true;
             mode = "primary";
-            model = "github-copilot/claude-sonnet-4.6";
+            model = "github-copilot/gpt-5.6-luna";
             prompt = "{file:${editorPrompt}}";
             tools = lib.mergeAttrsList [
               tools.disableSkill
