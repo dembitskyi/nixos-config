@@ -207,6 +207,14 @@ let
     unzip
     curl
     wget
+    # Media tooling for sandboxed opencode tasks: video/audio (ffmpeg + ffprobe),
+    # images (ImageMagick magick/convert/identify), PDFs (poppler pdfinfo/pdftoppm).
+    ffmpeg-headless
+    imagemagick
+    poppler-utils
+    # Network diagnostics (ss, ip) and session helpers (setsid, script).
+    iproute2
+    util-linux
   ];
   configData = import ./config.nix {
     inherit

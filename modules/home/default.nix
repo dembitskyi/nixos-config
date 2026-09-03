@@ -9,6 +9,7 @@
     ./tmux
     ./bash
     ./alacritty
+    ./kitty
     ./spotify
     ./brave
     ./qutebrowser
