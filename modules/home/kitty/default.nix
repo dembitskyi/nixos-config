@@ -31,6 +31,16 @@
         shell_integration = "enabled";
         linux_display_server = "wayland";
         confirm_os_window_close = 0;
+
+        # The Mocha theme's "white" is dim lavender-gray (foreground #CDD6F4,
+        # color7 #BAC2DE), which washes out plain text like `ls -la` output.
+        # These apply after the theme include, so they win. Blues are lifted
+        # slightly too, since `ls` directories were the hardest to read.
+        foreground = "#E8EBF8";
+        color7 = "#D5DBF2";
+        color15 = "#E8EBF8";
+        color4 = "#93B8FD";
+        color12 = "#A9C6FF";
       };
     };
   };
