@@ -18,8 +18,6 @@
     ./copilot-api
     ./desktop/hyprland
     ./filebrowser
-    ./loki
-    ./grafana
     ./thunderbird
     ./fastmcp
     ./steam

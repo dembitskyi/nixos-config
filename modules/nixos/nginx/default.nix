@@ -5,15 +5,16 @@
   ...
 }:
 let
-  ngix-cert-files = pkgs.stdenv.mkDerivation {
-    name = "nginx cert files";
-    src = ./conf;
-    dontBuild = true;
-    installPhase = ''
-      mkdir -p $out/etc/nginx/conf
-      cp -r $src/* $out/etc/nginx/conf
-    '';
-  };
+  # Self-signed throwaway cert for the default 444 trap vhost. Generated at
+  # build time so no private key is committed to the public repo.
+  ngix-cert-files = pkgs.runCommand "nginx-dummy-cert" { nativeBuildInputs = [ pkgs.openssl ]; } ''
+    mkdir -p $out/etc/nginx/conf
+    openssl req -x509 -newkey rsa:2048 -keyout $out/etc/nginx/conf/dummy.key \
+      -out $out/etc/nginx/conf/dummy.crt -days 3650 -nodes \
+      -subj "/CN=localhost" 2>/dev/null
+    chmod 600 $out/etc/nginx/conf/dummy.key
+    chmod 644 $out/etc/nginx/conf/dummy.crt
+  '';
 in
 {
 
@@ -26,7 +27,7 @@ in
     environment.systemPackages = [ ngix-cert-files ];
     services.nginx = {
       enable = true;
-      logError = "stderr debug";
+      logError = "stderr warn";
 
       virtualHosts."_" = {
         default = true; # This makes it the default server for unmatched requests
