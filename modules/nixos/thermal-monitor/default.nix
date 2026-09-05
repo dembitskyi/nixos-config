@@ -2,7 +2,9 @@
 #
 # Polls each source on its own interval and emits structured journal entries
 # at INFO/WARN/CRIT severity. All services log via systemd's stdout journal
-# integration using sd-daemon(3) <N> priority prefixes.
+# integration using sd-daemon(3) <N> priority prefixes. Routine INFO samples
+# are dropped at ingestion (LogLevelMax=notice); only WARN/CRIT reach the
+# journal, so the units are silent unless something actually needs attention.
 #
 # Three independent systemd units are used so that a hung nvidia-smi (e.g.
 # Xid 79 "GPU has fallen off the bus") cannot take CPU/NVMe monitoring down
@@ -85,18 +87,35 @@ let
           fi
         fi
 
-        if [[ "$throttle" != "Not Active" && -n "$throttle" && "$level" == "info" ]]; then
+        # clocks_throttle_reasons.active is queried with nounits, so an idle
+        # GPU reports an all-zero hex bitmask (0x000...0), not the string
+        # "Not Active". Only a non-zero mask or a textual Active means the
+        # GPU is actually throttling; anything else here used to warn forever.
+        throttle_active=0
+        if [[ "$throttle" == "Active" ]]; then
+          throttle_active=1
+        elif [[ "$throttle" =~ ^0[xX][0-9a-fA-F]+$ ]]; then
+          [[ "$throttle" =~ ^0[xX]0+$ ]] || throttle_active=1
+        elif [[ -n "$throttle" && "$throttle" != "Not Active" ]]; then
+          throttle_active=1
+        fi
+        if (( throttle_active )) && [[ "$level" == "info" ]]; then
           level=warn
         fi
 
         pcie_note=""
-        if [[ "$cur_speed" != "$max_speed" && "$max_speed" != "?" ]]; then
-          level=crit
-          pcie_note=" PCIe-SPEED-DEGRADED"
-        fi
-        if [[ "$cur_width" != "$max_width" && "$max_width" != "?" ]]; then
-          level=crit
-          pcie_note="$pcie_note PCIe-WIDTH-DEGRADED"
+        # At idle the driver parks the PCIe link at 2.5 GT/s to save power,
+        # which is not degradation. Only judge the link while the GPU is
+        # actually working, otherwise every idle sample is a false CRIT.
+        if [[ "$util" =~ ^[0-9]+$ ]] && (( util >= 10 )); then
+          if [[ "$cur_speed" != "$max_speed" && "$max_speed" != "?" ]]; then
+            level=crit
+            pcie_note=" PCIe-SPEED-DEGRADED"
+          fi
+          if [[ "$cur_width" != "$max_width" && "$max_width" != "?" ]]; then
+            level=crit
+            pcie_note="$pcie_note PCIe-WIDTH-DEGRADED"
+          fi
         fi
 
         msg="temp=''${temp}C tlimit_margin=''${tlimit}C util=''${util}% power=''${power_draw}/''${power_limit}W throttle=$throttle pcie=''${cur_speed}/''${max_speed}@x''${cur_width}/x''${max_width}$pcie_note"
@@ -241,6 +260,15 @@ let
     '';
   };
 
+  # Routine per-sample readings are INFO and only warn/crit lines matter in
+  # day-to-day operation, so journal ingestion drops anything below notice.
+  # Override per unit with e.g.
+  # systemd.services.thermal-monitor-gpu.serviceConfig.LogLevelMax = lib.mkForce "debug";
+  # to get the full per-sample history back.
+  commonServiceConfig = {
+    LogLevelMax = "notice";
+  };
+
   commonHardening = {
     ProtectSystem = "strict";
     ProtectHome = true;
@@ -359,43 +387,52 @@ in
       wantedBy = [ "multi-user.target" ];
       after = [ "nvidia-persistenced.service" ];
       wants = [ "nvidia-persistenced.service" ];
-      serviceConfig = commonHardening // {
-        Type = "simple";
-        ExecStart = lib.getExe gpuMonitor;
-        Restart = "on-failure";
-        RestartSec = "30s";
-        SyslogIdentifier = "thermal-monitor-gpu";
-        DynamicUser = true;
-        # nvidia-smi needs /dev/nvidia* which is gated by the video group.
-        SupplementaryGroups = [ "video" ];
-      };
+      serviceConfig =
+        commonHardening
+        // commonServiceConfig
+        // {
+          Type = "simple";
+          ExecStart = lib.getExe gpuMonitor;
+          Restart = "on-failure";
+          RestartSec = "30s";
+          SyslogIdentifier = "thermal-monitor-gpu";
+          DynamicUser = true;
+          # nvidia-smi needs /dev/nvidia* which is gated by the video group.
+          SupplementaryGroups = [ "video" ];
+        };
     };
 
     systemd.services.thermal-monitor-sensors = lib.mkIf cfg.sensors.enable {
       description = "Thermal monitor: lm_sensors (CPU/motherboard/RAM)";
       wantedBy = [ "multi-user.target" ];
       after = [ "systemd-modules-load.service" ];
-      serviceConfig = commonHardening // {
-        Type = "simple";
-        ExecStart = lib.getExe sensorsMonitor;
-        Restart = "on-failure";
-        RestartSec = "30s";
-        SyslogIdentifier = "thermal-monitor-sensors";
-        DynamicUser = true;
-      };
+      serviceConfig =
+        commonHardening
+        // commonServiceConfig
+        // {
+          Type = "simple";
+          ExecStart = lib.getExe sensorsMonitor;
+          Restart = "on-failure";
+          RestartSec = "30s";
+          SyslogIdentifier = "thermal-monitor-sensors";
+          DynamicUser = true;
+        };
     };
 
     systemd.services.thermal-monitor-nvme = lib.mkIf cfg.nvme.enable {
       description = "Thermal monitor: NVMe drives";
       wantedBy = [ "multi-user.target" ];
-      serviceConfig = commonHardening // {
-        Type = "simple";
-        ExecStart = lib.getExe nvmeMonitor;
-        Restart = "on-failure";
-        RestartSec = "30s";
-        SyslogIdentifier = "thermal-monitor-nvme";
-        DynamicUser = true;
-      };
+      serviceConfig =
+        commonHardening
+        // commonServiceConfig
+        // {
+          Type = "simple";
+          ExecStart = lib.getExe nvmeMonitor;
+          Restart = "on-failure";
+          RestartSec = "30s";
+          SyslogIdentifier = "thermal-monitor-nvme";
+          DynamicUser = true;
+        };
     };
   };
 }
