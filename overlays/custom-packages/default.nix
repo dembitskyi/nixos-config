@@ -16,6 +16,13 @@
       # Bump TUI message fetch limit from 100 to 1000.
       substituteInPlace packages/tui/src/context/sync.tsx \
         --replace-fail 'limit: 100' 'limit: 1000'
+      # Return promptly when the wrapper shell dies by signal instead of
+      # hanging until the tool timeout. A self-matching `pkill -f` SIGTERMs
+      # its own `bash -c` wrapper, which makes `handle.exitCode` fail, and
+      # `Effect.raceAll` below ignores failures while another racer could
+      # still succeed. Map signal death to the conventional exit 143.
+      substituteInPlace packages/opencode/src/tool/shell.ts \
+        --replace-fail 'handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code })))' 'handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code })), Effect.orElseSucceed(() => ({ kind: "exit" as const, code: 143 })))'
     '';
   });
   otterwiki = final.callPackage ../pkgs/otterwiki.nix { };
