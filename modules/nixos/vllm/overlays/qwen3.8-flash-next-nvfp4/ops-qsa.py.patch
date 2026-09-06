@@ -1,0 +1,1019 @@
+--- orig/models/qwen3_8_flash_next/nvidia/ops/qsa.py	2026-09-06 05:21:54.357929708 -0500
++++ new/models/qwen3_8_flash_next/nvidia/ops/qsa.py	2026-09-06 05:21:54.927938983 -0500
+@@ -189,11 +189,171 @@
+     )
+ 
+ 
++# ---------------------------------------------------------------------------
++# QFN-PATCH kvq-s2: NVFP4-Bausteine.
++#
++# Herkunft: vLLM PR #44389 ("Triton software NVFP4 KV cache", offen, 30.07.),
++# Dateien v1/attention/ops/triton_unified_attention.py und
++# triton_reshape_and_cache_flash.py. Uebernommen sind die reinen Bit-Helfer --
++# sie sind arch-unabhaengig, brauchen KEINE nativen FP4-Instruktionen und
++# genau deshalb auch keinen SM-Guard (Plan S2d). Die Index-Arithmetik ist
++# NICHT uebernommen: sie muss zu unserem Seitenlayout passen, nicht zu deren.
++# ---------------------------------------------------------------------------
++import os as _qfn_ops_os  # QFN-PATCH kvq-s2b
++
++# QFN-PATCH kvq-s2b -- HEBEL 1 aus S2 2.5 / 4.7: schmale Skalenkachel.
++#
++# Der S2c-Originalzweig laedt die Blockskalen als [HEAD_DIM, BLOCK_N], obwohl
++# darin nur [HEAD_DIM/16, BLOCK_N] VERSCHIEDENE Werte stehen -- 16-facher
++# Skalenverkehr, und diese Kachel ist genauso gross wie die gesamte
++# fp8-Datenkachel. Hebel 1 laedt [SCALE_DIM, BLOCK_N] und weitet erst im
++# Register auf; die E4M3-Dekodierung und die Multiplikation mit der
++# Layer-Skala laufen dabei ebenfalls auf 16-mal weniger Elementen.
++#
++# Schalter, weil der Kontrollarm dieselbe Binaerdatei fahren muss:
++#   QFN_KVQ_SF_NARROW = "1" (Vorgabe, Hebel 1 aktiv)
++#                       "0" (S2c-Originalzweig, unveraendert -- Kontrollarm)
++# Der Aufweitungs-Trick (broadcast_to + reshape) ist auf diesem Image gegen
++# die naive breite Ladung BITGLEICH gemessen, ueber alle fuenf Kachel-Profile
++# und fuer float32 wie uint8: kvq-logs/s2b-reshape-probe.log (Triton 3.7.1).
++# Drei Modi, weil die Umordnung der Ladebefehle eine EIGENE Variable ist und
++# nicht heimlich in Hebel 1 mitreisen darf:
++#   QFN_KVQ_SF_MODE=0  S2c-Original, Wort fuer Wort: K vollstaendig (Bytes,
++#                      Nibbles, Skalen, Rekonstruktion), danach V vollstaendig.
++#   QFN_KVQ_SF_MODE=1  nur UMGEORDNET: beide Byte-Ladungen zuerst, danach die
++#                      Skalenarbeit. Arithmetik identisch zu 0.
++#   QFN_KVQ_SF_MODE=2  wie 1, zusaetzlich HEBEL 1 (schmale Skalenkachel).
++#   QFN_KVQ_SF_MODE=3  wie 2, zusaetzlich HEBEL 2 (bytewise-Loader) auf
++#                      BEIDEN Seiten (K mit tl.permute, V ohne).
++#                      *** NICHT VALIDIERT -- LIEFERT BEI BLOCK_N=16 FALSCHE
++#                      ZAHLEN. *** kvq-nvfp4-test.py N3/N4 schlagen fehl
++#                      (Kernelfehler 1,586e+00 statt 2,085e-03; die beiden
++#                      16er-Kachelprofile weichen um 1,0e-01 ab, die
++#                      64er sind sauber). Der Zweig bleibt NUR zur weiteren
++#                      Eingrenzung im Stand und darf NIE einen Server sehen.
++#                      Eingegrenzt ist bereits: es liegt weder an der
++#                      Wiederzusammensetzung (standalone bitgleich bis in
++#                      tl.dot, alle Kachelbreiten) noch an den Pipelinestufen
++#                      (Fehler identisch bei 1 und 2 Stufen).
++#   QFN_KVQ_SF_MODE=4  wie 2, HEBEL 2 NUR auf der V-Seite (tl.join OHNE
++#                      permute); K laedt klassisch doppelt.
++#   QFN_KVQ_SF_MODE=5  wie 2, HEBEL 2 NUR auf der K-Seite (tl.join MIT
++#                      tl.permute); V laedt klassisch doppelt.
++#                      *** 4 und 5 sind DIAGNOSE-Zweige (S2 11.5, erster
++#                      Spiegelstrich). Sie spalten den Fehler aus Modus 3 in
++#                      seine beiden Traeger und duerfen ebenfalls NIE einen
++#                      Server sehen -- unabhaengig davon, wie der Selbsttest
++#                      ausgeht. Wer einen davon produktiv will, braucht eine
++#                      eigene volle Gate-Kette.
++# Vorgabe 2. Der Vergleich 0 gegen 1 misst die Umordnung, 1 gegen 2 den Hebel;
++# 4 gegen 5 trennt, ob tl.permute der Traeger des Modus-3-Fehlers ist.
++_QFN_SF_MODE = int(_qfn_ops_os.environ.get("QFN_KVQ_SF_MODE", "2").strip() or "2")
++
++
++@triton.jit
++def _qfn_decode_e2m1(nibble):
++    """Ein FP4-E2M1-Nibble (Vorzeichen + 3 Magnitudenbits) nach float32.
++
++    Kein Nachschlagen, sondern Bitbau: fuer Magnitude >= 2 ist der Wert
++    2^(exp-1) * (1 + m/2), also (126 << 23) + (magnitude << 22) als
++    float32-Bitmuster; Magnitude 0/1 sind die Subnormalen 0,0 und 0,5.
++    """
++    magnitude = nibble & 0x07
++    magnitude_i32 = magnitude.to(tl.int32)
++    sign_bits = ((nibble & 0x08).to(tl.uint32)) << 28
++    normal_bits = ((126 << 23) + (magnitude_i32 << 22)).to(tl.uint32) | sign_bits
++    normal = normal_bits.to(tl.uint32).to(tl.float32, bitcast=True)
++    subnormal_bits = ((magnitude & 0x01).to(tl.uint32) * 0x3F000000) | sign_bits
++    subnormal = subnormal_bits.to(tl.uint32).to(tl.float32, bitcast=True)
++    return tl.where(magnitude < 2, subnormal, normal)
++
++
++@triton.jit
++def _qfn_sf_to_float(bits):
++    """E4M3-Blockskala (nur Betrag) nach float32.
++
++    Die Blockskalen entstehen aus Absolutmaxima, das Vorzeichenbit wird nicht
++    benutzt; deshalb wird es maskiert statt ausgewertet. Bias 7 -> 127 ist die
++    Addition von 120 auf den Exponenten; Subnormale sind mant * 2^-9.
++    """
++    payload = bits.to(tl.int32) & 0x7F
++    exp_bits = (payload >> 3) & 0x0F
++    mant = payload & 0x07
++    normal_bits = ((exp_bits + 120) << 23) | (mant << 20)
++    normal = normal_bits.to(tl.uint32).to(tl.float32, bitcast=True)
++    subnormal = mant.to(tl.float32) / 512.0
++    value = tl.where(exp_bits == 0, subnormal, normal)
++    return tl.where(payload == 0, 0.0, value)
++
++
++@triton.jit
++def _qfn_float_to_sf_bits(x):
++    """float32 -> E4M3-Bitmuster (nicht-negativ), Rundung zur naechsten Zahl."""
++    x = tl.clamp(x, 0.0, 448.0)
++    x_safe = tl.maximum(x, 0.0000000001)
++    subnormal_mant = tl.floor(x * 512.0 + 0.5).to(tl.int32)
++    subnormal_mant = tl.minimum(subnormal_mant, 7)
++    x_bits = x_safe.to(tl.uint32, bitcast=True)
++    exp_unbiased = ((x_bits >> 23) & 0xFF).to(tl.int32) - 127
++    exp_bits = exp_unbiased + 7
++    mant = (((x_bits & 0x7FFFFF) + 0x80000) >> 20).to(tl.int32)
++    exp_bits += mant >> 3
++    mant = mant & 7
++    normal_bits = (exp_bits << 3) | mant
++    bits = tl.where(x < 0.015625, subnormal_mant, normal_bits)
++    bits = tl.where(x == 0.0, 0, bits)
++    return bits.to(tl.uint8)
++
++
++@triton.jit
++def _qfn_float_to_e2m1_bits(x):
++    """float32 -> FP4-E2M1-Nibble; Grenzen wie cvt.rn.satfinite.e2m1x2.f32."""
++    sign = tl.where(x < 0.0, 8, 0)
++    abs_x = tl.abs(x)
++    mag = tl.full(x.shape, 0, dtype=tl.int32)
++    mag = tl.where((abs_x > 0.25) & (abs_x < 0.75), 1, mag)
++    mag = tl.where((abs_x >= 0.75) & (abs_x <= 1.25), 2, mag)
++    mag = tl.where((abs_x > 1.25) & (abs_x < 1.75), 3, mag)
++    mag = tl.where((abs_x >= 1.75) & (abs_x <= 2.5), 4, mag)
++    mag = tl.where((abs_x > 2.5) & (abs_x < 3.5), 5, mag)
++    mag = tl.where((abs_x >= 3.5) & (abs_x <= 5.0), 6, mag)
++    mag = tl.where(abs_x > 5.0, 7, mag)
++    return (sign | mag).to(tl.uint8)
++
++
++@triton.jit
++def _qfn_sf_coord(slot, group, SWIZZLED: tl.constexpr, SCALE_DIM: tl.constexpr):
++    """Wo liegt die Blockskala fuer (Zeile im Block, 16er-Gruppe)?
++
++    LINEAR ist die naheliegende Ablage (Zeile, Gruppe). SWIZZLED ist die
++    Verschraenkung, die der vorkompilierte CUDA-Schreiber fuer die V-Seite
++    benutzt (fuer den SM100-trtllm-Kernel):
++        (t, s) -> ((t//4)*4 + s//G, (s%G)*4 + t%4),  G = SCALE_DIM//4
++    Das ist eine Permutation innerhalb je vier Zeilen; welche Konvention im
++    Image tatsaechlich gilt, MISST kvq-kerneltest.py, geraten wird nichts.
++    """
++    SWIZZLE_GROUP: tl.constexpr = SCALE_DIM // 4
++    if SWIZZLED:
++        return (slot // 4) * 4 + (group // SWIZZLE_GROUP), (
++            group % SWIZZLE_GROUP
++        ) * 4 + (slot % 4)
++    return slot + group * 0, group + slot * 0
++
++
+ @triton.jit
+ def _qsa_sparse_paged_gqa_splitk_kernel(
+     q_ptr,
+     k_cache_ptr,
+     v_cache_ptr,
++    # QFN-PATCH kvq-s1: 1-Element-fp32-Device-Buffer je Layer (Skalar-Fall).
++    # Per-Head-Skalen waeren ein spaeterer Ausbau; der Checkpoint liefert
++    # ohnehin keine kalibrierten KV-Skalen, wir starten bei 1,0.
++    k_scale_ptr,
++    v_scale_ptr,
++    # QFN-PATCH kvq-s2: Blockskalen-Seiten (uint8-Bits, nur im nvfp4-Zweig
++    # gelesen; sonst wird ein beliebiger gueltiger Zeiger uebergeben).
++    k_sf_ptr,
++    v_sf_ptr,
+     indices_ptr,
+     block_table_ptr,
+     token_to_req_ptr,
+@@ -208,6 +368,16 @@
+     stride_v_block,
+     stride_v_token,
+     stride_v_head,
++    # QFN-PATCH kvq-s2: Schrittweiten der Blockskalen-Seiten. Sie stammen aus
++    # nvfp4_split_data_scale und sind NICHT aus den Datenschrittweiten
++    # ableitbar (Daten- und Skalenbereich haben verschiedene Zeilenbreiten,
++    # 128 gegen 16 Byte).
++    stride_ks_block,
++    stride_ks_token,
++    stride_ks_head,
++    stride_vs_block,
++    stride_vs_token,
++    stride_vs_head,
+     stride_indices_row,
+     stride_table_req,
+     stride_output_row,
+@@ -225,6 +395,18 @@
+     NUM_TILES: tl.constexpr,
+     BLOCK_M: tl.constexpr,
+     BLOCK_N: tl.constexpr,
++    # QFN-PATCH kvq-s1: Compile-Zeit-Schalter. False kompiliert den Dequant-
++    # Zweig restlos weg -- der bf16-Pfad bleibt damit bitweise unveraendert.
++    USE_FP8: tl.constexpr = False,
++    # QFN-PATCH kvq-s2: zweiter, voellig getrennter Lesezweig (andere Loads,
++    # andere Breiten). Genau einer von USE_FP8 / KV_QUANT_NVFP4 ist gesetzt.
++    KV_QUANT_NVFP4: tl.constexpr = False,
++    V_SF_SWIZZLED: tl.constexpr = True,
++    # QFN-PATCH kvq-s2b: 0 = S2c-Original, 1 = nur umgeordnet, 2 = zusaetzlich
++    # Hebel 1 (schmale Skalenkachel), 3/4/5 = Hebel-2-Diagnosezweige (beide
++    # Seiten / nur V / nur K). Alle stehen im selben Binaerstand, damit jeder
++    # Kontrollarm NICHTS ausser diesem einen constexpr aendert.
++    SF_MODE: tl.constexpr = 2,
+ ) -> None:
+     row = tl.program_id(0)
+     kv_head = tl.program_id(1)
+@@ -279,24 +461,372 @@
+         valid &= (physical_page >= 0) & (physical_page < num_cache_blocks)
+         # physical_page * block stride can overflow int32 for large caches.
+         safe_page = tl.maximum(physical_page, 0).to(tl.int64)
+-        keys = tl.load(
+-            k_cache_ptr
+-            + safe_page[None, :] * stride_k_block
+-            + page_offset[None, :] * stride_k_token
+-            + kv_head * stride_k_head
+-            + dim_offsets[:, None],
+-            mask=valid[None, :],
+-            other=0.0,
+-        )
+-        values = tl.load(
+-            v_cache_ptr
+-            + safe_page[:, None] * stride_v_block
+-            + page_offset[:, None] * stride_v_token
+-            + kv_head * stride_v_head
+-            + dim_offsets[None, :],
+-            mask=valid[:, None],
+-            other=0.0,
+-        )
++        if KV_QUANT_NVFP4:
++            # QFN-PATCH kvq-s2: NVFP4-Zweig.
++            #
++            # Eine Zeile traegt HEAD_DIM Werte in HEAD_DIM/2 Byte (zwei
++            # E2M1-Nibbles je Byte, geradzahliger Index im NIEDERWERTIGEN)
++            # plus HEAD_DIM/16 E4M3-Blockskalen in einer GETRENNTEN Seite.
++            # Rekonstruktion: nibble * blockskala * layer-skala.
++            #
++            # Die Orientierungen bleiben wie im bf16-Zweig: keys als
++            # [HEAD_DIM, BLOCK_N] (K geht transponiert in tl.dot), values als
++            # [BLOCK_N, HEAD_DIM].
++            #
++            # HEAD_DIM // 16 wird als constexpr-Ausdruck direkt uebergeben --
++            # eine `SCALE_DIM: tl.constexpr = ...`-Bindung INNERHALB eines
++            # constexpr-Zweiges ist in Triton nicht zuverlaessig.
++            byte_offsets = dim_offsets // 2
++            if SF_MODE == 0:
++                # QFN-PATCH kvq-s2b: MODUS 0 -- der S2c-Zweig vom 28.08.,
++                # Anweisung fuer Anweisung in der urspruenglichen Reihenfolge
++                # (K komplett, dann V komplett). Er bleibt im Binaerstand, weil
++                # sonst nicht entscheidbar waere, ob ein gemessener Gewinn vom
++                # Hebel kommt oder von der Umordnung der Ladebefehle.
++                group_offsets = dim_offsets // 16
++                k_bytes = tl.load(
++                    k_cache_ptr
++                    + safe_page[None, :] * stride_k_block
++                    + page_offset[None, :] * stride_k_token
++                    + kv_head * stride_k_head
++                    + byte_offsets[:, None],
++                    mask=valid[None, :],
++                    other=0,
++                )
++                k_nib = tl.where(
++                    (dim_offsets[:, None] & 1) == 0,
++                    k_bytes & 0x0F,
++                    (k_bytes >> 4) & 0x0F,
++                )
++                ks_slot, ks_group = _qfn_sf_coord(
++                    page_offset[None, :], group_offsets[:, None], False, HEAD_DIM // 16
++                )
++                k_sf = tl.load(
++                    k_sf_ptr
++                    + safe_page[None, :] * stride_ks_block
++                    + ks_slot * stride_ks_token
++                    + kv_head * stride_ks_head
++                    + ks_group,
++                    mask=valid[None, :],
++                    other=0,
++                )
++                keys = (
++                    _qfn_decode_e2m1(k_nib)
++                    * _qfn_sf_to_float(k_sf)
++                    * tl.load(k_scale_ptr)
++                ).to(query.dtype)
++                v_bytes = tl.load(
++                    v_cache_ptr
++                    + safe_page[:, None] * stride_v_block
++                    + page_offset[:, None] * stride_v_token
++                    + kv_head * stride_v_head
++                    + byte_offsets[None, :],
++                    mask=valid[:, None],
++                    other=0,
++                )
++                v_nib = tl.where(
++                    (dim_offsets[None, :] & 1) == 0,
++                    v_bytes & 0x0F,
++                    (v_bytes >> 4) & 0x0F,
++                )
++                vs_slot, vs_group = _qfn_sf_coord(
++                    page_offset[:, None], group_offsets[None, :], V_SF_SWIZZLED,
++                    HEAD_DIM // 16,
++                )
++                v_sf = tl.load(
++                    v_sf_ptr
++                    + safe_page[:, None] * stride_vs_block
++                    + vs_slot * stride_vs_token
++                    + kv_head * stride_vs_head
++                    + vs_group,
++                    mask=valid[:, None],
++                    other=0,
++                )
++                values = (
++                    _qfn_decode_e2m1(v_nib)
++                    * _qfn_sf_to_float(v_sf)
++                    * tl.load(v_scale_ptr)
++                ).to(query.dtype)
++            else:
++                if SF_MODE == 3:
++                    # QFN-PATCH kvq-s2b -- HEBEL 2 (bytewise-Loader,
++                    # Vorbild PR #44389). Der Zweig oben adressiert jedes
++                    # Datenbyte ZWEIMAL: die Kachel laeuft ueber dim_offsets,
++                    # und byte_offsets = dim_offsets // 2 traegt fuer die
++                    # Zeilen 2i und 2i+1 dieselbe Adresse. Hier wird die halbe
++                    # Kachel EINMAL geladen und die volle aus den beiden
++                    # Nibbles zusammengesetzt.
++                    #
++                    # Das Zusammensetzen ist auf beiden Seiten VERSCHIEDEN und
++                    # ist gemessen, nicht angenommen (s2b-bytewise-probe.log,
++                    # bitgleich ueber alle fuenf Kachel-Profile):
++                    #   K: [H/2, BLOCK_N] -> tl.join gibt [H/2, BLOCK_N, 2],
++                    #      die 2 sitzt hinten -> permute (0,2,1) -> reshape.
++                    #   V: [BLOCK_N, H/2] -> tl.join gibt [BLOCK_N, H/2, 2],
++                    #      das ist bereits die gesuchte Ordnung, kein permute.
++                    halb_offsets = tl.arange(0, HEAD_DIM // 2)
++                    k_roh = tl.load(
++                        k_cache_ptr
++                        + safe_page[None, :] * stride_k_block
++                        + page_offset[None, :] * stride_k_token
++                        + kv_head * stride_k_head
++                        + halb_offsets[:, None],
++                        mask=valid[None, :],
++                        other=0,
++                    )
++                    k_nib = tl.reshape(
++                        tl.permute(
++                            tl.join(k_roh & 0x0F, (k_roh >> 4) & 0x0F), (0, 2, 1)
++                        ),
++                        (HEAD_DIM, BLOCK_N),
++                    )
++                    v_roh = tl.load(
++                        v_cache_ptr
++                        + safe_page[:, None] * stride_v_block
++                        + page_offset[:, None] * stride_v_token
++                        + kv_head * stride_v_head
++                        + halb_offsets[None, :],
++                        mask=valid[:, None],
++                        other=0,
++                    )
++                    v_nib = tl.reshape(
++                        tl.join(v_roh & 0x0F, (v_roh >> 4) & 0x0F),
++                        (BLOCK_N, HEAD_DIM),
++                    )
++                elif SF_MODE == 4:
++                    # QFN-PATCH kvq-s2b -- HEBEL-2-DIAGNOSE, NUR V-Seite.
++                    #
++                    # S2 11.5, erster Spiegelstrich: Modus 3 rechnet bei
++                    # BLOCK_N=16 falsch. Modus 3 fasst ZWEI Konstruktionen
++                    # zugleich an -- K braucht tl.permute, V nicht. Dieser
++                    # Zweig nimmt nur die V-Seite (ohne permute) und laesst K
++                    # exakt so, wie Modus 2 ihn faehrt. Zusammen mit Modus 5
++                    # trennt das die beiden Traeger in EINEM Selbsttestlauf.
++                    halb_offsets = tl.arange(0, HEAD_DIM // 2)
++                    k_bytes = tl.load(
++                        k_cache_ptr
++                        + safe_page[None, :] * stride_k_block
++                        + page_offset[None, :] * stride_k_token
++                        + kv_head * stride_k_head
++                        + byte_offsets[:, None],
++                        mask=valid[None, :],
++                        other=0,
++                    )
++                    k_nib = tl.where(
++                        (dim_offsets[:, None] & 1) == 0, k_bytes & 0x0F, (k_bytes >> 4) & 0x0F
++                    )
++                    v_roh = tl.load(
++                        v_cache_ptr
++                        + safe_page[:, None] * stride_v_block
++                        + page_offset[:, None] * stride_v_token
++                        + kv_head * stride_v_head
++                        + halb_offsets[None, :],
++                        mask=valid[:, None],
++                        other=0,
++                    )
++                    v_nib = tl.reshape(
++                        tl.join(v_roh & 0x0F, (v_roh >> 4) & 0x0F),
++                        (BLOCK_N, HEAD_DIM),
++                    )
++                elif SF_MODE == 5:
++                    # QFN-PATCH kvq-s2b -- HEBEL-2-DIAGNOSE, NUR K-Seite.
++                    # Gegenstueck zu Modus 4: hier steht tl.permute drin, die
++                    # V-Seite bleibt klassisch. Faellt 5 und 4 nicht, ist
++                    # tl.permute der Traeger; faellt 4 und 5 nicht, ist es die
++                    # V-Konstruktion; fallen beide, traegt tl.join selbst.
++                    halb_offsets = tl.arange(0, HEAD_DIM // 2)
++                    k_roh = tl.load(
++                        k_cache_ptr
++                        + safe_page[None, :] * stride_k_block
++                        + page_offset[None, :] * stride_k_token
++                        + kv_head * stride_k_head
++                        + halb_offsets[:, None],
++                        mask=valid[None, :],
++                        other=0,
++                    )
++                    k_nib = tl.reshape(
++                        tl.permute(
++                            tl.join(k_roh & 0x0F, (k_roh >> 4) & 0x0F), (0, 2, 1)
++                        ),
++                        (HEAD_DIM, BLOCK_N),
++                    )
++                    v_bytes = tl.load(
++                        v_cache_ptr
++                        + safe_page[:, None] * stride_v_block
++                        + page_offset[:, None] * stride_v_token
++                        + kv_head * stride_v_head
++                        + byte_offsets[None, :],
++                        mask=valid[:, None],
++                        other=0,
++                    )
++                    v_nib = tl.where(
++                        (dim_offsets[None, :] & 1) == 0, v_bytes & 0x0F, (v_bytes >> 4) & 0x0F
++                    )
++                else:
++                    k_bytes = tl.load(
++                        k_cache_ptr
++                        + safe_page[None, :] * stride_k_block
++                        + page_offset[None, :] * stride_k_token
++                        + kv_head * stride_k_head
++                        + byte_offsets[:, None],
++                        mask=valid[None, :],
++                        other=0,
++                    )
++                    k_nib = tl.where(
++                        (dim_offsets[:, None] & 1) == 0, k_bytes & 0x0F, (k_bytes >> 4) & 0x0F
++                    )
++                    v_bytes = tl.load(
++                        v_cache_ptr
++                        + safe_page[:, None] * stride_v_block
++                        + page_offset[:, None] * stride_v_token
++                        + kv_head * stride_v_head
++                        + byte_offsets[None, :],
++                        mask=valid[:, None],
++                        other=0,
++                    )
++                    v_nib = tl.where(
++                        (dim_offsets[None, :] & 1) == 0, v_bytes & 0x0F, (v_bytes >> 4) & 0x0F
++                    )
++                if SF_MODE >= 2:
++                    # QFN-PATCH kvq-s2b -- HEBEL 1.
++                    #
++                    # Die Skalenkachel wird in ihrer NATUERLICHEN Breite geladen,
++                    # [SCALE_DIM, BLOCK_N] statt [HEAD_DIM, BLOCK_N]. Dass das
++                    # zulaessig ist, folgt aus zwei Dingen und nicht aus einem
++                    # Gefuehl: dim_offsets ist tl.arange(0, HEAD_DIM) (Image-Quelle
++                    # ops/qsa.py:236), und die Gruppe ist dim // 16 -- also 16
++                    # AUFEINANDERFOLGENDE Zeilen je Gruppe. Genau diese Ordnung
++                    # stellt broadcast_to + reshape wieder her.
++                    #
++                    # Zusatzgewinn, der nicht im Ladeverkehr steckt: _qfn_sf_to_float
++                    # (rund acht Bit-Operationen) und die Multiplikation mit der
++                    # Layer-Skala laufen jetzt auf SCALE_DIM statt HEAD_DIM Zeilen.
++                    #
++                    # Die Reihenfolge der Multiplikationen aendert sich damit von
++                    # (nib * sf) * layer zu nib * (sf * layer). float32-Multiplikation
++                    # ist nicht assoziativ -- der Unterschied liegt im letzten Bit
++                    # und wird von N3/N7 gemessen, nicht behauptet.
++                    sf_groups = tl.arange(0, HEAD_DIM // 16)
++                    ks_slot, ks_group = _qfn_sf_coord(
++                        page_offset[None, :], sf_groups[:, None], False, HEAD_DIM // 16
++                    )
++                    k_sf_f = _qfn_sf_to_float(
++                        tl.load(
++                            k_sf_ptr
++                            + safe_page[None, :] * stride_ks_block
++                            + ks_slot * stride_ks_token
++                            + kv_head * stride_ks_head
++                            + ks_group,
++                            mask=valid[None, :],
++                            other=0,
++                        )
++                    ) * tl.load(k_scale_ptr)
++                    keys = (
++                        _qfn_decode_e2m1(k_nib)
++                        * tl.reshape(
++                            tl.broadcast_to(
++                                k_sf_f[:, None, :], (HEAD_DIM // 16, 16, BLOCK_N)
++                            ),
++                            (HEAD_DIM, BLOCK_N),
++                        )
++                    ).to(query.dtype)
++                    vs_slot, vs_group = _qfn_sf_coord(
++                        page_offset[:, None], sf_groups[None, :], V_SF_SWIZZLED,
++                        HEAD_DIM // 16,
++                    )
++                    v_sf_f = _qfn_sf_to_float(
++                        tl.load(
++                            v_sf_ptr
++                            + safe_page[:, None] * stride_vs_block
++                            + vs_slot * stride_vs_token
++                            + kv_head * stride_vs_head
++                            + vs_group,
++                            mask=valid[:, None],
++                            other=0,
++                        )
++                    ) * tl.load(v_scale_ptr)
++                    values = (
++                        _qfn_decode_e2m1(v_nib)
++                        * tl.reshape(
++                            tl.broadcast_to(
++                                v_sf_f[:, :, None], (BLOCK_N, HEAD_DIM // 16, 16)
++                            ),
++                            (BLOCK_N, HEAD_DIM),
++                        )
++                    ).to(query.dtype)
++                else:
++                    # QFN-PATCH kvq-s2b: der S2c-Originalzweig, unveraendert. Er
++                    # bleibt im Binaerstand, damit der Kontrollarm dieser
++                    # Optimierung KEINE zweite Variable traegt.
++                    group_offsets = dim_offsets // 16
++                    # K-Blockskalen liegen linear (so schreibt sie der
++                    # CUDA-Schreiber, und so auch der Software-Schreiber).
++                    ks_slot, ks_group = _qfn_sf_coord(
++                        page_offset[None, :], group_offsets[:, None], False, HEAD_DIM // 16
++                    )
++                    k_sf = tl.load(
++                        k_sf_ptr
++                        + safe_page[None, :] * stride_ks_block
++                        + ks_slot * stride_ks_token
++                        + kv_head * stride_ks_head
++                        + ks_group,
++                        mask=valid[None, :],
++                        other=0,
++                    )
++                    keys = (
++                        _qfn_decode_e2m1(k_nib)
++                        * _qfn_sf_to_float(k_sf)
++                        * tl.load(k_scale_ptr)
++                    ).to(query.dtype)
++                    vs_slot, vs_group = _qfn_sf_coord(
++                        page_offset[:, None], group_offsets[None, :], V_SF_SWIZZLED,
++                        HEAD_DIM // 16,
++                    )
++                    v_sf = tl.load(
++                        v_sf_ptr
++                        + safe_page[:, None] * stride_vs_block
++                        + vs_slot * stride_vs_token
++                        + kv_head * stride_vs_head
++                        + vs_group,
++                        mask=valid[:, None],
++                        other=0,
++                    )
++                    values = (
++                        _qfn_decode_e2m1(v_nib)
++                        * _qfn_sf_to_float(v_sf)
++                        * tl.load(v_scale_ptr)
++                    ).to(query.dtype)
++        else:
++            keys = tl.load(
++                k_cache_ptr
++                + safe_page[None, :] * stride_k_block
++                + page_offset[None, :] * stride_k_token
++                + kv_head * stride_k_head
++                + dim_offsets[:, None],
++                mask=valid[None, :],
++                other=0.0,
++            )
++            values = tl.load(
++                v_cache_ptr
++                + safe_page[:, None] * stride_v_block
++                + page_offset[:, None] * stride_v_token
++                + kv_head * stride_v_head
++                + dim_offsets[None, :],
++                mask=valid[:, None],
++                other=0.0,
++            )
++            if USE_FP8:
++                # QFN-PATCH kvq-s1 -- wortgleich zu
++                # minimax_m3/common/ops/sparse_attn.py. NIE fp8 direkt in
++                # tl.dot: Triton kann fp8e4nv auf SM12x nicht multiplizieren
++                # (derselbe Befund, der SGLang #36545 ausgeloest hat). Erst auf
++                # den Query-dtype heben, dann mit der Layer-Skala multiplizieren
++                # und zurueckcasten. Der Umweg kostet nur Register, gegen die
++                # halbierte Ladebandbreite ist das nichts.
++                keys = keys.to(query.dtype)
++                keys = (keys * tl.load(k_scale_ptr)).to(query.dtype)
++                values = values.to(query.dtype)
++                values = (values * tl.load(v_scale_ptr)).to(query.dtype)
+         scores = tl.dot(query, keys)
+         # Scaling scores avoids re-quantizing a scaled query to BF16.
+         scores *= softmax_scale_log2
+@@ -817,8 +1347,16 @@
+     block_table: torch.Tensor,
+     token_to_req: torch.Tensor,
+     out: torch.Tensor | None = None,
++    # QFN-PATCH kvq-s1: Device-Skalen des Layers. None = reiner bf16-Pfad.
++    k_scale: torch.Tensor | None = None,
++    v_scale: torch.Tensor | None = None,
++    # QFN-PATCH kvq-s2: Blockskalen-Seiten. Gesetzt = nvfp4-Pfad; dann sind
++    # k_cache/v_cache die DATENSEITEN (uint8, letzte Dimension head_dim/2).
++    k_scale_cache: torch.Tensor | None = None,
++    v_scale_cache: torch.Tensor | None = None,
++    v_sf_swizzled: bool = True,
+ ) -> torch.Tensor:
+-    """Run sparse GQA directly over paged BF16 K/V caches."""
++    """Run sparse GQA over paged BF16, FP8-E4M3 or NVFP4 K/V caches."""
+ 
+     if not q.is_cuda or not HAS_TRITON:
+         raise RuntimeError("paged QSA sparse attention requires CUDA and Triton")
+@@ -832,11 +1370,42 @@
+         raise ValueError("QSA sparse attention cache and block table must be nonempty")
+     if logical_indices.shape[1] <= 0:
+         raise ValueError("QSA sparse attention requires a positive selection width")
+-    if q.shape[2] != k_cache.shape[3] or q.shape[1] % k_cache.shape[2]:
++    # QFN-PATCH kvq-s2: Im nvfp4-Fall traegt eine Cache-Zeile head_dim/2 Byte
++    # (zwei Werte je Byte); die Blockskalen stehen in einer eigenen Seite.
++    _qfn_nvfp4 = k_scale_cache is not None
++    _qfn_zeilenbreite = q.shape[2] // 2 if _qfn_nvfp4 else q.shape[2]
++    if _qfn_zeilenbreite != k_cache.shape[3] or q.shape[1] % k_cache.shape[2]:
+         raise ValueError("QSA sparse attention requires valid grouped-query heads")
+     head_dim = q.shape[2]
+     assert head_dim >= 16 and (head_dim & (head_dim - 1)) == 0
+-    assert q.dtype == k_cache.dtype == v_cache.dtype == torch.bfloat16
++    # QFN-PATCH kvq-s1/s2: Q bleibt bf16, K/V duerfen fp8-e4m3 (float8_e4m3fn)
++    # oder nvfp4 (uint8, gepackt) sein.
++    assert q.dtype == torch.bfloat16
++    assert k_cache.dtype == v_cache.dtype
++    assert k_cache.dtype in (torch.bfloat16, torch.float8_e4m3fn, torch.uint8)
++    _qfn_use_fp8 = k_cache.dtype == torch.float8_e4m3fn
++    if _qfn_nvfp4:
++        if k_cache.dtype != torch.uint8:
++            raise ValueError("QSA nvfp4 KV cache must be stored as uint8")
++        if v_scale_cache is None:
++            raise ValueError("QSA nvfp4 KV cache requires both scale pages")
++        if k_scale_cache.dtype != torch.uint8 or v_scale_cache.dtype != torch.uint8:
++            raise ValueError("QSA nvfp4 block scales must be raw uint8 bits")
++        if k_scale_cache.shape[3] != head_dim // 16:
++            raise ValueError("QSA nvfp4 block-scale page has the wrong width")
++        if k_scale_cache.shape[:3] != k_cache.shape[:3]:
++            raise ValueError("QSA nvfp4 data and scale pages disagree in shape")
++        if k_scale_cache.stride(3) != 1 or v_scale_cache.stride(3) != 1:
++            raise ValueError("QSA nvfp4 block scales must be contiguous per row")
++    elif k_cache.dtype == torch.uint8:
++        raise ValueError("QSA uint8 K/V cache without block scales is not nvfp4")
++    if _qfn_use_fp8 or _qfn_nvfp4:
++        if k_scale is None or v_scale is None:
++            raise ValueError("QSA quantized KV cache requires k_scale and v_scale")
++        if k_scale.numel() != 1 or v_scale.numel() != 1:
++            raise ValueError("QSA quantized KV cache expects scalar per-layer scales")
++        if k_scale.device != q.device or v_scale.device != q.device:
++            raise ValueError("QSA KV scales must live on the query device")
+     assert logical_indices.dtype == block_table.dtype == torch.int32
+     assert token_to_req.dtype == torch.int32
+     assert q.device == k_cache.device == v_cache.device
+@@ -872,6 +1441,39 @@
+     else:
+         block_n, target_splits, partial_warps = 64, 1, 2
+ 
++    # QFN-PATCH kvq-s2b -- HEBEL 3 in der URSPRUENGLICHEN Fassung (S2 2.5,
++    # Ausweg 1): "BLOCK_N = 32 mit zwei Stufen statt 64 mit einer".
++    #
++    # Hebel 3a (num_stages=2 bei BLOCK_N=64) ist gemessen und verworfen
++    # (0,938x-0,944x ueber vier Laengen, kvq-logs/s2b3a-kennlinie.log). Er
++    # erledigt DIESE Fassung NICHT mit: bei halber Kachel halbiert sich auch
++    # der Stufenpuffer, die Belegungsrechnung faellt also anders aus (S2 11.5,
++    # zweiter Spiegelstrich).
++    #
++    # Diese Uebersteuerung ist AUSSCHLIESSLICH Messwerkzeug. Leer = die
++    # Kachelwahl des Image, Wort fuer Wort unveraendert; die Vorgabe aendert
++    # sich also NICHT. Sie greift NUR im breiten Kachelfall (block_n > 16) --
++    # der Decode-Fall BLOCK_N=16 bleibt unangetastet, weil Hebel 3 die breite
++    # Prefill-Kachel meint und sonst zwei Dinge zugleich variiert wuerden.
++    #
++    # Was dabei UNVERMEIDLICH mitwandert und deshalb hier steht statt
++    # verschwiegen zu werden: num_tiles verdoppelt sich, damit auch
++    # max_useful_splits -- num_splits kann folglich steigen, wo target_splits
++    # bisher nicht die bindende Schranke war. Das ist keine zweite frei
++    # gewaehlte Variable, sondern die Formel des Image; der Selbsttest weist
++    # num_splits je Profil aus.
++    _qfn_bn_env = _qfn_ops_os.environ.get("QFN_KVQ_WIDE_BLOCK_N", "").strip()
++    if _qfn_bn_env and block_n > 16:
++        block_n = int(_qfn_bn_env)
++    # Zweites Messwerkzeug, gleiche Bauart und gleiche Bedingung: die Warpzahl
++    # der BREITEN Kachel. Sie wird gebraucht, um Kachelbreite und Warpzahl zu
++    # TRENNEN -- der Hebel-2-Fehler (S2 10.2) trifft die Profile mit
++    # BLOCK_N=16 UND partial_warps=4 zugleich, und S2 10.3 nennt genau diese
++    # Kombination als ungemessenen Verdaechtigen. Leer = Wahl des Image.
++    _qfn_warps_env = _qfn_ops_os.environ.get("QFN_KVQ_WIDE_WARPS", "").strip()
++    if _qfn_warps_env and partial_warps == 2:
++        partial_warps = int(_qfn_warps_env)
++
+     num_tiles = triton.cdiv(logical_indices.shape[1], block_n)
+     # Avoid empty splits when the selection width is smaller than the profile.
+     max_useful_splits = 1 << (num_tiles.bit_length() - 1)
+@@ -894,10 +1496,80 @@
+         )
+ 
+     partial_grid = (q.shape[0], k_cache.shape[2], num_splits)
++    # QFN-PATCH kvq-s1: im bf16-Fall einen beliebigen gueltigen Zeiger
++    # uebergeben (Triton braucht auch fuer den wegkompilierten Zweig ein
++    # Argument); dasselbe Vorgehen wie in MiniMax-M3.
++    _qfn_quant = _qfn_use_fp8 or _qfn_nvfp4
++    _qfn_k_scale_arg = k_scale if _qfn_quant else q
++    _qfn_v_scale_arg = v_scale if _qfn_quant else q
++    _qfn_k_sf_arg = k_scale_cache if _qfn_nvfp4 else q
++    _qfn_v_sf_arg = v_scale_cache if _qfn_nvfp4 else q
++    _qfn_ks_strides = (
++        (k_scale_cache.stride(0), k_scale_cache.stride(1), k_scale_cache.stride(2))
++        if _qfn_nvfp4
++        else (0, 0, 0)
++    )
++    _qfn_vs_strides = (
++        (v_scale_cache.stride(0), v_scale_cache.stride(1), v_scale_cache.stride(2))
++        if _qfn_nvfp4
++        else (0, 0, 0)
++    )
++    # QFN-PATCH kvq-s1/s2: Der quantisierte Zweig braucht mehr Shared Memory als
++    # der bf16-Zweig -- die dequantisierten bf16-Kacheln stehen neben den
++    # geladenen Rohkacheln. GEMESSEN auf SM120 (Serverstart 28.08. 08:47): mit
++    # BLOCK_N=64 und num_stages=2 verlangte der fp8-Kernel 106.496 B, die Karte
++    # stellt 101.376 B bereit -- 5.120 B zu wenig, und der Start stirbt beim
++    # ersten echten Vorwaertslauf mit triton OutOfResources. Eine Pipeline-Stufe
++    # weniger nimmt genau eine Kachelgeneration aus dem Puffer.
++    #
++    # Bewusst NUR fuer die breiten Kacheln: BLOCK_N=64 waehlt der Wrapper bei
++    # >= 32 Programmen, also im Prefill/Chunked-Prefill. Der Decode-Fall faehrt
++    # BLOCK_N=16, passt mit zwei Stufen bequem hinein und behaelt sie deshalb --
++    # dort haengt die Latenz am Laden, und genau da soll die Pipeline bleiben.
++    #
++    # nvfp4 laedt zwar WENIGER Bytes als fp8 (128+16 statt 256 je Zeile), haelt
++    # aber zusaetzlich float32-Zwischenwerte; die Grenze wird also nicht
++    # automatisch weiter. Deshalb dieselbe Regel, und der Selbsttest faehrt alle
++    # fuenf Kachel-Profile ab, statt sie zu erschliessen.
++    # QFN-PATCH kvq-s2b: Uebersteuerung NUR fuer die Machbarkeitsprobe zu
++    # Hebel 3a. Leer = die Regel aus Stufe 1, Wort fuer Wort unveraendert;
++    # die Vorgabe aendert sich also NICHT. Gesetzt = fester Stufenwert,
++    # damit messbar wird, ob num_stages=2 unter Hebel 1 ueberhaupt in den
++    # Shared Memory passt (Stufe 1 kippte dort bei 106.496 gegen 101.376 B).
++    #
++    # QFN-PATCH kvq-s2b -- HEBEL 3a: GEPRUEFT UND VERWORFEN, die Regel bleibt.
++    #
++    # Die Vermutung war, `_qfn_quant` sei zu breit gefasst: gerissen hatte die
++    # Grenze der fp8-Kernel (106.496 B gegen 101.376 B, gemessen 28.08.), und
++    # fp8 laedt 256 Byte je Zeile, nvfp4 nur 144. Der Platz ist auch wirklich
++    # da -- num_stages=2 fordert 75.776 B, erst drei Stufen sprengen die Grenze
++    # (kvq-logs/s2b-stagesprobe.log).
++    #
++    # ABER: zwei Stufen sind fuer nvfp4 GEMESSEN LANGSAMER, und zwar konsistent
++    # ueber vier Laengen -- 12,8k 0,938x, 65k 0,944x, 131k 0,944x, 196k 0,941x
++    # (kvq-logs/s2b3a-kennlinie.log, s2b3a-arm-{vor,nach}.log). Die plausible
++    # Ursache ist Belegung, nicht Kapazitaet: eine Stufe braucht ~10.240 B, also
++    # passen rund neun Bloecke gleichzeitig auf einen SM; zwei Stufen brauchen
++    # ~75.776 B und lassen nur noch einen zu. Der Pipelinegewinn zahlt den
++    # Belegungsverlust nicht zurueck `[?]`.
++    #
++    # Die Regel aus Stufe 1 ist also fuer nvfp4 richtig -- aus einem ANDEREN
++    # Grund als dem, aus dem sie geschrieben wurde. Sie bleibt unveraendert.
++    # QFN_KVQ_STAGES ist ausschliesslich Messwerkzeug (leer = diese Regel).
++    _qfn_stages_env = _qfn_ops_os.environ.get("QFN_KVQ_STAGES", "").strip()
++    _qfn_stages = (
++        int(_qfn_stages_env)
++        if _qfn_stages_env
++        else (1 if (_qfn_quant and block_n > 16) else 2)
++    )
+     _qsa_sparse_paged_gqa_splitk_kernel[partial_grid](
+         q,
+         k_cache,
+         v_cache,
++        _qfn_k_scale_arg,
++        _qfn_v_scale_arg,
++        _qfn_k_sf_arg,
++        _qfn_v_sf_arg,
+         logical_indices,
+         block_table,
+         token_to_req,
+@@ -912,6 +1584,12 @@
+         v_cache.stride(0),
+         v_cache.stride(1),
+         v_cache.stride(2),
++        _qfn_ks_strides[0],  # QFN-PATCH kvq-s2
++        _qfn_ks_strides[1],
++        _qfn_ks_strides[2],
++        _qfn_vs_strides[0],
++        _qfn_vs_strides[1],
++        _qfn_vs_strides[2],
+         logical_indices.stride(0),
+         block_table.stride(0),
+         out.stride(0),
+@@ -929,8 +1607,12 @@
+         NUM_TILES=num_tiles,
+         BLOCK_M=block_m,
+         BLOCK_N=block_n,
++        USE_FP8=_qfn_use_fp8,  # QFN-PATCH kvq-s1
++        KV_QUANT_NVFP4=_qfn_nvfp4,  # QFN-PATCH kvq-s2
++        V_SF_SWIZZLED=bool(v_sf_swizzled),  # QFN-PATCH kvq-s2
++        SF_MODE=_QFN_SF_MODE,  # QFN-PATCH kvq-s2b (0/1/2 prod, 3/4/5 Diagnose)
+         num_warps=partial_warps,
+-        num_stages=2,
++        num_stages=_qfn_stages,  # QFN-PATCH kvq-s1 (bf16: unveraendert 2)
+     )
+     if num_splits == 1:
+         return out
+@@ -952,6 +1634,206 @@
+     return out
+ 
+ 
++@triton.jit
++def _qfn_nvfp4_store_kernel(
++    key_ptr,
++    value_ptr,
++    k_data_ptr,
++    k_sf_ptr,
++    v_data_ptr,
++    v_sf_ptr,
++    slot_ptr,
++    k_scale_ptr,
++    v_scale_ptr,
++    stride_key_token,
++    stride_key_head,
++    stride_val_token,
++    stride_val_head,
++    s_kd_block,
++    s_kd_token,
++    s_kd_head,
++    s_ks_block,
++    s_ks_token,
++    s_ks_head,
++    s_vd_block,
++    s_vd_token,
++    s_vd_head,
++    s_vs_block,
++    s_vs_token,
++    s_vs_head,
++    PAGE_SIZE: tl.constexpr,
++    HEAD_DIM: tl.constexpr,
++    V_SF_SWIZZLED: tl.constexpr,
++) -> None:
++    """QFN-PATCH kvq-s2: Software-Schreiber (Plan-Rueckfall S2b).
++
++    Ein Programm je (Token, KV-Kopf, 16er-Gruppe) -- dieselbe Zerlegung wie
++    `_reshape_cache_nvfp4_kernel` in PR #44389, damit hier nichts Neues
++    erfunden wird. Quantisiert K und V nach NVFP4 und legt sie in DASSELBE
++    Layout wie der vorkompilierte CUDA-Schreiber; der Leser oben muss deshalb
++    nicht wissen, wer geschrieben hat.
++    """
++    tl.static_assert(HEAD_DIM % 16 == 0)
++    SCALE_DIM: tl.constexpr = HEAD_DIM // 16
++    tl.static_assert(SCALE_DIM % 4 == 0)
++    tl.static_assert(PAGE_SIZE % 4 == 0)
++
++    token = tl.program_id(0)
++    head = tl.program_id(1)
++    group = tl.program_id(2)
++    slot = tl.load(slot_ptr + token).to(tl.int64)
++    if slot < 0:
++        return
++    block = slot // PAGE_SIZE
++    offset = slot % PAGE_SIZE
++
++    byte_offsets = tl.arange(0, 8)
++    even = byte_offsets * 2
++    odd = even + 1
++    basis = group * 16
++    k_even = tl.load(
++        key_ptr + token * stride_key_token + head * stride_key_head + basis + even
++    ).to(tl.float32)
++    k_odd = tl.load(
++        key_ptr + token * stride_key_token + head * stride_key_head + basis + odd
++    ).to(tl.float32)
++    v_even = tl.load(
++        value_ptr + token * stride_val_token + head * stride_val_head + basis + even
++    ).to(tl.float32)
++    v_odd = tl.load(
++        value_ptr + token * stride_val_token + head * stride_val_head + basis + odd
++    ).to(tl.float32)
++
++    # Die Layer-Skala wirkt als GLOBALE Skala: der Schreiber teilt durch sie,
++    # der Leser multipliziert wieder damit. Startwert ist 1,0.
++    k_global = tl.load(k_scale_ptr).to(tl.float32)
++    v_global = tl.load(v_scale_ptr).to(tl.float32)
++    k_quant = tl.where(k_global == 0.0, 1.0, 1.0 / k_global)
++    v_quant = tl.where(v_global == 0.0, 1.0, 1.0 / v_global)
++
++    k_max = tl.maximum(tl.max(tl.abs(k_even), axis=0), tl.max(tl.abs(k_odd), axis=0))
++    v_max = tl.maximum(tl.max(tl.abs(v_even), axis=0), tl.max(tl.abs(v_odd), axis=0))
++    k_sf_bits = _qfn_float_to_sf_bits((k_quant * k_max) / 6.0)
++    v_sf_bits = _qfn_float_to_sf_bits((v_quant * v_max) / 6.0)
++    k_sf_f = _qfn_sf_to_float(k_sf_bits)
++    v_sf_f = _qfn_sf_to_float(v_sf_bits)
++    k_out = tl.where(k_sf_f == 0.0, 0.0, k_quant / k_sf_f)
++    v_out = tl.where(v_sf_f == 0.0, 0.0, v_quant / v_sf_f)
++
++    k_low = _qfn_float_to_e2m1_bits(tl.clamp(k_even * k_out, -6.0, 6.0))
++    k_high = _qfn_float_to_e2m1_bits(tl.clamp(k_odd * k_out, -6.0, 6.0))
++    v_low = _qfn_float_to_e2m1_bits(tl.clamp(v_even * v_out, -6.0, 6.0))
++    v_high = _qfn_float_to_e2m1_bits(tl.clamp(v_odd * v_out, -6.0, 6.0))
++
++    tl.store(
++        k_data_ptr
++        + block * s_kd_block
++        + offset * s_kd_token
++        + head * s_kd_head
++        + basis // 2
++        + byte_offsets,
++        k_low | (k_high << 4),
++    )
++    tl.store(
++        v_data_ptr
++        + block * s_vd_block
++        + offset * s_vd_token
++        + head * s_vd_head
++        + basis // 2
++        + byte_offsets,
++        v_low | (v_high << 4),
++    )
++
++    ks_slot, ks_group = _qfn_sf_coord(offset, group, False, SCALE_DIM)
++    tl.store(
++        k_sf_ptr
++        + block * s_ks_block
++        + ks_slot * s_ks_token
++        + head * s_ks_head
++        + ks_group,
++        k_sf_bits,
++    )
++    vs_slot, vs_group = _qfn_sf_coord(offset, group, V_SF_SWIZZLED, SCALE_DIM)
++    tl.store(
++        v_sf_ptr
++        + block * s_vs_block
++        + vs_slot * s_vs_token
++        + head * s_vs_head
++        + vs_group,
++        v_sf_bits,
++    )
++
++
++def qsa_nvfp4_store(
++    key: torch.Tensor,
++    value: torch.Tensor,
++    k_data: torch.Tensor,
++    k_sf: torch.Tensor,
++    v_data: torch.Tensor,
++    v_sf: torch.Tensor,
++    slot_mapping: torch.Tensor,
++    k_scale: torch.Tensor,
++    v_scale: torch.Tensor,
++    v_sf_swizzled: bool = True,
++) -> None:
++    """QFN-PATCH kvq-s2: NVFP4-Schreibpfad in Software (Rueckfall S2b).
++
++    Wird nur benutzt, wenn `QFN_KVQ_NVFP4_WRITER=triton` gesetzt ist -- etwa
++    weil der vorkompilierte CUDA-Schreiber im Image fehlt oder ein anderes
++    Layout schreibt als der Leser erwartet. Beides misst kvq-nvfp4-test.py.
++    """
++    if not key.is_cuda or not HAS_TRITON:
++        raise RuntimeError("QSA nvfp4 store requires CUDA and Triton")
++    if key.ndim != 3 or value.shape != key.shape:
++        raise ValueError("QSA nvfp4 store expects [tokens, heads, head_dim] K/V")
++    if key.dtype != torch.bfloat16 or value.dtype != torch.bfloat16:
++        raise ValueError("QSA nvfp4 store expects BF16 inputs")
++    if k_data.dtype != torch.uint8 or k_sf.dtype != torch.uint8:
++        raise ValueError("QSA nvfp4 store expects uint8 cache pages")
++    head_dim = key.shape[2]
++    if head_dim % 16 or key.stride(2) != 1 or value.stride(2) != 1:
++        raise ValueError("QSA nvfp4 store requires contiguous head_dim % 16 == 0")
++    if k_data.shape[3] != head_dim // 2 or k_sf.shape[3] != head_dim // 16:
++        raise ValueError("QSA nvfp4 store: cache page widths do not match head_dim")
++    if k_data.stride(3) != 1 or k_sf.stride(3) != 1:
++        raise ValueError("QSA nvfp4 store: cache rows must be contiguous")
++    num_tokens = slot_mapping.numel()
++    if num_tokens == 0:
++        return
++    _qfn_nvfp4_store_kernel[(num_tokens, key.shape[1], head_dim // 16)](
++        key,
++        value,
++        k_data,
++        k_sf,
++        v_data,
++        v_sf,
++        slot_mapping,
++        k_scale,
++        v_scale,
++        key.stride(0),
++        key.stride(1),
++        value.stride(0),
++        value.stride(1),
++        k_data.stride(0),
++        k_data.stride(1),
++        k_data.stride(2),
++        k_sf.stride(0),
++        k_sf.stride(1),
++        k_sf.stride(2),
++        v_data.stride(0),
++        v_data.stride(1),
++        v_data.stride(2),
++        v_sf.stride(0),
++        v_sf.stride(1),
++        v_sf.stride(2),
++        PAGE_SIZE=k_data.shape[1],
++        HEAD_DIM=head_dim,
++        V_SF_SWIZZLED=bool(v_sf_swizzled),
++        num_warps=1,
++        num_stages=1,
++    )
++
++
+ def qsa_store_cache_rows(
+     cache: torch.Tensor,
+     slot_mapping: torch.Tensor,

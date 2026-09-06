@@ -1,0 +1,459 @@
+--- orig/models/qwen3_8_flash_next/nvidia/qsa.py	2026-09-06 05:21:53.997923850 -0500
++++ new/models/qwen3_8_flash_next/nvidia/qsa.py	2026-09-06 05:21:54.924938934 -0500
+@@ -50,12 +50,105 @@
+     FullAttentionSpec,
+     KVCacheSpec,
+     get_kv_quant_mode,
++    is_quantized_kv_cache,
+ )
+ 
+ from ..common.qsa_cache import QSAForwardMetadata
+ from . import model
+ from .indexer_qsa import QSAIndexer
+ 
++# QFN-PATCH kvq-s2: Nachtraegliche Importe. Nicht in die vorhandenen
++# Import-Bloecke gemischt, damit jeder Anker klein und eindeutig bleibt.
++import os as _qfn_os  # QFN-PATCH kvq-s2
++from dataclasses import replace as _qfn_replace  # QFN-PATCH kvq-s2
++from vllm.utils.torch_utils import (  # QFN-PATCH kvq-s2
++    get_dtype_size as _qfn_dtype_size,
++    nvfp4_kv_cache_full_dim as _qfn_nvfp4_full_dim,
++    nvfp4_split_data_scale as _qfn_nvfp4_split,
++)
++
++# QFN-PATCH kvq-s1/s2: erlaubte Haupt-KV-dtypes. fp8_e5m2 bewusst NICHT -- fuer
++# KV-Caches dem e4m3 unterlegen (kleinere Mantisse bei fuer K/V irrelevantem
++# Exponentenumfang) und ohne Evidenzbedarf. nvfp4_4over6 ebenfalls nicht: die
++# zweite FP4-Variante ist unbewertet und veraendert die Skalensuche im
++# Schreiber, also genau die Groesse, die G3 messen soll. Der
++# Indexer-Seitencache ist von dieser Liste nicht betroffen, er konstruiert
++# seine Caches hart in bf16.
++_QFN_KVQ_SUPPORTED = ("auto", "bfloat16", "fp8", "fp8_e4m3", "nvfp4")
++
++# QFN-PATCH kvq-s1: erlaubte SPEICHER-dtypes des Haupt-KV. torch.uint8 ist hier
++# kein Versehen: vLLM legt quantisierten KV grundsaetzlich als uint8 ab
++# (STR_DTYPE_TO_TORCH_DTYPE["fp8_e4m3"] = torch.uint8, ebenso "nvfp4",
++# utils/torch_utils.py). Die Bytes SIND e4m3 bzw. nvfp4, nur der Tensor-Typ
++# traegt es nicht -- umgedeutet wird erst unmittelbar vor dem Kernel
++# (forward_qsa), genau wie in MiniMax-M3.
++_QFN_KVQ_STORAGE = (torch.bfloat16, torch.uint8, torch.float8_e4m3fn)
++
++# QFN-PATCH kvq-s2: Schalter fuer die beiden nvfp4-Konventionen. Beide Werte
++# werden vom Selbsttest gemessen, nicht geraten -- siehe kvq-kerneltest.py.
++#   QFN_KVQ_NVFP4_WRITER  = "native" (vorkompilierter CUDA-Schreiber, Standard)
++#                           "triton" (Software-Schreiber, arch-unabhaengig)
++#   QFN_KVQ_V_SF_SWIZZLED = "1" (V-Blockskalen verschraenkt; so schreibt der
++#                                CUDA-Schreiber) / "0" (linear; so schreibt der
++#                                Triton-Schreiber bei head_dim 256)
++_QFN_NVFP4_WRITER = _qfn_os.environ.get("QFN_KVQ_NVFP4_WRITER", "native").strip().lower()
++_QFN_V_SF_SWIZZLED = _qfn_os.environ.get("QFN_KVQ_V_SF_SWIZZLED", "").strip()
++if _QFN_V_SF_SWIZZLED == "":
++    # Standard folgt dem Schreiber: nativ = verschraenkt, Triton = linear.
++    _QFN_V_SF_SWIZZLED = _QFN_NVFP4_WRITER != "triton"
++else:
++    _QFN_V_SF_SWIZZLED = _QFN_V_SF_SWIZZLED not in ("0", "false", "no")
++
++
++def _qfn_nvfp4_spec(spec):
++    """Seiten-Geometrie fuer nvfp4 nachziehen (Vorlage: FlashInferBackend).
++
++    K und V bekommen je eigene Head-Slots (erst alle K-Koepfe, dann alle
++    V-Koepfe -- dieselbe Reihenfolge, die FlashInfer mit
++    ``kv_cache.split(num_kv_heads, dim=1)`` erwartet), und eine Zelle schrumpft
++    von (head+head_v) bf16 auf ``head//2 + head//16`` Byte.
++
++    Idempotent: ein bereits gesetztes ``state_content_bytes`` bleibt stehen --
++    deshalb ist es egal, ob der Modell-Runner ``customize_spec`` zusaetzlich
++    aufruft.
++    """
++    if spec.state_content_bytes is not None or not spec.kv_quant_mode.is_nvfp4:
++        return spec
++    hs_k = _qfn_nvfp4_full_dim(spec.head_size)
++    hs_v = _qfn_nvfp4_full_dim(spec.head_size_v)
++    assert hs_k == hs_v, "nvfp4 with asymmetric K/V head sizes not yet supported"
++    return _qfn_replace(
++        spec,
++        num_head_slots=2 * spec.num_kv_heads,
++        state_content_bytes=hs_k * _qfn_dtype_size(spec.dtype),
++    )
++
++
++def _qfn_nvfp4_views(kv_cache: torch.Tensor, num_kv_heads: int):
++    """Zerlegt den gepackten nvfp4-Cache in vier Sichten (ohne Kopie).
++
++    Eingang ist die logische Seite ``[B, H=2*num_kv_heads, N, 144]`` uint8.
++    Ausgang: ``(k_data, k_sf, v_data, v_sf)``, je ``[B, N, num_kv_heads, X]``
++    mit X = 128 (Daten) bzw. 16 (Blockskalen).
++
++    Die Byte-Arithmetik macht `nvfp4_split_data_scale` aus vLLMs eigenem
++    torch_utils -- bewusst NICHT selbst gerechnet, damit Schreiber (der
++    dieselbe Zerlegung in C++ macht) und Leser per Konstruktion dasselbe
++    Layout sehen. Die Skalen kommen als float8_e4m3fn zurueck; Triton soll die
++    ROHEN BITS sehen (die Dekodierung passiert im Kernel), also zurueck auf
++    uint8 umdeuten.
++    """
++    k_side = kv_cache[:, :num_kv_heads].transpose(1, 2)
++    v_side = kv_cache[:, num_kv_heads:].transpose(1, 2)
++    k_data, k_sf = _qfn_nvfp4_split(k_side)
++    v_data, v_sf = _qfn_nvfp4_split(v_side)
++    return (
++        k_data,
++        k_sf.view(torch.uint8),
++        v_data,
++        v_sf.view(torch.uint8),
++    )
++
+ 
+ class Qwen3_8FlashNextQSAMetadataBuilder(FlashAttentionMetadataBuilder):
+     """Flash metadata supporting uniform decode and target-verify graphs."""
+@@ -67,7 +160,101 @@
+     """FullAttentionSpec backend used by the merged QSA owner."""
+ 
+     supported_dtypes: ClassVar[list[torch.dtype]] = [torch.bfloat16]
+-    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = ["auto", "bfloat16"]
++    # QFN-PATCH kvq-s1/s2: fp8_e4m3 und nvfp4 fuer den Haupt-KV freigegeben.
++    supported_kv_cache_dtypes: ClassVar[list[CacheDType]] = [
++        "auto",
++        "bfloat16",
++        "fp8",
++        "fp8_e4m3",
++        "nvfp4",
++    ]
++
++    @classmethod
++    def customize_spec(cls, spec):
++        # QFN-PATCH kvq-s2: Der Modell-Runner reicht jede AttentionSpec durch
++        # diese Methode (gpu_model_runner.get_kv_cache_spec) und die
++        # Hybrid-Seitenausrichtung der Plattform benutzt sie ebenfalls, um die
++        # Seitengroesse pro Token zu bestimmen. Ohne Override liefe hier die
++        # Identitaet der Basisklasse -- die nvfp4-Seite waere dann viermal zu
++        # gross deklariert und die GDN-Seitenpolsterung falsch.
++        return _qfn_nvfp4_spec(spec)
++
++    @staticmethod
++    def get_kv_cache_shape(
++        num_blocks: int,
++        block_size: int,
++        num_kv_heads: int,
++        head_size: int,
++        cache_dtype_str: str = "auto",
++    ) -> tuple[int, ...]:
++        # QFN-PATCH kvq-s2: Der v2-Modellrunner (v1/worker/gpu/attn_utils.py)
++        # fragt die Cache-Form beim BACKEND ab und deutet den Rohpuffer damit
++        # um -- er liest NICHT num_head_slots/state_content_bytes aus der Spec.
++        # Ohne diesen Override versucht er die gepackten 144-Byte-Zeilen als
++        # 2 Koepfe x 512 Byte zu lesen und stirbt mit
++        #   RuntimeError: shape '[637, 2848, 2, 512]' is invalid for input of
++        #   size 1044965376
++        # -- wobei 1.044.965.376 = 637 x 4 x 2848 x 144 genau die gepackte
++        # Groesse ist, die hier zurueckgegeben wird.
++        if isinstance(cache_dtype_str, str) and cache_dtype_str.startswith("nvfp4"):
++            return (
++                num_blocks,
++                2 * num_kv_heads,
++                block_size,
++                _qfn_nvfp4_full_dim(head_size),
++            )
++        return FlashAttentionBackend.get_kv_cache_shape(
++            num_blocks, block_size, num_kv_heads, head_size, cache_dtype_str
++        )
++
++    @staticmethod
++    def get_kv_cache_stride_order(
++        include_num_layers_dimension: bool = False,
++    ) -> tuple[int, ...]:
++        # QFN-PATCH kvq-s2: nvfp4 MUSS HND fahren, und das ist keine Vorliebe.
++        # Das Seitenlayout ist [K_data | K_scale | V_data | V_scale]; die
++        # K-Seite muss also eine zusammenhaengende halbe Seite sein. Unter NHD
++        # (Vorgabe dieses Images) liegen K- und V-Head-Slots je Token
++        # verschachtelt -- dann ist die K-Haelfte nicht mehr zusammenhaengend,
++        # nvfp4_split_data_scale rechnet Schrittweiten fuer alle 2*num_kv_heads
++        # Slots aus, und der Skalenbereich ueberlappt die Daten. Das gibt
++        # keinen Absturz, sondern falsche Zahlen.
++        # Fuer bf16/fp8 bleibt die geerbte Wahl unveraendert -- der
++        # Stufe-1-Pfad ist davon per Konstruktion nicht betroffen.
++        from vllm.config import get_current_vllm_config_or_none
++
++        _cfg = get_current_vllm_config_or_none()
++        _dtype = getattr(getattr(_cfg, "cache_config", None), "cache_dtype", "auto")
++        if isinstance(_dtype, str) and _dtype.startswith("nvfp4"):
++            # Identisch zur HND-Wahl von FlashAttentionBackend.
++            if include_num_layers_dimension:
++                return (1, 2, 0, 3, 4)
++            return (0, 1, 2, 3)
++        return FlashAttentionBackend.get_kv_cache_stride_order(
++            include_num_layers_dimension
++        )
++
++    @classmethod
++    def supports_kv_cache_dtype(cls, kv_cache_dtype) -> bool:
++        # QFN-PATCH kvq-s1: NICHT die geerbte FlashAttention-Pruefung benutzen.
++        # flash_attn_supports_kv_cache_dtype() ist "(FA3/FA4 auf SM90) oder
++        # (FA4 auf SM100)" -- SM120 faellt durch. Fuer den QSA-Haupt-KV ist das
++        # unzustaendig: gelesen wird ausschliesslich vom eigenen Triton-Kernel
++        # _qsa_sparse_paged_gqa_splitk_kernel, der ab diesem Patch in Registern
++        # dequantisiert; ein FlashAttention-Kernel sieht diesen Cache nie.
++        if kv_cache_dtype is None:
++            return True
++        return kv_cache_dtype in cls.supported_kv_cache_dtypes
++
++    @classmethod
++    def supports_combination(cls, *args, **kwargs) -> str | None:
++        # QFN-PATCH kvq-s1: aus demselben Grund. Die geerbte Fassung meldet
++        # "FP8 KV cache requires FA3 on SM90 or FA4 on SM100" -- eine Aussage
++        # ueber FlashAttention-Kernel, die dieser Pfad nicht benutzt. Der Owner
++        # verdrahtet sein Backend ohnehin hart, die Selektor-Pfade laufen fuer
++        # qwen3_8_flash_next also gar nicht; der Override ist die Absicherung
++        # fuer den Fall, dass doch ein Validierungspfad darueber stolpert.
++        return None
+ 
+     @staticmethod
+     def get_name() -> str:
+@@ -97,19 +284,125 @@
+     supports_pcp: bool = False
+ 
+     def __init__(self, *args, **kwargs) -> None:
++        # QFN-PATCH kvq-s1: FlashAttentionImpl.__init__ verwirft quantisierten
++        # KV auf dieser Karte hart ("FlashAttention does not support fp8_e4m3
++        # kv-cache on this device"), weil flash_attn_supports_kv_cache_dtype()
++        # nur SM90 (FA3/FA4) und SM100 (FA4) kennt -- SM120 faellt durch. Die
++        # Pruefung ist fuer QSA unzustaendig (eigener Triton-Leser, s. o.).
++        # Wir halten den dtype am Basis-Konstruktor vorbei und setzen ihn danach
++        # zurueck; gelesen wird er erst spaeter, im geerbten Schreibpfad
++        # do_kv_cache_update -> reshape_and_cache_flash. kv_cache_dtype ist
++        # Positional 6 in FlashAttentionImpl.__init__ (num_heads, head_size,
++        # scale, num_kv_heads, alibi_slopes, sliding_window, kv_cache_dtype).
++        _qfn_kvq = None
++        _qfn_roh = ("auto", "bfloat16")
++        if len(args) > 6 and isinstance(args[6], str) and args[6] not in _qfn_roh:
++            _qfn_kvq = args[6]
++            args = tuple(args[:6]) + ("auto",) + tuple(args[7:])
++        elif kwargs.get("kv_cache_dtype", "auto") not in _qfn_roh:
++            _qfn_kvq = kwargs["kv_cache_dtype"]
++            kwargs = dict(kwargs, kv_cache_dtype="auto")
+         super().__init__(*args, **kwargs)
++        if _qfn_kvq is not None:
++            self.kv_cache_dtype = _qfn_kvq
+         if not is_flash_attn_varlen_func_available():
+             raise NotImplementedError("Qwen3.8-Flash-Next QSA requires FlashAttention")
+         if self.dcp_world_size != 1:
+             raise NotImplementedError(
+                 "Qwen3.8-Flash-Next QSA does not support decode context parallelism"
+             )
+-        if self.kv_cache_dtype not in ("auto", "bfloat16"):
++        # QFN-PATCH kvq-s1/s2
++        if self.kv_cache_dtype not in _QFN_KVQ_SUPPORTED:
+             raise NotImplementedError(
+-                "Qwen3.8-Flash-Next QSA requires a BF16 main KV cache"
++                "Qwen3.8-Flash-Next QSA requires a BF16, FP8-E4M3 or NVFP4 "
++                "main KV cache"
+             )
++        self.use_fp8_kv = is_quantized_kv_cache(self.kv_cache_dtype)
++        # QFN-PATCH kvq-s2: nvfp4 ist ein eigener Zweig, nicht "fp8 mit
++        # anderem dtype" -- getrennte Seiten-Geometrie, getrennter Schreiber,
++        # getrennter Lesezweig.
++        self.qfn_nvfp4_kv = self.kv_cache_dtype.startswith("nvfp4")
++        if self.qfn_nvfp4_kv:
++            self.use_fp8_kv = False
++        # QFN-PATCH kvq-s2: Sichten auf den gepackten Cache einmal je
++        # Cache-Puffer bauen und merken. as_strided ist eine reine
++        # Metadaten-Operation, aber sie laeuft sonst in JEDEM Decode-Schritt
++        # neu; ausserdem bleiben die Zeiger so ueber CUDA-Graph-Capture hinweg
++        # nachweislich dieselben.
++        self._qfn_nvfp4_cache = None
+         self.supports_quant_query_input = False
+ 
++    def _qfn_nvfp4_cached_views(self, kv_cache: torch.Tensor):
++        # QFN-PATCH kvq-s2: memoisierte Sichten, Schluessel ist der Zeiger auf
++        # den Cache-Puffer (der wechselt nur bei Neuallokation).
++        schluessel = kv_cache.data_ptr()
++        gemerkt = self._qfn_nvfp4_cache
++        if gemerkt is None or gemerkt[0] != schluessel:
++            gemerkt = (schluessel, _qfn_nvfp4_views(kv_cache, self.num_kv_heads))
++            self._qfn_nvfp4_cache = gemerkt
++        return gemerkt[1]
++
++    def do_kv_cache_update(
++        self,
++        layer: torch.nn.Module,
++        key: torch.Tensor,
++        value: torch.Tensor,
++        kv_cache: torch.Tensor,
++        slot_mapping: torch.Tensor,
++    ) -> None:
++        # QFN-PATCH kvq-s2: Der geerbte Schreibpfad schneidet den Cache mit
++        # `kv_cache.transpose(1, 2).split(self.head_size, dim=-1)` -- das setzt
++        # voraus, dass K und V in DERSELBEN Zeile liegen (Zeilenbreite
++        # 2*head_size). Bei nvfp4 stimmt das nicht: K und V bekommen eigene
++        # Head-Slots und die Zeile ist 144 Byte breit. Also hier schneiden,
++        # nicht dort -- flash_attn.py bleibt unangetastet, alle anderen Modelle
++        # im Image behalten ihr Verhalten.
++        if not getattr(self, "qfn_nvfp4_kv", False):
++            return super().do_kv_cache_update(
++                layer, key, value, kv_cache, slot_mapping
++            )
++        if self.attn_type in (AttentionType.ENCODER_ONLY, AttentionType.ENCODER):
++            return None
++        n = self.num_kv_heads
++        # (B, 2n, N, 144) -> zwei Sichten (B, N, n, 144), genau die Form, die
++        # reshape_and_cache_nvfp4_dispatch erwartet: 4D, letzte Dimension
++        # data_dim + scale_dim, Layout aus den Schrittweiten abgeleitet.
++        key_cache = kv_cache[:, :n].transpose(1, 2)
++        value_cache = kv_cache[:, n:].transpose(1, 2)
++        if _QFN_NVFP4_WRITER == "triton":
++            from .ops.qsa import qsa_nvfp4_store
++
++            k_data, k_sf, v_data, v_sf = self._qfn_nvfp4_cached_views(kv_cache)
++            qsa_nvfp4_store(
++                key,
++                value,
++                k_data,
++                k_sf,
++                v_data,
++                v_sf,
++                slot_mapping,
++                layer._k_scale,
++                layer._v_scale,
++                v_sf_swizzled=_QFN_V_SF_SWIZZLED,
++            )
++            return None
++        # Lazy importiert, wie schon `from .ops.qsa import ...` weiter unten:
++        # fa_utils definiert den Namen nur im CUDA-Zweig, und dieser Pfad soll
++        # das Modul nicht schon beim Laden davon abhaengig machen.
++        from vllm.v1.attention.backends.fa_utils import reshape_and_cache_flash
++
++        reshape_and_cache_flash(
++            key,
++            value,
++            key_cache,
++            value_cache,
++            slot_mapping,
++            self.kv_cache_dtype,
++            layer._k_scale,
++            layer._v_scale,
++        )
++        return None
++
+     def forward_qsa(
+         self,
+         layer: torch.nn.Module,
+@@ -141,11 +434,43 @@
+             raise RuntimeError("QSA owner did not provide its top-k buffer")
+         logical_indices = topk_buffer[:num_tokens]
+         token_to_req = token_to_req[:num_tokens]
+-        key_cache, value_cache = kv_cache.transpose(1, 2).split(self.head_size, dim=-1)
++        # QFN-PATCH kvq-s2: nvfp4 wird VOR dem normalen Schnitt behandelt --
++        # die Zeile ist dort 144 Byte breit und traegt Daten UND Skalen, K und V
++        # sitzen in getrennten Head-Slots. Es gibt also nichts bei head_size zu
++        # teilen.
++        _qfn_k_sf = None
++        _qfn_v_sf = None
++        if getattr(self, "qfn_nvfp4_kv", False):
++            key_cache, _qfn_k_sf, value_cache, _qfn_v_sf = (
++                self._qfn_nvfp4_cached_views(kv_cache)
++            )
++        else:
++            key_cache, value_cache = kv_cache.transpose(1, 2).split(
++                self.head_size, dim=-1
++            )
+         key_cache = canonicalize_singleton_dim_strides(key_cache)
+         value_cache = canonicalize_singleton_dim_strides(value_cache)
+-        if key_cache.dtype != torch.bfloat16 or query.dtype != torch.bfloat16:
+-            raise NotImplementedError("Qwen3.8-Flash-Next QSA requires BF16 Q/K/V")
++        # QFN-PATCH kvq-s1: Der fp8-Cache liegt als uint8 vor (s. o.). Vor dem
++        # Kernel auf den echten fp8-Typ umdeuten -- sonst laedt Triton die Bytes
++        # als GANZZAHLEN 0..255 und rechnet stillschweigend Unsinn. view() ist
++        # eine reine Typ-Umdeutung ohne Kopie (1 Byte auf 1 Byte, letzte Dimension
++        # hat Schrittweite 1). Dasselbe Vorgehen wie MiniMax-M3
++        # (common/sparse_attention.py: kv_cache.view(self.kv_cache_fp8_dtype)).
++        # Bei nvfp4 bleibt es bei uint8: dort sind es gepackte Nibbles, kein
++        # Gleitkommatyp, das Auspacken passiert im Kernel.
++        if getattr(self, "use_fp8_kv", False):
++            key_cache = key_cache.view(torch.float8_e4m3fn)
++            value_cache = value_cache.view(torch.float8_e4m3fn)
++        # Q bleibt bf16-Pflicht -- der Kernel rechnet seine Dots in bf16 und
++        # quantisiert die Query bewusst nicht. K/V duerfen zusaetzlich fp8-e4m3
++        # (Speicher: float8_e4m3fn) oder nvfp4 (Speicher: uint8) sein;
++        # dequantisiert wird im Kernel vor den Dots.
++        if query.dtype != torch.bfloat16:
++            raise NotImplementedError("Qwen3.8-Flash-Next QSA requires BF16 queries")
++        if key_cache.dtype not in (torch.bfloat16, torch.float8_e4m3fn, torch.uint8):
++            raise NotImplementedError(
++                "Qwen3.8-Flash-Next QSA requires BF16, FP8-E4M3 or NVFP4 K/V"
++            )
+ 
+         from .ops.qsa import qsa_sparse_paged_attention
+ 
+@@ -157,6 +482,16 @@
+             attn_metadata.block_table,
+             token_to_req,
+             output[:num_tokens],
++            # QFN-PATCH kvq-s1: Per-Layer-Skalen als Device-Buffer (Startwert
++            # 1,0 aus set_default_quant_scales(register_buffer=True)). Device-
++            # Buffer statt Host-Skalar ist der Grund, warum CUDA-Graph-Capture
++            # hier unproblematisch ist -- kein host->device-Kopieren im Hot-Path.
++            k_scale=getattr(layer, "_k_scale", None),
++            v_scale=getattr(layer, "_v_scale", None),
++            # QFN-PATCH kvq-s2: Blockskalen-Seiten (nur nvfp4, sonst None).
++            k_scale_cache=_qfn_k_sf,
++            v_scale_cache=_qfn_v_sf,
++            v_sf_swizzled=_QFN_V_SF_SWIZZLED,
+         )
+         return output
+ 
+@@ -183,9 +518,11 @@
+             raise ValueError("Qwen3.8-Flash-Next QSA requires a paged KV cache")
+         if model_config.dtype != torch.bfloat16:
+             raise NotImplementedError("Qwen3.8-Flash-Next QSA currently requires BF16")
+-        if cache_config.cache_dtype not in ("auto", "bfloat16"):
++        # QFN-PATCH kvq-s1/s2
++        if cache_config.cache_dtype not in _QFN_KVQ_SUPPORTED:
+             raise NotImplementedError(
+-                "Qwen3.8-Flash-Next QSA requires a BF16 main KV cache"
++                "Qwen3.8-Flash-Next QSA requires a BF16, FP8-E4M3 or NVFP4 "
++                "main KV cache"
+             )
+         if getattr(quant_config, "kv_cache_scheme", None) is not None:
+             raise NotImplementedError(
+@@ -286,9 +623,11 @@
+         self.kv_cache_torch_dtype = kv_cache_dtype_str_to_dtype(
+             self.kv_cache_dtype, model_config
+         )
+-        if self.kv_cache_torch_dtype != torch.bfloat16:
++        # QFN-PATCH kvq-s1
++        if self.kv_cache_torch_dtype not in _QFN_KVQ_STORAGE:
+             raise NotImplementedError(
+-                "Qwen3.8-Flash-Next QSA requires BF16 cache storage"
++                "Qwen3.8-Flash-Next QSA requires BF16, FP8-E4M3 or NVFP4 "
++                "cache storage"
+             )
+         self.kv_sharing_target_layer_name = None
+         self.kv_cache = torch.tensor([])
+@@ -335,13 +674,20 @@
+         return self.attn_backend
+ 
+     def get_kv_cache_spec(self, vllm_config: VllmConfig) -> KVCacheSpec:
+-        return FullAttentionSpec(
+-            block_size=vllm_config.cache_config.block_size,
+-            num_kv_heads=self.num_kv_heads,
+-            head_size=self.head_dim,
+-            head_size_v=self.head_dim,
+-            dtype=self.kv_cache_torch_dtype,
+-            kv_quant_mode=get_kv_quant_mode(self.kv_cache_dtype),
++        # QFN-PATCH kvq-s2: Der Owner baut seine Spec selbst -- also die
++        # nvfp4-Geometrie hier gleich mit setzen und nicht darauf hoffen, dass
++        # der Modell-Runner customize_spec aufruft. Beide Wege sind idempotent
++        # (_qfn_nvfp4_spec laesst eine fertige Spec unveraendert), einer von
++        # beiden greift auf jeden Fall.
++        return _qfn_nvfp4_spec(
++            FullAttentionSpec(
++                block_size=vllm_config.cache_config.block_size,
++                num_kv_heads=self.num_kv_heads,
++                head_size=self.head_dim,
++                head_size_v=self.head_dim,
++                dtype=self.kv_cache_torch_dtype,
++                kv_quant_mode=get_kv_quant_mode(self.kv_cache_dtype),
++            )
+         )
+ 
+     def _run_qsa(

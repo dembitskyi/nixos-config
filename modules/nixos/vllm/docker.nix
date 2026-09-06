@@ -40,7 +40,9 @@ let
       # imagePatches: extract each target from the pinned image, apply its diff,
       # bind-mount it back. Digest pin keeps the context stable; a failed apply
       # aborts the unit (set -e).
-      patchBase = p: baseNameOf p.target;
+      # Full-path-derived staging name so two targets that share a basename
+      # (nvidia/qsa.py vs nvidia/ops/qsa.py) don't overwrite each other.
+      patchBase = p: builtins.replaceStrings [ "/" ] [ "_" ] p.target;
       imagePatchDir = "${cfg._stateDir}/patched/${modelKey}";
       imagePatchScript = lib.optionalString (m.imagePatches != [ ]) ''
         rm -rf ${lib.escapeShellArg imagePatchDir}

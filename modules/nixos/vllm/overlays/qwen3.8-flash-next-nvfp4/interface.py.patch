@@ -1,0 +1,36 @@
+--- orig/platforms/interface.py	2026-09-06 05:21:54.710935452 -0500
++++ new/platforms/interface.py	2026-09-06 05:21:54.919938853 -0500
+@@ -844,9 +844,30 @@
+                 dtype=kv_cache_dtype,
+                 kv_quant_mode=kv_quant_mode,
+             )
+-            attn_page_size_1_token = backend_cls.customize_spec(
+-                attn_spec
+-            ).page_size_bytes
++            _qfn_spec = backend_cls.customize_spec(attn_spec)
++            # QFN-PATCH kvq-s2-plat: Wenn das gefundene Backend die
++            # nvfp4-Packung nicht kennt (customize_spec liess
++            # state_content_bytes auf None), hier nachziehen -- sonst richtet
++            # sich die Blockgroesse nach einer Seite, die es gar nicht gibt.
++            # Dieselbe Geometrie wie FlashInferBackend.customize_spec und wie
++            # unser QSA-Backend: K und V als getrennte Head-Slots, Zeile
++            # head//2 + head//16 Byte (fp4-Daten + fp8-Blockskalen).
++            if _qfn_spec.state_content_bytes is None and kv_quant_mode.is_nvfp4:
++                from dataclasses import replace as _qfn_replace
++                from vllm.utils.torch_utils import (
++                    get_dtype_size as _qfn_dtype_size,
++                    nvfp4_kv_cache_full_dim as _qfn_nvfp4_full_dim,
++                )
++
++                _qfn_spec = _qfn_replace(
++                    _qfn_spec,
++                    num_head_slots=2 * _qfn_spec.num_kv_heads,
++                    state_content_bytes=(
++                        _qfn_nvfp4_full_dim(_qfn_spec.head_size)
++                        * _qfn_dtype_size(_qfn_spec.dtype)
++                    ),
++                )
++            attn_page_size_1_token = _qfn_spec.page_size_bytes
+ 
+         # Compute mamba page size
+         model_cls, _ = ModelRegistry.resolve_model_cls(
