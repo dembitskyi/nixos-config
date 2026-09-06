@@ -716,8 +716,8 @@ in
             };
           };
           browser = {
-            description = "Browser automation subagent for web tasks using combined browseruse and playwright MCPs.";
-            mode = "subagent";
+            description = "Browser automation agent for web tasks using combined browseruse and playwright MCPs.";
+            mode = "primary";
             model = "github-copilot/claude-opus-4.8-fast";
             variant = "medium";
             prompt = "{file:${browserPrompt}}";

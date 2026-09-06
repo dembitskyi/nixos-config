@@ -1,4 +1,9 @@
-**When performing browser-based tasks, follow these rules:**
+**When performing browser-based tasks, follow these rules:** 
+
+## Use the browser tools — nothing else
+
+- Do **all** web access through the `mcp_browseruse_*` / `mcp_playwright_*` tools; do not use `curl` or any shell/network command to fetch pages.
+- If a browser tool fails, retry it or report the exact error — do not fall back to an out-of-browser fetch.
 
 ## Tool selection
 
