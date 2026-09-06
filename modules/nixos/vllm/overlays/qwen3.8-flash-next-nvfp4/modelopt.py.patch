@@ -1,0 +1,68 @@
+--- a/modelopt.py
++++ b/modelopt.py
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++import re
+ from fnmatch import fnmatch
+ from typing import TYPE_CHECKING, Any, cast
+ 
+@@ -2367,8 +2368,31 @@
+                 "language_model.model." + prefix[len("model.language_model.") :]
+             )
+ 
++        # MTP draft layers are numbered from num_hidden_layers in vLLM (e.g.
++        # mtp.layers.48.*), but ModelOpt's quantized_layers keys use the
++        # draft-local index (mtp.layers.0.*). Offer the draft-local index so the
++        # FP8_BLOCK_SCALES MTP experts resolve their algo instead of loading
++        # unquantized (which fails: has no parameter 'w2_weight_scale_inv').
++        m = re.match(r"^(.*?mtp\.layers\.)(\d+)(\..*)$", prefix)
++        if m:
++            k = int(m.group(2))
++            for j in range(0, min(k, 8) + 1):
++                if j != k:
++                    candidates.append(f"{m.group(1)}{j}{m.group(3)}")
++
+         return tuple(dict.fromkeys(candidates))
+ 
++    def _quantized_layer_group_size(self, prefix: str) -> int | None:
++        """group_size of the quantized_layers entry that covers prefix."""
++        for cand in self._quantized_layer_prefix_candidates(prefix):
++            info = self.quantized_layers.get(cand)
++            if info:
++                try:
++                    return int(info.get("group_size") or 0) or None
++                except (TypeError, ValueError):
++                    return None
++        return None
++
+     def get_quant_method(
+         self, layer: torch.nn.Module, prefix: str
+     ) -> "QuantizeMethodBase | None":
+@@ -2400,6 +2424,25 @@
+             return UnquantizedLinearMethod()
+ 
+         if isinstance(layer, RoutedExperts):
++            if quant_algo in ("FP8_BLOCK_SCALES", "FP8_BLOCK", "FP8_PB_WO"):
++                # NVIDIA's Qwen3.8-Flash-Next-NVFP4 stores the MTP routed
++                # experts as 128x128 block-scaled FP8 (weight_scale_inv). The
++                # mixed config had no branch for it; route to vLLM's generic
++                # block-FP8 MoE method (vLLM PR #55513 / tonyd2wild).
++                from vllm.model_executor.layers.quantization.fp8 import (
++                    Fp8Config as _Fp8Config,
++                    Fp8MoEMethod as _Fp8MoEMethod,
++                )
++
++                gs = self._quantized_layer_group_size(prefix) or 128
++                return _Fp8MoEMethod(
++                    _Fp8Config(
++                        is_checkpoint_fp8_serialized=True,
++                        activation_scheme="dynamic",
++                        weight_block_size=[gs, gs],
++                    ),
++                    layer,
++                )
+             if quant_algo == "FP8":
+                 return ModelOptFp8MoEMethod(
+                     quant_config=self.fp8_config,

@@ -93,6 +93,72 @@ let
         '';
       };
 
+      extraEnv = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { };
+        description = ''
+          Extra environment variables for this model's backend service.
+          The Docker backend passes them with -e; the native backend
+          exports them. Used for model-specific toggles such as
+          VLLM_PLE_CPU_OFFLOAD.
+        '';
+      };
+
+      extraMounts = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Extra -v specs appended to docker run (Docker backend only),
+          e.g. a patched source file mounted over the image copy.
+        '';
+      };
+
+      preStart = lib.mkOption {
+        type = lib.types.lines;
+        default = "";
+        description = ''
+          Shell snippet run before docker run (Docker backend only), e.g.
+          to prepare files referenced by extraMounts. Runs under set -e
+          with docker on PATH; a failing snippet fails the unit loudly.
+        '';
+      };
+
+      extraDockerArgs = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        description = ''
+          Extra raw arguments for docker run (Docker backend only), e.g.
+          capability or seccomp relaxations for one model. Kept per-model
+          so tricky flags never leak onto unrelated units.
+        '';
+      };
+
+      imagePatches = lib.mkOption {
+        type = lib.types.listOf (
+          lib.types.submodule {
+            options = {
+              target = lib.mkOption {
+                type = lib.types.str;
+                description = "Absolute path inside the image whose copy is patched, then bind-mounted back over it.";
+              };
+              patch = lib.mkOption {
+                type = lib.types.path;
+                description = "Unified-diff file applied to the image's copy of target.";
+              };
+            };
+          }
+        );
+        default = [ ];
+        description = ''
+          Small patches applied to the image's own files at start (Docker
+          backend only). Each target is extracted from the pinned image,
+          patched, and bind-mounted read-only over the original — so the repo
+          carries a diff, not a full vendored file. Prefer this over extraMounts
+          for small deltas. Requires the image to be pinned by digest so the
+          patch context cannot drift.
+        '';
+      };
+
       image = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -276,6 +342,18 @@ in
           m.reasoningParserPlugin == null || m.reasoningParser != null
         ) activeModelKeys;
         message = "mine.vllm: a model with reasoningParserPlugin set must also set reasoningParser (the plugin's registered parser name).";
+      }
+      {
+        assertion =
+          lib.all (
+            k:
+            let
+              m = cfg.models.${k};
+            in
+            m.extraMounts == [ ] && m.preStart == "" && m.extraDockerArgs == [ ] && m.imagePatches == [ ]
+          ) activeModelKeys
+          || cfg.useDocker;
+        message = "mine.vllm: extraMounts/preStart/extraDockerArgs/imagePatches need the Docker backend (useDocker).";
       }
     ];
 

@@ -92,11 +92,12 @@ in
 
     healthCheckTimeoutSeconds = lib.mkOption {
       type = lib.types.int;
-      default = 300;
+      default = 2700;
       description = ''
         Maximum time (seconds) llama-swap waits for a model's checkEndpoint
-        to return 200 after starting. Cold-start of large quantized models
-        with long context can take a couple of minutes.
+        to return 200 after starting. Cold-start of 100B+ checkpoints
+        (weights + torch.compile + graph capture) can exceed 25 minutes;
+        shorter values get the unit stopped mid-boot and retried forever.
       '';
     };
 

@@ -142,6 +142,9 @@
                       "*.key"
                       "*.patch"
                       "*.diff"
+                      # Vendored vLLM image overlays are bind-mounted byte-exact
+                      # over the digest-pinned container; never reformat them.
+                      "modules/nixos/vllm/overlays/**"
                     ];
 
                     programs = {
@@ -198,6 +201,9 @@
                 "*.key"
                 "*.patch"
                 "*.diff"
+                # Vendored vLLM image overlays are bind-mounted byte-exact over
+                # the digest-pinned container; never reformat them.
+                "modules/nixos/vllm/overlays/**"
               ];
 
               programs = {

@@ -1,0 +1,19 @@
+--- a/ple_layer.py
++++ b/ple_layer.py
+@@ -3,6 +3,7 @@
+ """GPU-resident Qwen3.8-Flash-Next position-learning enhancement layers."""
+ 
+ import math
++import os
+ from collections.abc import Iterable, Sequence
+ 
+ import torch
+@@ -190,6 +191,8 @@
+ ) -> QuantizeMethodBase | None:
+     """Select global-scale FP8 only for quantized PLE checkpoint shards."""
+ 
++    if os.environ.get("VLLM_PLE_FP8_CHECKPOINT") == "1":
++        return Qwen3_8FlashNextPLEFp8EmbeddingMethod()
+     if not isinstance(quant_config, Fp8Config):
+         return None
+     if not quant_config.is_checkpoint_fp8_serialized:

@@ -15,6 +15,10 @@ let
       m = cfg.models.${modelKey};
       port = cfg.activeModels.${modelKey}.port;
       hasPlugin = cfg.enableReasoningParser && m.reasoningParserPlugin != null;
+      # Per-model env (e.g. VLLM_PLE_CPU_OFFLOAD) as export statements.
+      extraEnvExports = lib.concatStringsSep "\n" (
+        lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}") m.extraEnv
+      );
       args = lib.concatStringsSep " " (
         [
           (lib.escapeShellArg (cfg._modelSource modelKey))
@@ -27,6 +31,7 @@ let
     in
     pkgs.writeShellScript "vllm-native-start-${modelKey}" ''
       export HF_TOKEN=$(< ${config.sops.secrets.huggingface_token.path})
+      ${extraEnvExports}
       exec ${pkgs.vllm}/bin/vllm serve ${args}
     '';
 in
