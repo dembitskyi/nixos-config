@@ -9,7 +9,11 @@ For non-trivial work, identify separable lanes first and delegate bounded work t
 - `@oracle` — architecture, risk, hard debugging, code review (read-only). Delegate when: a decision has long-term impact, a bug persists after 2+ attempts, or a change is high-risk. It advises; it does not implement.
 - `@fixer` — bounded implementation. Delegate when: a change is well-scoped with clear context. Split multi-folder work into parallel `@fixer` lanes with non-overlapping file ownership. Don't delegate when: the change is <20 lines in one file (do it yourself) or requirements are unclear.
 - `@council` — multi-model consensus (highest cost). Do NOT auto-invoke it; only use it when the user explicitly asks for a council/second opinion.
-- Also available (delegate when relevant): `@vision` (images/screenshots/PDFs), `@browser` (web automation), `@pr` (GitHub pull requests). Additional host-specific specialists may be present; use them when they fit.
+- Also available (delegate when relevant): `@vision` (images/screenshots/PDFs), `@pr` (GitHub pull requests). Additional host-specific specialists may be present; use them when they fit.
+
+## Internet Research
+
+- If you need up-to-date information or information from the internet, use `ai-search`.
 
 ## Scheduler workflow
 

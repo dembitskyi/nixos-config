@@ -217,7 +217,6 @@ let
             "council" = "allow";
             "pr" = "allow";
             "vision" = "allow";
-            "browser" = "allow";
             "*" = "deny";
           };
         };
@@ -251,7 +250,6 @@ let
           tools.aiSearch
           tools.context7Mcp
           tools.githubMcpSearch
-          tools.fetchMcp
         ];
       };
 
@@ -655,6 +653,9 @@ in
               ]
             );
             permission = withExtraPerms "build" {
+              # Expose the native build defaults so generic inherits them too.
+              question = "allow";
+              plan_enter = "allow";
               task = {
                 "pr" = "allow";
                 "vision" = "allow";
@@ -689,31 +690,14 @@ in
             };
           };
           generic = {
-            description = "General-purpose assistant with web access via browser subagent.";
-            mode = "primary";
+            description = "General-purpose assistant for software and configuration research, local code inspection, and web search.";
+            mode = "all";
             model = "github-copilot/claude-opus-4.8-fast";
             variant = "medium";
             prompt = "{file:${genericPrompt}}";
-            tools = withExtraTools "generic" (
-              lib.mergeAttrsList [
-                tools.taskTool
-                tools.readTools
-                tools.writeTools
-                tools.disableSkill
-                tools.sessionId
-                tools.aiSearch
-                tools.memoryMcp
-                tools.context7Mcp
-                tools.githubMcpSearch
-              ]
-            );
-            permission = withExtraPerms "generic" {
-              task = {
-                "browser" = "allow";
-                "vision" = "allow";
-                "*" = "deny";
-              };
-            };
+            # Inherit the resolved build access, including host-specific overrides.
+            tools = withExtraTools "generic" config.programs.opencode.settings.agent.build.tools;
+            permission = withExtraPerms "generic" config.programs.opencode.settings.agent.build.permission;
           };
           browser = {
             description = "Browser automation agent for web tasks using combined browseruse and playwright MCPs.";

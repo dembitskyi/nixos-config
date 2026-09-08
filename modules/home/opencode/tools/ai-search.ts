@@ -10,7 +10,7 @@ const run = promisify(execFile);
 
 export default {
   description:
-    "Runs an AI web search via the persistent ai-browser (CDP) and returns rendered markdown results with sources. Use it to fetch current, post-training-cutoff information.",
+    "Returns information from the internet with sources. If you need up-to-date information or information from the internet, use ai-search.",
   args: {
     query: {
       type: "string",

@@ -143,6 +143,7 @@ let
     gawk
     gnugrep
     gnused
+    hostname
     jq
     less
     man

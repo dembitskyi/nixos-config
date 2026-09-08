@@ -49,9 +49,8 @@ Imported binaries persist across calls, so import once and reuse.
 
 - Use the `github` MCP tools (`mcp_github_*`) to inspect commits, PRs, and issues,
   and to review or land changes; use `git` in bash for local history.
-- Use `mcp_context7*` for up-to-date library/framework docs to verify syntax or behavior.
 - Use `mcp_memory*` to store and retrieve findings while investigating.
-- If you need up-to-date information about something — a current or post-training-cutoff fact, a library version, an API, or a recent change — use the `ai-search` tool (an AI web search).
+- If you need up-to-date information or information from the internet, use `ai-search`.
 
 ## Workflow
 
