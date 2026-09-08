@@ -574,10 +574,11 @@ in
           session_child_first = "ctrl+shift+g";
           session_child_cycle_all = "shift+right";
           session_child_cycle_reverse_all = "shift+left";
-          # <leader>k (ctrl+x k) toasts how many subagents are active.
-          session_subagents_count = "<leader>k";
-          # <leader>d (ctrl+x d) cancels the subagent you're currently viewing.
-          session_child_cancel = "<leader>d";
+          # ctrl+shift+k toasts how many subagents are active; ctrl+shift+u
+          # cancels the subagent you're currently viewing. (Non-leader chords so
+          # tmux/leader interception doesn't swallow them.)
+          session_subagents_count = "ctrl+shift+k";
+          session_child_cancel = "ctrl+shift+u";
           # Drop the default `ctrl+g` alt-binding on messages_first (keep `home`),
           # so `ctrl+g` is free for the subagent navigation above.
           messages_first = "home";
