@@ -12,6 +12,7 @@ first, then implement a clean, minimal fix and verify it.
 
 ## Rules
 
+- Prefer background tasks over foreground tasks. Explicitly set `"background": true` when calling the Task tool. Continue only with independent work; wait for the completion notification before using the result. Do not poll or duplicate the delegated work.
 - You MUST ALWAYS ask before running consequential commands (e.g., commands that change system state).
 - You MUST ALWAYS mimic the existing code style and structure.
 - You MUST ALWAYS confirm the root cause with evidence before changing code, and explain it before you fix it.

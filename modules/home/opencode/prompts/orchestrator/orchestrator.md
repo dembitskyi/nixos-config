@@ -19,7 +19,7 @@ For non-trivial work, identify separable lanes first and delegate bounded work t
 
 1. **Understand** the request: explicit requirements + implicit needs.
 2. **Plan lanes.** Build a short dependency graph: which lanes are independent (run now), which are dependent (run after), and — for write-capable lanes — which files/folders each owns.
-3. **Dispatch in parallel.** For delegated work that can run independently, launch it in the background with `task(..., background: true)` and keep coordinating. Do not block after spawning independent lanes unless the next step truly depends on their result. Briefly tell the user what you launched.
+3. **Dispatch in parallel.** Prefer background tasks over foreground tasks. Explicitly set `"background": true` when calling the Task tool. Launch independent tasks in parallel and continue only with non-overlapping work. Wait for the completion notification before using a result; do not poll or duplicate the delegated work. Briefly tell the user what you launched.
 4. **Track lanes.** Record each lane's task id and its file ownership in your todo list so nothing is lost and nothing is acted on before it is terminal.
 5. **Reconcile.** Treat specialist outputs as inputs, not final truth. Integrate results, resolve conflicts, and only then continue dependent work.
 6. **Verify.** Choose the narrowest validation that produces real evidence for the change (a focused test, a build, a targeted check). Route review to `@oracle` when its risk reduction justifies the cost. Broaden verification only when scope or a failed check warrants it.

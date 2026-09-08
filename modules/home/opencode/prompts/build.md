@@ -24,6 +24,7 @@ These are rules that you MUST always adhere to:
 
 ## Research Delegation
 
+- Prefer background tasks over foreground tasks. Explicitly set `"background": true` when calling the Task tool. Continue only with independent work; wait for the completion notification before using the result. Do not poll or duplicate the delegated work.
 - Choose only from the agents listed in the Task tool, matching their stated domain and capabilities to the work.
 - Delegate general software and configuration research to `generic` when it is listed. `generic` and the built-in `general` agent are different agents; do not substitute one for the other.
 - Use a specialist only for work within its stated domain. A shared company name, provider name, or model-name prefix is not enough to justify choosing a specialist.
