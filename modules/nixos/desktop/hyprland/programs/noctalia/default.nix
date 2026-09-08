@@ -428,6 +428,11 @@ in
               {
                 action = "logout";
                 enabled = true;
+                # Tear the session down through UWSM (this module enables
+                # withUWSM), so logout still works when Hyprland's IPC socket is
+                # stale after a compositor crash/recovery — the default
+                # `hyprctl dispatch exit` targets the dead instance and hangs.
+                command = "${lib.getExe pkgs.uwsm} stop";
               }
               {
                 action = "shutdown";
