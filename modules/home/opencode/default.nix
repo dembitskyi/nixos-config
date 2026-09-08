@@ -567,10 +567,19 @@ in
       tui = {
         keybinds = {
           app_exit = "<leader>q";
-          session_child_first = "ctrl+g";
+          # ctrl+g jumps to the first ACTIVE (running) subagent; ctrl+shift+g
+          # keeps the default "first child (any)" behaviour. left/right cycle
+          # only active subagents; shift+left/right cycle all children.
+          session_child_active = "ctrl+g";
+          session_child_first = "ctrl+shift+g";
+          session_child_cycle_all = "shift+right";
+          session_child_cycle_reverse_all = "shift+left";
+          # <leader>k (ctrl+x k) toasts how many subagents are active.
+          session_subagents_count = "<leader>k";
+          # <leader>d (ctrl+x d) cancels the subagent you're currently viewing.
+          session_child_cancel = "<leader>d";
           # Drop the default `ctrl+g` alt-binding on messages_first (keep `home`),
-          # so `ctrl+g` no longer jumps to the first message and is free for
-          # session_child_first above.
+          # so `ctrl+g` is free for the subagent navigation above.
           messages_first = "home";
         };
         theme = "catppuccin";
