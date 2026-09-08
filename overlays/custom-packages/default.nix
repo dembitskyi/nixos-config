@@ -23,6 +23,13 @@
       # still succeed. Map signal death to the conventional exit 143.
       substituteInPlace packages/opencode/src/tool/shell.ts \
         --replace-fail 'handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code })))' 'handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code })), Effect.orElseSucceed(() => ({ kind: "exit" as const, code: 143 })))'
+      # Preserve the session's model on background-subagent completion. The
+      # result is injected as a new user message on the PARENT session without a
+      # model, so createUserMessage resolves `input.model ?? ag.model ?? …` and
+      # silently reverts to the agent's default model — dropping a model the user
+      # picked while the task ran. Pass the parent session's current model.
+      substituteInPlace packages/opencode/src/tool/task.ts \
+        --replace-fail 'agent: currentParent.agent ?? ctx.agent,' 'agent: currentParent.agent ?? ctx.agent, model: currentParent.model ? { providerID: currentParent.model.providerID, modelID: currentParent.model.id } : undefined,'
     '';
   });
   otterwiki = final.callPackage ../pkgs/otterwiki.nix { };

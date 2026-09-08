@@ -568,6 +568,10 @@ in
         keybinds = {
           app_exit = "<leader>q";
           session_child_first = "ctrl+g";
+          # Drop the default `ctrl+g` alt-binding on messages_first (keep `home`),
+          # so `ctrl+g` no longer jumps to the first message and is free for
+          # session_child_first above.
+          messages_first = "home";
         };
         theme = "catppuccin";
         # The TUI does not auto-load the plugin drop-in dir (only the server
