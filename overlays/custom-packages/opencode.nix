@@ -13,8 +13,8 @@ let
   enablePatches = true;
 
   patches = [
-    # TUI: retain the last 1000 messages in memory/scrollback (fetch + in-memory
-    # cap + retained slice), not 100. Deliberately higher render/memory cost.
+    # TUI: retain the last 150 messages in memory/scrollback (fetch + in-memory
+    # cap + retained slice), balancing context visibility and TUI performance.
     ./opencode/01-tui-message-history.patch
     # shell tool: surface a signal-killed wrapper promptly via `raceAllFirst`
     # instead of hanging until the tool timeout. No fabricated exit codes; a

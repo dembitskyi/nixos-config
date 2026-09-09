@@ -7,7 +7,7 @@ index 71e050d11..3e106e406 100644
            )
            const updated = store.message[event.properties.info.sessionID]
 -          if (updated.length > 100) {
-+          if (updated.length > 1000) {
++          if (updated.length > 150) {
              const oldest = updated[0]
              batch(() => {
                setStore(
@@ -16,7 +16,7 @@ index 71e050d11..3e106e406 100644
              const [session, messages, todo, diff] = await Promise.all([
                sdk.client.session.get({ sessionID }, { throwOnError: true }),
 -              sdk.client.session.messages({ sessionID, limit: 100 }),
-+              sdk.client.session.messages({ sessionID, limit: 1000 }),
++              sdk.client.session.messages({ sessionID, limit: 150 }),
                sdk.client.session.todo({ sessionID }),
                sdk.client.session.diff({ sessionID }),
              ])
@@ -26,8 +26,8 @@ index 71e050d11..3e106e406 100644
                  infos.sort(compareMessage)
 -                const removed = infos.slice(0, -100)
 -                const visible = infos.slice(-100)
-+                const removed = infos.slice(0, -1000)
-+                const visible = infos.slice(-1000)
++                const removed = infos.slice(0, -150)
++                const visible = infos.slice(-150)
                  const visibleIDs = new Set(visible.map((message) => message.id))
                  for (const message of messages.data ?? []) {
                    if (!visibleIDs.has(message.info.id)) {
