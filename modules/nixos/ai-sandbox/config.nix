@@ -156,6 +156,9 @@ let
       env = {
         GHIDRA_INSTALL_DIR = "${pkgs.ghidra}/lib/ghidra";
         JAVA_HOME = "${pkgs.jdk21.home}";
+        # JPype's uv-installed native extension is not Nix-patched and needs
+        # the C++ runtime available at load time.
+        LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
       };
     };
   };

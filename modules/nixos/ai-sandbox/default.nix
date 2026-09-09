@@ -141,6 +141,8 @@ let
     findutils
     fzf
     gawk
+    # Provides ldd for native-library diagnostics.
+    glibc.bin
     gnugrep
     gnused
     hostname
