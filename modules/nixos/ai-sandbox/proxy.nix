@@ -9,9 +9,10 @@ let
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
   proxyPort = toString cfg.port;
   proxyWebPort = toString cfg.webPort;
-  proxyLogFile = "${userHome}/.local/state/ai-sandbox/proxy.log";
+  proxyStateDir = "${userHome}/.local/state/ai-sandbox-proxy";
+  proxyFlowDatabase = "${proxyStateDir}/flows.sqlite3";
   mitmweb = lib.getExe' pkgs.mitmproxy "mitmweb";
-  proxyAddon = ./pretty-log-addon.py;
+  flowStoreAddon = ./flow-store-addon.py;
   confDir = "%t/ai-sandbox-proxy/confdir";
 
   # Script that sets up the mitmproxy confdir and builds the CA bundle.
@@ -55,6 +56,18 @@ in
       default = 5011;
       description = "Port for the mitmweb interactive UI.";
     };
+
+    retentionHours = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 48;
+      description = "Hours to retain complete mitmproxy flows in the host-only SQLite archive.";
+    };
+
+    pruneIntervalSeconds = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 300;
+      description = "Seconds between removal of expired flows from the SQLite archive.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -84,9 +97,14 @@ in
         Service = {
           Environment = [
             "HOME=${userHome}"
-            "PROXY_LOG_FILE=${proxyLogFile}"
+            "PROXY_FLOW_DATABASE=${proxyFlowDatabase}"
+            "PROXY_FLOW_RETENTION_SECONDS=${toString (cfg.retentionHours * 60 * 60)}"
+            "PROXY_FLOW_PRUNE_INTERVAL_SECONDS=${toString cfg.pruneIntervalSeconds}"
           ];
           RuntimeDirectory = "ai-sandbox-proxy";
+          StateDirectory = "ai-sandbox-proxy";
+          StateDirectoryMode = "0700";
+          UMask = "0077";
           LoadCredential = [
             "mitmproxy_ca:${config.sops.secrets."MCP/MITMPROXY_CA".path}"
             "mitmproxy_ca_cert:${config.sops.secrets."MCP/MITMPROXY_CA_CERT".path}"
@@ -99,10 +117,9 @@ in
             "--listen-port ${proxyPort}"
             "--web-port ${proxyWebPort}"
             "--web-host 127.0.0.1"
-            "--set stream_large_bodies=1m"
             "--set web_password=root"
             "--no-web-open-browser"
-            "-s ${proxyAddon}"
+            "-s ${flowStoreAddon}"
             "--quiet"
           ];
           Restart = "on-failure";
