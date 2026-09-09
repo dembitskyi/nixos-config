@@ -1,0 +1,23 @@
+diff --git a/packages/opencode/src/tool/task.ts b/packages/opencode/src/tool/task.ts
+index d8ca640cf..fc8dc38da 100644
+--- a/packages/opencode/src/tool/task.ts
++++ b/packages/opencode/src/tool/task.ts
+@@ -229,11 +229,17 @@ export const TaskTool = Tool.define(
+         text: string,
+       ) {
+         const currentParent = yield* sessions.get(ctx.sessionID)
++        // Preserve the parent's CURRENT selection (model + variant), not the
++        // launch-time one, so completing a background task never resets the
++        // parent to the agent's default model. Fall back to the launch variant
++        // only when the parent has no stored model (legacy sessions).
++        const parentModel = currentParent.model
+         yield* ops
+           .prompt({
+             sessionID: ctx.sessionID,
+             agent: currentParent.agent ?? ctx.agent,
+-            variant,
++            model: parentModel ? { providerID: parentModel.providerID, modelID: parentModel.id } : undefined,
++            variant: parentModel ? (parentModel.variant === "default" ? undefined : parentModel.variant) : variant,
+             parts: [
+               {
+                 type: "text",

@@ -1,0 +1,146 @@
+diff --git a/packages/tui/src/routes/session/index.tsx b/packages/tui/src/routes/session/index.tsx
+index 2b54f2167..1d5c9e800 100644
+--- a/packages/tui/src/routes/session/index.tsx
++++ b/packages/tui/src/routes/session/index.tsx
+@@ -113,6 +113,11 @@ function goUpsellKeys(action: RetryAction) {
+ }
+ 
+ const sessionBindingCommands = [
++  "session.child.active",
++  "session.child.next.all",
++  "session.child.previous.all",
++  "session.subagents.count",
++  "session.child.cancel",
+   "session.share",
+   "session.rename",
+   "session.timeline",
+@@ -438,21 +443,37 @@ export function Session() {
+     if (status?.type === "retry") void DialogAlert.show(dialog, "Retry Error", status.message)
+   }
+ 
++  // Direct subagents of the current branch: siblings when viewing a subagent,
++  // children when viewing the primary. Excludes the branch root itself, so a
++  // nested subagent's own parent is never mistaken for a sibling.
++  const branchRootID = () => session()?.parentID ?? session()?.id
++  const subagents = () => children().filter((x) => x.parentID === branchRootID())
++  const activeSubagents = () =>
++    subagents().filter((x) => {
++      const t = sync.data.session_status[x.id]?.type
++      return t === "busy" || t === "retry"
++    })
++
+   function moveFirstChild() {
+-    if (children().length === 1) return
+-    const next = children().find((x) => !!x.parentID)
+-    if (next) enterChild(next.id)
++    const target = subagents()[0]
++    if (target) enterChild(target.id)
+   }
+ 
+   function moveChild(direction: number) {
+-    if (children().length === 1) return
+-
+-    const sessions = children().filter((x) => !!x.parentID)
+-    let next = sessions.findIndex((x) => x.id === session()?.id) - direction
+-
+-    if (next >= sessions.length) next = 0
+-    if (next < 0) next = sessions.length - 1
+-    if (sessions[next]) enterChild(sessions[next].id)
++    const active = activeSubagents()
++    if (active.length === 0) return
++    const index = active.findIndex((x) => x.id === session()?.id)
++    // Current session is not an active subagent (e.g. it just went idle): step
++    // to the first or last active one by direction instead of jumping to an end.
++    if (index === -1) {
++      const target = direction > 0 ? active[0] : active[active.length - 1]
++      if (target) enterChild(target.id)
++      return
++    }
++    let next = index - direction
++    if (next >= active.length) next = 0
++    if (next < 0) next = active.length - 1
++    if (active[next]) enterChild(active[next].id)
+   }
+ 
+   function childSessionHandler(func: () => void) {
+@@ -463,6 +484,80 @@ export function Session() {
+   }
+ 
+   const sessionCommandList = createMemo(() => [
++    {
++      title: "Go to active subagent",
++      value: "session.child.active",
++      category: "Session",
++      hidden: true,
++      run: () => {
++        dialog.clear()
++        const target = activeSubagents()[0]
++        if (target) enterChild(target.id)
++        else toast.show({ message: "No active subagents", variant: "info" })
++      },
++    },
++    {
++      title: "Next subagent (any)",
++      value: "session.child.next.all",
++      category: "Session",
++      hidden: true,
++      run: () => {
++        dialog.clear()
++        const all = subagents()
++        if (all.length <= 1) return
++        let next = all.findIndex((x) => x.id === session()?.id) - 1
++        if (next < 0) next = all.length - 1
++        if (all[next]) enterChild(all[next].id)
++      },
++    },
++    {
++      title: "Previous subagent (any)",
++      value: "session.child.previous.all",
++      category: "Session",
++      hidden: true,
++      run: () => {
++        dialog.clear()
++        const all = subagents()
++        if (all.length <= 1) return
++        let next = all.findIndex((x) => x.id === session()?.id) + 1
++        if (next >= all.length) next = 0
++        if (all[next]) enterChild(all[next].id)
++      },
++    },
++    {
++      title: "Count active subagents",
++      value: "session.subagents.count",
++      category: "Session",
++      hidden: true,
++      run: () => {
++        const count = activeSubagents().length
++        toast.show({ message: count === 1 ? "1 active subagent" : `${count} active subagents`, variant: "info" })
++      },
++    },
++    {
++      title: "Cancel subagent",
++      value: "session.child.cancel",
++      category: "Session",
++      hidden: true,
++      run: async () => {
++        dialog.clear()
++        const current = session()
++        if (!current?.parentID) {
++          toast.show({ message: "Not in a subagent session", variant: "warning" })
++          return
++        }
++        const status = sync.data.session_status?.[current.id]?.type
++        if (!status || status === "idle") {
++          toast.show({ message: "Subagent is not running", variant: "info" })
++          return
++        }
++        toast.show({ message: "Cancelling subagent…", variant: "info" })
++        const result = await sdk.client.session.abort({ sessionID: current.id }).catch((error) => ({ error }))
++        if (result && "error" in result && result.error) {
++          toast.show({ message: `Failed to cancel subagent: ${errorMessage(result.error)}`, variant: "error" })
++        }
++      },
++    },
+     {
+       title: session()?.share?.url ? "Copy share link" : "Share session",
+       value: "session.share",

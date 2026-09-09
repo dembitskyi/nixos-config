@@ -1,0 +1,33 @@
+diff --git a/packages/tui/src/context/sync.tsx b/packages/tui/src/context/sync.tsx
+index 71e050d11..3e106e406 100644
+--- a/packages/tui/src/context/sync.tsx
++++ b/packages/tui/src/context/sync.tsx
+@@ -338,7 +338,7 @@ export const {
+             }),
+           )
+           const updated = store.message[event.properties.info.sessionID]
+-          if (updated.length > 100) {
++          if (updated.length > 1000) {
+             const oldest = updated[0]
+             batch(() => {
+               setStore(
+@@ -600,7 +600,7 @@ export const {
+           const task = (async () => {
+             const [session, messages, todo, diff] = await Promise.all([
+               sdk.client.session.get({ sessionID }, { throwOnError: true }),
+-              sdk.client.session.messages({ sessionID, limit: 100 }),
++              sdk.client.session.messages({ sessionID, limit: 1000 }),
+               sdk.client.session.todo({ sessionID }),
+               sdk.client.session.diff({ sessionID }),
+             ])
+@@ -622,8 +622,8 @@ export const {
+                   ),
+                 )
+                 infos.sort(compareMessage)
+-                const removed = infos.slice(0, -100)
+-                const visible = infos.slice(-100)
++                const removed = infos.slice(0, -1000)
++                const visible = infos.slice(-1000)
+                 const visibleIDs = new Set(visible.map((message) => message.id))
+                 for (const message of messages.data ?? []) {
+                   if (!visibleIDs.has(message.info.id)) {

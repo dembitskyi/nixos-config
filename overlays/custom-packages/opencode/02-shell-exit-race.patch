@@ -1,0 +1,13 @@
+diff --git a/packages/opencode/src/tool/shell.ts b/packages/opencode/src/tool/shell.ts
+index 1e4423e01..7a7493cd1 100644
+--- a/packages/opencode/src/tool/shell.ts
++++ b/packages/opencode/src/tool/shell.ts
+@@ -539,7 +539,7 @@ export const ShellTool = Tool.define(
+ 
+           const timeout = Effect.sleep(`${input.timeout + 100} millis`)
+ 
+-          const exit = yield* Effect.raceAll([
++          const exit = yield* Effect.raceAllFirst([
+             handle.exitCode.pipe(Effect.map((code) => ({ kind: "exit" as const, code }))),
+             abort.pipe(Effect.map(() => ({ kind: "abort" as const, code: null }))),
+             timeout.pipe(Effect.map(() => ({ kind: "timeout" as const, code: null }))),

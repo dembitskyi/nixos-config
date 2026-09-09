@@ -1,0 +1,28 @@
+diff --git a/packages/tui/src/config/keybind.ts b/packages/tui/src/config/keybind.ts
+index 5dd7e4b5a..830f06214 100644
+--- a/packages/tui/src/config/keybind.ts
++++ b/packages/tui/src/config/keybind.ts
+@@ -101,6 +101,11 @@ export const Definitions = {
+   session_toggle_generic_tool_output: keybind("none", "Toggle generic tool output"),
+   session_queued_prompts: keybind("<leader>q", "Manage queued prompts"),
+   session_child_first: keybind("<leader>down", "Go to first child session"),
++  session_child_active: keybind("none", "Go to first active (running) child session"),
++  session_child_cycle_all: keybind("none", "Cycle to next child session (any)"),
++  session_child_cycle_reverse_all: keybind("none", "Cycle to previous child session (any)"),
++  session_subagents_count: keybind("none", "Show active subagent count"),
++  session_child_cancel: keybind("none", "Cancel the current subagent"),
+   session_child_cycle: keybind("right", "Go to next child session"),
+   session_child_cycle_reverse: keybind("left", "Go to previous child session"),
+   session_parent: keybind("up", "Go to parent session"),
+@@ -308,6 +313,11 @@ export const CommandMap = {
+   session_toggle_generic_tool_output: "session.toggle.generic_tool_output",
+   session_queued_prompts: "session.queued_prompts",
+   session_child_first: "session.child.first",
++  session_child_active: "session.child.active",
++  session_child_cycle_all: "session.child.next.all",
++  session_child_cycle_reverse_all: "session.child.previous.all",
++  session_subagents_count: "session.subagents.count",
++  session_child_cancel: "session.child.cancel",
+   session_child_cycle: "session.child.next",
+   session_child_cycle_reverse: "session.child.previous",
+   session_parent: "session.parent",
