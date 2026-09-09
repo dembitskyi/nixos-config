@@ -5,35 +5,35 @@
   ...
 }:
 let
-  cfg = config.mine.fastmcp.proxy;
+  cfg = config.mine.ai-sandbox.proxy;
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
   proxyPort = toString cfg.port;
   proxyWebPort = toString cfg.webPort;
-  proxyLogFile = "${userHome}/.local/state/fastmcp/proxy.log";
+  proxyLogFile = "${userHome}/.local/state/ai-sandbox/proxy.log";
   mitmweb = lib.getExe' pkgs.mitmproxy "mitmweb";
   proxyAddon = ./pretty-log-addon.py;
-  confDir = "%t/fastmcp-proxy/confdir";
+  confDir = "%t/ai-sandbox-proxy/confdir";
 
   # Script that sets up the mitmproxy confdir and builds the CA bundle.
   # Both the CA key and cert must be present so mitmproxy reuses them
   # instead of generating a new cert on every restart.
   # Also builds the combined cert bundle (system CAs + mitmproxy CA) that
-  # the fastmcp service bind-mounts over /etc/ssl/certs/. Running this in
-  # the proxy service (which is ordered Before=fastmcp) guarantees the
-  # bundle file exists before fastmcp's namespace is set up.
+  # the AI sandbox service bind-mounts over /etc/ssl/certs/. Running this in
+  # the proxy service (which is ordered Before=ai-sandbox) guarantees the
+  # bundle file exists before the AI sandbox's namespace is set up.
   # NOTE: uses $XDG_RUNTIME_DIR instead of %t because systemd only expands
   # specifiers in unit file directives, not inside script contents.
-  setupProxy = pkgs.writeShellScript "fastmcp-proxy-setup" ''
+  setupProxy = pkgs.writeShellScript "ai-sandbox-proxy-setup" ''
     set -euo pipefail
 
-    confdir="$XDG_RUNTIME_DIR/fastmcp-proxy/confdir"
+    confdir="$XDG_RUNTIME_DIR/ai-sandbox-proxy/confdir"
     mkdir -p "$confdir"
     cp "$CREDENTIALS_DIRECTORY/mitmproxy_ca" "$confdir/mitmproxy-ca.pem"
     chmod 600 "$confdir/mitmproxy-ca.pem"
     cp "$CREDENTIALS_DIRECTORY/mitmproxy_ca_cert" "$confdir/mitmproxy-ca-cert.pem"
     chmod 644 "$confdir/mitmproxy-ca-cert.pem"
 
-    bundle_dir="${userHome}/.local/state/fastmcp"
+    bundle_dir="${userHome}/.local/state/ai-sandbox"
     mkdir -p "$bundle_dir"
     cat "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" \
         "$CREDENTIALS_DIRECTORY/mitmproxy_ca_cert" \
@@ -41,7 +41,7 @@ let
   '';
 in
 {
-  options.mine.fastmcp.proxy = {
+  options.mine.ai-sandbox.proxy = {
     enable = lib.mkEnableOption "mitmproxy for tracing opencode LLM provider traffic";
 
     port = lib.mkOption {
@@ -70,10 +70,10 @@ in
     };
 
     home-manager.users.${config.variables.username} = {
-      systemd.user.services.fastmcp-proxy = {
+      systemd.user.services.ai-sandbox-proxy = {
         Unit = {
-          Description = "FastMCP LLM traffic proxy (mitmweb)";
-          Before = [ "fastmcp.service" ];
+          Description = "AI Sandbox LLM traffic proxy (mitmweb)";
+          Before = [ "ai-sandbox.service" ];
           PartOf = [ "graphical-session.target" ];
         };
 
@@ -86,7 +86,7 @@ in
             "HOME=${userHome}"
             "PROXY_LOG_FILE=${proxyLogFile}"
           ];
-          RuntimeDirectory = "fastmcp-proxy";
+          RuntimeDirectory = "ai-sandbox-proxy";
           LoadCredential = [
             "mitmproxy_ca:${config.sops.secrets."MCP/MITMPROXY_CA".path}"
             "mitmproxy_ca_cert:${config.sops.secrets."MCP/MITMPROXY_CA_CERT".path}"
@@ -110,17 +110,17 @@ in
         };
       };
 
-      # Inject cert bundle bind-mounts into the fastmcp service so that
+      # Inject cert bundle bind-mounts into the AI sandbox service so that
       # Bun's BoringSSL (which reads /etc/ssl/certs/) trusts the proxy CA.
-      systemd.user.services.fastmcp = {
+      systemd.user.services.ai-sandbox = {
         Unit = {
-          After = [ "fastmcp-proxy.service" ];
-          Wants = [ "fastmcp-proxy.service" ];
+          After = [ "ai-sandbox-proxy.service" ];
+          Wants = [ "ai-sandbox-proxy.service" ];
         };
         Service = {
           BindReadOnlyPaths = [
-            "%S/fastmcp/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt"
-            "%S/fastmcp/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt"
+            "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt"
+            "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt"
           ];
         };
       };

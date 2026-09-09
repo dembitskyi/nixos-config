@@ -18,10 +18,9 @@
       };
       # Allow-by-default, matching curated-bash.nix. An enumerated allow-list is
       # unmaintainable: opencode evaluates each segment of a compound command
-      # separately, so one unlisted `echo` makes the whole line prompt. The real
-      # boundary is the systemd sandbox (see modules/nixos/fastmcp), not this
-      # list, so only genuinely destructive or unattended-unsafe commands are
-      # named here.
+      # separately, so one unlisted `echo` makes the whole line prompt.
+      # The real boundary is the systemd AI sandbox (see modules/nixos/ai-sandbox).
+      # Only genuinely destructive or unattended-unsafe commands are named here.
       #
       # NOTE: Nix sorts these keys alphabetically and opencode's matcher picks
       # the alphabetically-LAST match (findLast), not the most specific one.

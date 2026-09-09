@@ -32,7 +32,7 @@ let
   };
 
   # AI web search over CDP, driving the persistent ai-browser on port 9222.
-  # Shared with the fastmcp sandbox so the /search command resolves there too.
+  # Shared with the AI sandbox so the /search command resolves there too.
   ai-search = pkgs.callPackage ./ai-search.nix { };
 
   # fzf picker backing the /skill TUI plugin (runs host-side in the TUI).
@@ -310,7 +310,7 @@ in
     mine.home.opencode.mcpServerUrls = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = { };
-      description = "Mapping of MCP server name to URL. Populated by the fastmcp NixOS module.";
+      description = "Mapping of MCP server name to URL. Populated by the AI sandbox NixOS module.";
     };
     mine.home.opencode.extraMcpServers = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;

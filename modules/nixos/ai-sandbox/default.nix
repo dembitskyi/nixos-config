@@ -7,7 +7,7 @@
 let
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
   userRuntimeDir = "%t";
-  fastmcpSshAgentSocket = "%t/fastmcp-ssh-agent/socket";
+  sandboxSshAgentSocket = "%t/ai-sandbox-ssh-agent/socket";
   githubKnownHosts = pkgs.writeText "github_known_hosts" ''
     github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
   '';
@@ -15,7 +15,7 @@ let
     coreutils
     openssh
   ];
-  fastmcpSshAgentScript = pkgs.writeShellScript "fastmcp-ssh-agent" ''
+  sandboxSshAgentScript = pkgs.writeShellScript "ai-sandbox-ssh-agent" ''
     set -euo pipefail
 
     socket_path="$1"
@@ -48,10 +48,10 @@ let
     SSH_AUTH_SOCK="$socket_path" ssh-add "$CREDENTIALS_DIRECTORY/github_ssh_key" >/dev/null
     wait "$agent_pid"
   '';
-  gitSshWrapper = pkgs.writeShellScriptBin "fastmcp-git-ssh" ''
+  gitSshWrapper = pkgs.writeShellScriptBin "ai-sandbox-git-ssh" ''
     username="${config.variables.username}"
     uid="$(${lib.getExe' pkgs.coreutils "id"} -u "$username")"
-    credentials_dir="/run/user/$uid/credentials/fastmcp.service"
+    credentials_dir="/run/user/$uid/credentials/ai-sandbox.service"
 
     exec ${lib.getExe pkgs.openssh} \
       -F /dev/null \
@@ -82,23 +82,23 @@ let
       )
     )
   );
-  # Host-side debug helper: drops into the running fastmcp sandbox's
+  # Host-side debug helper: drops into the running AI sandbox's
   # namespaces so we can inspect exactly what the service sees (bind mounts,
   # the ProtectHome tmpfs, the skills overlay, the stripped ssh_config).
   # nsenter joins the user namespace first; --preserve-credentials keeps our
   # euid at 1000, which owns the namespace and therefore grants the privileges
   # needed to also join the mount namespace. The service env is replayed so
   # PATH/HOME/SSH_AUTH_SOCK/CREDENTIALS_DIRECTORY match the service exactly.
-  fastmcpEnter = pkgs.writeShellApplication {
-    name = "fastmcp-enter";
+  sandboxEnter = pkgs.writeShellApplication {
+    name = "ai-sandbox-enter";
     runtimeInputs = with pkgs; [
       systemd
       util-linux
     ];
     text = ''
-      pid="$(systemctl --user show -p MainPID --value fastmcp.service)"
+      pid="$(systemctl --user show -p MainPID --value ai-sandbox.service)"
       if [ -z "$pid" ] || [ "$pid" = "0" ]; then
-        echo "fastmcp-enter: fastmcp.service is not running" >&2
+        echo "ai-sandbox-enter: ai-sandbox.service is not running" >&2
         exit 1
       fi
 
@@ -224,17 +224,17 @@ let
       config
       ;
     placeholder = config.sops.placeholder;
-    proxyEnv = config.mine.fastmcp.proxy.enable;
-    automationConfig = config.mine.fastmcp.automationConfig;
-    backgroundSubagents = config.mine.fastmcp.backgroundSubagents.enable;
+    proxyEnv = config.mine.ai-sandbox.proxy.enable;
+    automationConfig = config.mine.ai-sandbox.automationConfig;
+    backgroundSubagents = config.mine.ai-sandbox.backgroundSubagents.enable;
   };
 in
 {
   imports = [ ./proxy.nix ];
 
   options = {
-    mine.fastmcp = {
-      enable = lib.mkEnableOption "enable fastmcp server";
+    mine.ai-sandbox = {
+      enable = lib.mkEnableOption "the AI sandbox for OpenCode and MCP servers";
 
       ghidra.enable = lib.mkEnableOption "the headless pyghidra-mcp reverse-engineering server (pulls ghidra + a JDK into the closure)";
 
@@ -256,13 +256,13 @@ in
       extraServers = lib.mkOption {
         type = lib.types.attrsOf lib.types.anything;
         default = { };
-        description = "Additional FastMCP server definitions merged into the default server set.";
+        description = "Additional MCP server definitions merged into the default server set.";
       };
 
       extraPackages = lib.mkOption {
         type = lib.types.listOf lib.types.package;
         default = [ ];
-        description = "Additional packages to include in the fastmcp service PATH.";
+        description = "Additional packages to include in the AI sandbox service PATH.";
       };
 
       browseruse = {
@@ -285,9 +285,9 @@ in
     };
   };
 
-  config = lib.mkIf config.mine.fastmcp.enable {
-    mine.fastmcp.serverUrls = configData.serverUrls;
-    mine.fastmcp.automationConfig = lib.mkDefault (
+  config = lib.mkIf config.mine.ai-sandbox.enable {
+    mine.ai-sandbox.serverUrls = configData.serverUrls;
+    mine.ai-sandbox.automationConfig = lib.mkDefault (
       let
         hmCfg = config.home-manager.users.${config.variables.username}.mine.home.opencode;
       in
@@ -340,47 +340,47 @@ in
     home-manager.users.${config.variables.username} = hmArgs: {
       mine.home.opencode.mcpServerUrls = configData.defaultServerUrls;
 
-      home.packages = [ fastmcpEnter ];
+      home.packages = [ sandboxEnter ];
 
       systemd.user.tmpfiles.rules = [
         "d ${userHome}/.config/opencode 0700 - - -"
         "d ${userHome}/.config/opencode/skills 0700 - - -"
         "d ${userHome}/.config/rtk 0700 - - -"
         "d ${userHome}/.local/share/opencode 0700 - - -"
-        "d ${userHome}/.local/state/fastmcp/workspace 0755 - - -"
+        "d ${userHome}/.local/state/ai-sandbox/workspace 0755 - - -"
         # Ensure the skill pool exists so the read-only bind below never fails,
         # even before the ai-skills module has populated it.
         "d ${userHome}/.cache/ai-skills 0755 - - -"
       ];
 
       home.file."workspace".source =
-        hmArgs.config.lib.file.mkOutOfStoreSymlink "${userHome}/.local/state/fastmcp/workspace";
+        hmArgs.config.lib.file.mkOutOfStoreSymlink "${userHome}/.local/state/ai-sandbox/workspace";
 
-      systemd.user.services.fastmcp-ssh-agent = {
+      systemd.user.services.ai-sandbox-ssh-agent = {
         Unit = {
-          Description = "FastMCP SSH Agent";
+          Description = "AI Sandbox SSH Agent";
           After = [ "graphical-session.target" ];
-          PartOf = [ "fastmcp.service" ];
+          PartOf = [ "ai-sandbox.service" ];
         };
 
         Service = {
           Environment = [ "PATH=${lib.makeBinPath sshAgentPackages}" ];
-          RuntimeDirectory = "fastmcp-ssh-agent";
+          RuntimeDirectory = "ai-sandbox-ssh-agent";
           LoadCredential = [ "github_ssh_key:${config.sops.secrets."MCP/GITHUB_SSH_KEY".path}" ];
-          ExecStart = "${fastmcpSshAgentScript} ${fastmcpSshAgentSocket}";
+          ExecStart = "${sandboxSshAgentScript} ${sandboxSshAgentSocket}";
         };
       };
 
-      systemd.user.services.fastmcp = {
+      systemd.user.services.ai-sandbox = {
         Unit = {
-          Description = "FastMCP Service";
+          Description = "AI Sandbox";
           After = [
             "graphical-session.target"
             "network.target"
-            "fastmcp-ssh-agent.service"
+            "ai-sandbox-ssh-agent.service"
           ];
           PartOf = [ "graphical-session.target" ];
-          Wants = [ "fastmcp-ssh-agent.service" ];
+          Wants = [ "ai-sandbox-ssh-agent.service" ];
         };
 
         Install = {
@@ -389,7 +389,7 @@ in
         Service = {
           Environment = [
             "HOME=${userHome}"
-            "SSH_AUTH_SOCK=${fastmcpSshAgentSocket}"
+            "SSH_AUTH_SOCK=${sandboxSshAgentSocket}"
             "XDG_CACHE_HOME=${userHome}/.cache"
             "XDG_DATA_HOME=${userHome}/.local/share"
             "XDG_STATE_HOME=${userHome}/.local/state"
@@ -399,7 +399,7 @@ in
             "PATH=${
               lib.makeBinPath (
                 extraPackages
-                ++ config.mine.fastmcp.extraPackages
+                ++ config.mine.ai-sandbox.extraPackages
                 ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
               )
             }"
@@ -410,10 +410,10 @@ in
           PrivateMounts = true;
           PrivateTmp = false;
           ProtectHome = "tmpfs";
-          StateDirectory = "fastmcp";
+          StateDirectory = "ai-sandbox";
           BindPaths = [
-            "%S/fastmcp:${userHome}"
-            "${userRuntimeDir}/fastmcp-ssh-agent:${userRuntimeDir}/fastmcp-ssh-agent"
+            "%S/ai-sandbox:${userHome}"
+            "${userRuntimeDir}/ai-sandbox-ssh-agent:${userRuntimeDir}/ai-sandbox-ssh-agent"
             "${userHome}/.local/share/opencode:${userHome}/.local/share/opencode"
             "${userHome}/.config/opencode:${userHome}/.config/opencode"
             "${userRuntimeDir}/hypr:${userRuntimeDir}/hypr"

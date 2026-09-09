@@ -7,7 +7,7 @@
 let
   cfg = config.mine.parallels-guest;
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
-  workspacePath = "${userHome}/.local/state/fastmcp/workspace";
+  workspacePath = "${userHome}/.local/state/ai-sandbox/workspace";
 in
 {
   options.mine.parallels-guest = {
@@ -25,10 +25,10 @@ in
       description = "Whether to run the Parallels clipboard sharing service.";
     };
 
-    fastmcpBind.enable = lib.mkOption {
+    aiSandboxBind.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Whether to bind the Parallels shared folder into the FastMCP sandbox.";
+      description = "Whether to bind the Parallels shared folder into the AI sandbox.";
     };
   };
 
@@ -43,7 +43,7 @@ in
         home-manager.users.${config.variables.username} = hmArgs: {
           home.file = {
             "Shared".source = hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
-            ".local/state/fastmcp/workspace/Shared".source =
+            ".local/state/ai-sandbox/workspace/Shared".source =
               hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
           };
         };
@@ -69,13 +69,13 @@ in
         };
       })
 
-      (lib.mkIf cfg.fastmcpBind.enable {
+      (lib.mkIf cfg.aiSandboxBind.enable {
         home-manager.users.${config.variables.username} = {
           systemd.user.tmpfiles.rules = [
             "d ${workspacePath} 0755 - - -"
           ];
 
-          systemd.user.services.fastmcp.Service.BindPaths = [
+          systemd.user.services.ai-sandbox.Service.BindPaths = [
             "-${cfg.sharedPath}:${cfg.sharedPath}"
           ];
         };

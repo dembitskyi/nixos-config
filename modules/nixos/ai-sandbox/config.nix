@@ -8,9 +8,9 @@
   backgroundSubagents ? false,
 }:
 let
-  fastmcp = lib.getExe' (pkgs.python313.withPackages (ps: [ ps.fastmcp ])) "fastmcp";
+  fastmcpCli = lib.getExe' (pkgs.python313.withPackages (ps: [ ps.fastmcp ])) "fastmcp";
   opencode = lib.getExe pkgs.opencode;
-  proxyCfg = config.mine.fastmcp.proxy;
+  proxyCfg = config.mine.ai-sandbox.proxy;
   # Inline env prefix applied only to opencode processes.
   proxyPrefix =
     if proxyEnv then
@@ -18,7 +18,7 @@ let
     else
       "";
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
-  homeDir = "${userHome}/.local/state/fastmcp";
+  homeDir = "${userHome}/.local/state/ai-sandbox";
   helpers = import ./helpers.nix {
     inherit lib pkgs;
   };
@@ -50,8 +50,8 @@ let
           "default": true,
           "created_at": "2026-03-05T07:13:24.268580",
           "api_key": null,
-          "provider": "${config.mine.fastmcp.browseruse.provider}",
-          "model": "${config.mine.fastmcp.browseruse.opencode.model}",
+          "provider": "${config.mine.ai-sandbox.browseruse.provider}",
+          "model": "${config.mine.ai-sandbox.browseruse.opencode.model}",
           "host": null
         }
       },
@@ -82,7 +82,7 @@ let
     "time"
     "browseruse"
   ]
-  ++ lib.optional config.mine.fastmcp.ghidra.enable "ghidra";
+  ++ lib.optional config.mine.ai-sandbox.ghidra.enable "ghidra";
 
   builtInServers = {
     time = uvxServerWithArgs "mcp-server-time" [ "--local-timezone=America/Chicago" ];
@@ -96,9 +96,9 @@ let
         ANONYMIZED_TELEMETRY = "False";
         BROWSER_USE_CONFIG_PATH = browseruse-conf;
         BROWSER_USE_LOGGING_LEVEL = "info";
-        MODEL_PROVIDER = config.mine.fastmcp.browseruse.provider;
-        OPENCODE_MODEL = config.mine.fastmcp.browseruse.opencode.model;
-        OPENCODE_PROVIDER = config.mine.fastmcp.browseruse.opencode.provider;
+        MODEL_PROVIDER = config.mine.ai-sandbox.browseruse.provider;
+        OPENCODE_MODEL = config.mine.ai-sandbox.browseruse.opencode.model;
+        OPENCODE_PROVIDER = config.mine.ai-sandbox.browseruse.opencode.provider;
         OPENCODE_BASE_URL = "http://127.0.0.1:4097";
         PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
         PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";
@@ -162,8 +162,8 @@ let
 
   servers =
     builtInServers
-    // lib.optionalAttrs config.mine.fastmcp.ghidra.enable ghidraServer
-    // config.mine.fastmcp.extraServers;
+    // lib.optionalAttrs config.mine.ai-sandbox.ghidra.enable ghidraServer
+    // config.mine.ai-sandbox.extraServers;
 
   extraServerNames = lib.subtractLists defaultServerOrder (builtins.attrNames servers);
   serverOrder = defaultServerOrder ++ extraServerNames;
@@ -207,13 +207,13 @@ in
     name: _: "config_${name}.json:${config.sops.templates."mcp-${name}".path}"
   ) servers;
 
-  # All server URLs (built-in + extra). Exposed as mine.fastmcp.serverUrls.
+  # All server URLs (built-in + extra). Exposed as mine.ai-sandbox.serverUrls.
   serverUrls = lib.mapAttrs (name: port: "http://127.0.0.1:${toString port}/${name}") serverPorts;
 
   # Only built-in server URLs, passed to the home-manager opencode module.
   inherit defaultServerUrls;
 
-  execStartScript = pkgs.writeShellScript "fastmcp-server" ''
+  execStartScript = pkgs.writeShellScript "ai-sandbox-server" ''
     mkdir -p ~/workspace
     cd ~/workspace
     ${proxyPrefix}${bgSubagentsEnv}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
@@ -221,7 +221,7 @@ in
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (
         name: port:
-        "${fastmcp} run $CREDENTIALS_DIRECTORY/config_${name}.json --no-banner -t streamable-http -p ${toString port} --path /${name} &"
+        "${fastmcpCli} run $CREDENTIALS_DIRECTORY/config_${name}.json --no-banner -t streamable-http -p ${toString port} --path /${name} &"
       ) serverPorts
     )}
     wait

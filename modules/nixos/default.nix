@@ -19,7 +19,7 @@
     ./desktop/hyprland
     ./filebrowser
     ./thunderbird
-    ./fastmcp
+    ./ai-sandbox
     ./steam
     ./dnsmasq
     ./vllm

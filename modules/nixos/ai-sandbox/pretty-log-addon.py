@@ -12,7 +12,7 @@ import time
 from mitmproxy import http
 
 LOG_FILE = os.environ.get("PROXY_LOG_FILE", "/tmp/opencode-proxy.log")
-LOG_GATE = "/tmp/fastmcp-proxy-log"
+LOG_GATE = "/tmp/ai-sandbox-proxy-log"
 SEPARATOR = "=" * 100
 
 

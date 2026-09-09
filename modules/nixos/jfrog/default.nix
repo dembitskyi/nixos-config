@@ -40,7 +40,7 @@ in
       ];
       description = ''
         JFrog agent skills (from jfrog/jfrog-skills) to allow for opencode and
-        expose inside the fastmcp sandbox. Set to [ ] to deploy none.
+        expose inside the AI sandbox. Set to [ ] to deploy none.
       '';
     };
 
