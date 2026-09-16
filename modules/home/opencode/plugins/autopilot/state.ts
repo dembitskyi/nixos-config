@@ -3,16 +3,21 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
-export type Mode = "manual" | "recommended"
-export type SessionMode = "inherit" | Mode
 export type StatusVisibility = "auto" | "show" | "hide"
+export type QuestionPolicy = "manual" | "recommended" | "hybrid"
 export type GoalMode = "monitor" | "drive"
+export type ModelRef = {
+  providerID: string
+  modelID: string
+  variant?: string
+}
 export const AUTOPILOT_REFRESH_COMMAND = "autopilot.refresh"
 export type GoalPhase =
   | "waiting-goal"
   | "working"
   | "verifying"
   | "continuing"
+  | "waiting-user"
   | "complete"
   | "blocked"
   | "paused"
@@ -22,16 +27,19 @@ export type GoalPhase =
 export type Goal = {
   workerSessionID: string
   verifierSessionID?: string
+  chooserSessionID?: string
   directory: string
   text?: string
   criteria: string[]
+  model?: ModelRef
   mode: GoalMode
+  questionPolicy: QuestionPolicy
   phase: GoalPhase
   startedAt?: number
   updatedAt: number
   round: number
   continuations: number
-  maxRounds?: number
+  maxCheckpoints?: number
   maxMinutes?: number
   noProgressLimit: number
   noProgressRounds: number
@@ -43,19 +51,11 @@ export type Goal = {
   revision: number
   workerAgent?: string
   acknowledgementPending?: boolean
-  verifier?: {
-    providerID: string
-    modelID: string
-    variant?: string
-  }
+  verifier?: ModelRef
 }
 
 export type State = {
-  version: 1
-  questions: {
-    global: Mode
-    sessions: Record<string, Mode>
-  }
+  version: 2
   status: {
     sessions: Record<string, StatusVisibility>
   }
@@ -63,8 +63,7 @@ export type State = {
 }
 
 export const DEFAULT_STATE: State = {
-  version: 1,
-  questions: { global: "manual", sessions: {} },
+  version: 2,
   status: { sessions: {} },
   goals: {},
 }
@@ -74,6 +73,7 @@ const GOAL_PHASES = new Set<GoalPhase>([
   "working",
   "verifying",
   "continuing",
+  "waiting-user",
   "complete",
   "blocked",
   "paused",
@@ -90,15 +90,6 @@ export function readState(): State {
     const value: unknown = JSON.parse(readFileSync(statePath(), "utf8"))
     if (!value || typeof value !== "object" || Array.isArray(value)) return structuredClone(DEFAULT_STATE)
     const data = value as Partial<State>
-    const questionSessions = data.questions?.sessions
-    const sessions =
-      questionSessions && typeof questionSessions === "object" && !Array.isArray(questionSessions)
-        ? Object.fromEntries(
-            Object.entries(questionSessions).filter(
-              (entry): entry is [string, Mode] => entry[1] === "manual" || entry[1] === "recommended",
-            ),
-          )
-        : {}
     const goals =
       data.goals && typeof data.goals === "object" && !Array.isArray(data.goals)
         ? Object.fromEntries(
@@ -108,7 +99,7 @@ export function readState(): State {
             }),
           )
         : {}
-    const statusSessions = data.status?.sessions
+    const statusSessions = (data.status as { sessions?: Record<string, unknown> } | undefined)?.sessions
     const status =
       statusSessions && typeof statusSessions === "object" && !Array.isArray(statusSessions)
         ? Object.fromEntries(
@@ -119,11 +110,7 @@ export function readState(): State {
           )
         : {}
     return {
-      version: 1,
-      questions: {
-        global: data.questions?.global === "recommended" ? "recommended" : "manual",
-        sessions,
-      },
+      version: 2,
       status: { sessions: status },
       goals,
     }
@@ -152,7 +139,40 @@ function parseGoal(workerSessionID: string, value: unknown): Goal | undefined {
   ) {
     return
   }
-  return goal as Goal
+  const questionPolicy: QuestionPolicy =
+    goal.questionPolicy === "recommended" || goal.questionPolicy === "manual" || goal.questionPolicy === "hybrid"
+      ? goal.questionPolicy
+      : "hybrid"
+  const legacy = value as { maxRounds?: unknown }
+  const maxCheckpoints =
+    typeof goal.maxCheckpoints === "number"
+      ? goal.maxCheckpoints
+      : typeof legacy.maxRounds === "number"
+        ? legacy.maxRounds
+        : undefined
+  const { maxRounds: _, ...migrated } = goal as Partial<Goal> & {
+    maxRounds?: number
+  }
+  return {
+    ...migrated,
+    questionPolicy,
+    maxCheckpoints,
+    model: parseModelRef(goal.model),
+    verifier: parseModelRef(goal.verifier),
+  } as Goal
+}
+
+function parseModelRef(value: unknown): ModelRef | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return
+  const model = value as Partial<ModelRef>
+  if (typeof model.providerID !== "string" || !model.providerID.trim()) return
+  if (typeof model.modelID !== "string" || !model.modelID.trim()) return
+  const variant = typeof model.variant === "string" ? model.variant.trim() : undefined
+  return {
+    providerID: model.providerID.trim(),
+    modelID: model.modelID.trim(),
+    ...(variant && variant !== "default" ? { variant } : {}),
+  }
 }
 
 export function writeState(state: State): void {
@@ -212,19 +232,6 @@ function withLock<T>(run: () => T): T {
   throw new Error("Timed out acquiring the Autopilot state lock")
 }
 
-export function setGlobalQuestionMode(mode: Mode): State {
-  return updateState((state) => ({ ...state, questions: { ...state.questions, global: mode } }))
-}
-
-export function setSessionQuestionMode(sessionID: string, mode: SessionMode): State {
-  return updateState((state) => {
-    const sessions = { ...state.questions.sessions }
-    if (mode === "inherit") delete sessions[sessionID]
-    if (mode !== "inherit") sessions[sessionID] = mode
-    return { ...state, questions: { ...state.questions, sessions } }
-  })
-}
-
 export function setStatusVisibility(sessionID: string, visibility: StatusVisibility): State {
   return updateState((state) => {
     const sessions = { ...state.status.sessions }
@@ -235,7 +242,10 @@ export function setStatusVisibility(sessionID: string, visibility: StatusVisibil
 }
 
 export function putGoal(goal: Goal): State {
-  return updateState((state) => ({ ...state, goals: { ...state.goals, [goal.workerSessionID]: goal } }))
+  return updateState((state) => ({
+    ...state,
+    goals: { ...state.goals, [goal.workerSessionID]: goal },
+  }))
 }
 
 export function patchGoal(workerSessionID: string, patch: Partial<Goal>): Goal | undefined {
@@ -267,19 +277,18 @@ export function patchGoalIf(
 export function removeGoal(workerSessionID: string): State {
   return updateState((state) => {
     const goals = { ...state.goals }
-    const statusSessions = { ...state.status.sessions }
     delete goals[workerSessionID]
-    delete statusSessions[workerSessionID]
-    return { ...state, status: { sessions: statusSessions }, goals }
+    return { ...state, goals }
   })
-}
-
-export function findGoalByVerifier(verifierSessionID: string): Goal | undefined {
-  return Object.values(readState().goals).find((goal) => goal.verifierSessionID === verifierSessionID)
 }
 
 export function formatLimit(value: number | undefined, unit = ""): string {
   return value === undefined ? "Unlimited" : `${value}${unit}`
+}
+
+export function formatModel(model: ModelRef | undefined): string {
+  if (!model) return "current worker model (resolved on the next step)"
+  return `${model.providerID}/${model.modelID}${model.variant ? ` · ${model.variant}` : ""}`
 }
 
 export function parseCriteria(text: string): string[] {
@@ -288,7 +297,12 @@ export function parseCriteria(text: string): string[] {
   const tail = text.slice((marker.index ?? 0) + marker[0].length)
   return tail
     .split("\n")
-    .map((line) => line.trim().replace(/^[-*\d.)\s]+/, "").trim())
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^[-*\d.)\s]+/, "")
+        .trim(),
+    )
     .filter(Boolean)
 }
 
@@ -297,10 +311,12 @@ export function goalSummary(goal: Goal): string {
     "Autopilot",
     `State: ${goal.phase}`,
     `Mode: ${goal.mode}`,
-    `Checkpoints: ${goal.round}`,
-    `Continuations: ${goal.continuations}/${formatLimit(goal.maxRounds)}`,
+    `Questions: ${goal.questionPolicy}`,
+    `Model: ${formatModel(goal.model)}`,
+    `Checkpoints: ${goal.round}/${formatLimit(goal.maxCheckpoints)}`,
+    `Continuations: ${goal.continuations}`,
     `Duration: ${goal.startedAt ? `${Math.max(0, Math.floor((Date.now() - goal.startedAt) / 60_000))}m` : "0m"}/${formatLimit(goal.maxMinutes, "m")}`,
-    `Verifier: ${goal.verifier ? `${goal.verifier.providerID}/${goal.verifier.modelID}${goal.verifier.variant ? ` · ${goal.verifier.variant}` : ""}` : "same as worker (resolved on verification)"}`,
+    `Last verifier: ${goal.verifier ? formatModel(goal.verifier) : "not run yet"}`,
     goal.text ? `Goal: ${goal.text}` : "Goal: waiting for your next message",
   ].join("\n")
 }

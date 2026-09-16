@@ -3,24 +3,23 @@
 // /autopilot — control recommended answers and supervised goal completion.
 
 import { createSignal, ErrorBoundary, Show, type Accessor } from "solid-js"
-import type { QuestionRequest, Session } from "@opencode-ai/sdk/v2"
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createLog, type Log } from "./log"
-import { effectiveQuestionMode, errorText, recommendedAnswers, settled } from "./question"
+import { errorText } from "./question"
 import {
   AUTOPILOT_REFRESH_COMMAND,
   formatLimit,
+  formatModel,
   goalSummary,
   patchGoal,
   putGoal,
   readState,
   removeGoal,
-  setGlobalQuestionMode,
-  setSessionQuestionMode,
   setStatusVisibility,
   type Goal,
   type GoalMode,
-  type SessionMode,
+  type ModelRef,
+  type QuestionPolicy,
   type State,
   type StatusVisibility,
 } from "./state"
@@ -34,7 +33,8 @@ function currentSessionID(api: TuiPluginApi): string | undefined {
 
 function reportTuiError(api: TuiPluginApi, log: Log, event: string, error: unknown, notify = true) {
   const message = errorText(error)
-  const detail = error instanceof Error ? { name: error.name, message, stack: error.stack?.slice(0, 4_000) } : { message }
+  const detail =
+    error instanceof Error ? { name: error.name, message, stack: error.stack?.slice(0, 4_000) } : { message }
   log.error(event, { ...detail, pid: process.pid })
   try {
     void api.client.app
@@ -46,19 +46,32 @@ function reportTuiError(api: TuiPluginApi, log: Log, event: string, error: unkno
         extra: { ...detail, pid: process.pid },
       })
       .then((result) => {
-        if (result.error) log.warn("ui.server-report-failed", { sourceEvent: event, error: errorText(result.error) })
+        if (result.error)
+          log.warn("ui.server-report-failed", {
+            sourceEvent: event,
+            error: errorText(result.error),
+          })
       })
       .catch((forwardError) =>
-        log.warn("ui.server-report-failed", { sourceEvent: event, error: errorText(forwardError) }),
+        log.warn("ui.server-report-failed", {
+          sourceEvent: event,
+          error: errorText(forwardError),
+        }),
       )
   } catch (forwardError) {
-    log.warn("ui.server-report-failed", { sourceEvent: event, error: errorText(forwardError) })
+    log.warn("ui.server-report-failed", {
+      sourceEvent: event,
+      error: errorText(forwardError),
+    })
   }
   if (!notify) return
   try {
     api.ui.toast({ variant: "error", message: `Autopilot error: ${message}` })
   } catch (toastError) {
-    log.error("ui.toast-failed", { sourceEvent: event, error: errorText(toastError) })
+    log.error("ui.toast-failed", {
+      sourceEvent: event,
+      error: errorText(toastError),
+    })
   }
 }
 
@@ -82,18 +95,182 @@ function guarded<T extends unknown[]>(
   event: string,
   action: (...args: T) => void | Promise<void>,
 ) {
-  return (...args: T) => {
-    void runTuiAction(api, log, event, () => action(...args))
-  }
+  return (...args: T) => runTuiAction(api, log, event, () => action(...args))
 }
 
-function showStatus(api: TuiPluginApi, log: Log, goal: Goal) {
+function showStatus(api: TuiPluginApi, goal: Goal) {
   api.ui.dialog.replace(() =>
     api.ui.DialogAlert({
       title: "Autopilot status",
       message: [goalSummary(goal), goal.lastCheckpoint ? `\nLast checkpoint:\n${goal.lastCheckpoint}` : ""].join("\n"),
     }),
   )
+}
+
+function sessionModel(api: TuiPluginApi, sessionID: string): ModelRef | undefined {
+  const selected = api.state.session.get(sessionID)?.model
+  if (selected) {
+    return {
+      providerID: selected.providerID,
+      modelID: selected.id,
+      ...(selected.variant && selected.variant !== "default" ? { variant: selected.variant } : {}),
+    }
+  }
+  const recent = [...api.state.session.messages(sessionID)].reverse().find((message) => message.role === "user")
+  if (recent?.role !== "user") return
+  return {
+    providerID: recent.model.providerID,
+    modelID: recent.model.modelID,
+    ...(recent.model.variant && recent.model.variant !== "default" ? { variant: recent.model.variant } : {}),
+  }
+}
+
+function modelKey(model: ModelRef): string {
+  return `${model.providerID}/${model.modelID}`
+}
+
+function modelDefinition(api: TuiPluginApi, model: ModelRef) {
+  const models = api.state.provider.find((provider) => provider.id === model.providerID)?.models
+  return models?.[model.modelID] ?? Object.values(models ?? {}).find((item) => item.id === model.modelID)
+}
+
+function modelChoices(api: TuiPluginApi, preferred: ModelRef | undefined) {
+  const preferredKey = preferred ? modelKey(preferred) : undefined
+  const choices = api.state.provider
+    .flatMap((provider) =>
+      Object.entries(provider.models).flatMap(([catalogModelID, model]) => {
+        const modelID = model.id || catalogModelID
+        const ref = { providerID: provider.id, modelID } satisfies ModelRef
+        const key = modelKey(ref)
+        if (model.status === "deprecated" && key !== preferredKey) return []
+        return [
+          {
+            key,
+            ref,
+            providerName: provider.name,
+            modelName: model.name || modelID,
+            disabled: provider.id === "opencode" && modelID.includes("-nano") && key !== preferredKey,
+          },
+        ]
+      }),
+    )
+    .sort(
+      (left, right) =>
+        Number(left.ref.providerID !== "opencode") - Number(right.ref.providerID !== "opencode") ||
+        left.providerName.localeCompare(right.providerName) ||
+        left.modelName.localeCompare(right.modelName),
+    )
+  if (!preferred || choices.some((choice) => choice.key === preferredKey)) return choices
+  const key = modelKey(preferred)
+  return [
+    {
+      key,
+      ref: preferred,
+      providerName: preferred.providerID,
+      modelName: preferred.modelID,
+      disabled: false,
+    },
+    ...choices,
+  ]
+}
+
+function askModelVariant(
+  api: TuiPluginApi,
+  log: Log,
+  event: string,
+  model: ModelRef,
+  onConfirm: (model: ModelRef) => void | Promise<void>,
+) {
+  const variants = Object.keys(modelDefinition(api, model)?.variants ?? {})
+    .filter((variant) => variant !== "default")
+    .sort()
+  if (model.variant && !variants.includes(model.variant)) variants.unshift(model.variant)
+  if (variants.length === 0) {
+    api.ui.dialog.setSize("medium")
+    return onConfirm(model)
+  }
+  const choose = (variant?: string) =>
+    guarded(api, log, `${event}.variant-failed`, async () => {
+      api.ui.dialog.setSize("medium")
+      await onConfirm({ ...model, variant })
+    })
+  api.ui.dialog.replace(() =>
+    api.ui.DialogSelect({
+      title: "Autopilot model variant",
+      placeholder: "Choose a reasoning variant",
+      current: model.variant ?? "default",
+      options: [
+        { title: "Default", value: "default", onSelect: choose() },
+        ...variants.map((variant) => ({
+          title: variant,
+          value: variant,
+          onSelect: choose(variant),
+        })),
+      ],
+    }),
+  )
+}
+
+function askModel(
+  api: TuiPluginApi,
+  log: Log,
+  event: string,
+  preferred: ModelRef | undefined,
+  onConfirm: (model: ModelRef) => void | Promise<void>,
+) {
+  const choices = modelChoices(api, preferred)
+  if (choices.length === 0) {
+    api.ui.toast({
+      variant: "error",
+      message: "No available models were found",
+    })
+    return
+  }
+  const preferredKey = preferred ? modelKey(preferred) : undefined
+  const current = choices.some((choice) => choice.key === preferredKey) ? preferred : choices[0]?.ref
+  if (!current) return
+  const choose = (model: ModelRef) =>
+    guarded(api, log, `${event}.model-failed`, () =>
+      askModelVariant(
+        api,
+        log,
+        event,
+        modelKey(model) === preferredKey ? { ...model, variant: preferred?.variant } : model,
+        onConfirm,
+      ),
+    )
+  api.ui.dialog.setSize("large")
+  api.ui.dialog.replace(() =>
+    api.ui.DialogSelect({
+      title: "Autopilot model",
+      placeholder: "Search models by name or provider/model",
+      flat: true,
+      current: modelKey(current),
+      options: choices.map((choice) => ({
+        title: `${choice.modelName} · ${choice.key}`,
+        value: choice.key,
+        category: choice.providerName,
+        description:
+          choice.key === preferredKey
+            ? `Current session model${preferred?.variant ? ` · ${preferred.variant}` : " · default variant"}`
+            : choice.key,
+        disabled: choice.disabled,
+        onSelect: choose(choice.ref),
+      })),
+    }),
+  )
+}
+
+async function switchSessionModel(api: TuiPluginApi, workerSessionID: string, model: ModelRef) {
+  const result = await api.client.v2.session.switchModel({
+    sessionID: workerSessionID,
+    model: {
+      providerID: model.providerID,
+      id: model.modelID,
+      variant: model.variant,
+    },
+  })
+  if (result.error) throw new Error(`Could not switch the worker model: ${errorText(result.error)}`)
 }
 
 export function statusLabel(goal: Goal): string {
@@ -106,8 +283,10 @@ export function statusLabel(goal: Goal): string {
       return "On"
     case "continuing":
       return "On"
+    case "waiting-user":
+      return "Waiting"
     case "complete":
-      return "Complete"
+      return "Done"
     case "blocked":
       return "Blocked"
     case "paused":
@@ -120,7 +299,12 @@ export function statusLabel(goal: Goal): string {
 }
 
 function sessionGoal(state: State, sessionID: string) {
-  return state.goals[sessionID] ?? Object.values(state.goals).find((item) => item.verifierSessionID === sessionID)
+  return (
+    state.goals[sessionID] ??
+    Object.values(state.goals).find(
+      (item) => item.verifierSessionID === sessionID || item.chooserSessionID === sessionID,
+    )
+  )
 }
 
 export function statusVisible(state: State, sessionID: string): boolean {
@@ -144,6 +328,7 @@ function StatusContent(props: { api: TuiPluginApi; sessionID: string; state: Acc
       case "verifying":
         return theme.info
       case "waiting-goal":
+      case "waiting-user":
       case "exhausted":
         return theme.warning
       case "blocked":
@@ -178,7 +363,8 @@ function StatusContent(props: { api: TuiPluginApi; sessionID: string; state: Acc
             <span style={{ fg: tone(item()) }}>●</span> <b>Autopilot</b>{" "}
             <span style={{ fg: tone(item()) }}>{statusLabel(item())}</span>
             <span style={{ fg: props.api.theme.current.textMuted }}>
-              {" "}· {item().continuations}/{item().maxRounds ?? "∞"}
+              {" "}
+              · {item().round}/{item().maxCheckpoints ?? "∞"}
             </span>
           </>
         )}
@@ -187,12 +373,7 @@ function StatusContent(props: { api: TuiPluginApi; sessionID: string; state: Acc
   )
 }
 
-export function AutopilotStatus(props: {
-  api: TuiPluginApi
-  sessionID: string
-  log: Log
-  state: Accessor<State>
-}) {
+export function AutopilotStatus(props: { api: TuiPluginApi; sessionID: string; log: Log; state: Accessor<State> }) {
   return (
     <ErrorBoundary
       fallback={(error) => {
@@ -214,63 +395,151 @@ function askGoalLimits(
   log: Log,
   workerSessionID: string,
   mode: GoalMode,
+  questionPolicy: QuestionPolicy,
+  model: ModelRef,
   refreshState: (source: string) => void,
 ) {
   api.ui.dialog.replace(() =>
     api.ui.DialogPrompt({
-      title: "Maximum continuation rounds",
+      title: "Maximum Autopilot checkpoints",
       placeholder: "Blank = Unlimited",
       onConfirm: guarded(api, log, "goal.round-limit-failed", (roundsText) => {
         const rounds = parseLimit(roundsText)
         if (roundsText.trim() && rounds === undefined) {
-          api.ui.toast({ variant: "error", message: "Rounds must be a positive integer or blank" })
+          api.ui.toast({
+            variant: "error",
+            message: "Rounds must be a positive integer or blank",
+          })
           return
         }
         api.ui.dialog.replace(() =>
           api.ui.DialogPrompt({
             title: "Maximum duration in minutes",
             placeholder: "Blank = Unlimited",
-            onConfirm: guarded(api, log, "goal.duration-limit-failed", (minutesText) => {
+            onConfirm: guarded(api, log, "goal.duration-limit-failed", async (minutesText) => {
               const minutes = parseLimit(minutesText)
               if (minutesText.trim() && minutes === undefined) {
-                api.ui.toast({ variant: "error", message: "Duration must be a positive integer or blank" })
+                api.ui.toast({
+                  variant: "error",
+                  message: "Duration must be a positive integer or blank",
+                })
                 return
               }
-              api.ui.dialog.clear()
               const session = api.state.session.get(workerSessionID)
               if (!session) return
+              await switchSessionModel(api, workerSessionID, model)
               const now = Date.now()
               const goal: Goal = {
                 workerSessionID,
                 directory: session.directory,
                 criteria: [],
+                model,
                 mode,
+                questionPolicy,
                 phase: "waiting-goal",
                 updatedAt: now,
                 round: 0,
                 continuations: 0,
-                maxRounds: rounds,
+                maxCheckpoints: rounds,
                 maxMinutes: minutes,
                 noProgressLimit: 2,
                 noProgressRounds: 0,
                 revision: 0,
               }
               putGoal(goal)
+              api.ui.dialog.clear()
               refreshState("goal.waiting")
               log.info("goal.waiting", {
                 workerSessionID,
                 mode,
-                maxRounds: rounds ?? "unlimited",
+                questionPolicy,
+                model: modelKey(model),
+                variant: model.variant,
+                maxCheckpoints: rounds ?? "unlimited",
                 maxMinutes: minutes ?? "unlimited",
               })
               api.ui.toast({
                 variant: "success",
-                message: `Autopilot is waiting for your next message. Rounds: ${formatLimit(rounds)}; duration: ${formatLimit(minutes, "m")}.`,
+                message: `Autopilot is waiting for your next message. Model: ${formatModel(model)}; checkpoints: ${formatLimit(rounds)}; duration: ${formatLimit(minutes, "m")}.`,
               })
             }),
           }),
         )
       }),
+    }),
+  )
+}
+
+function askQuestionPolicy(
+  api: TuiPluginApi,
+  log: Log,
+  workerSessionID: string,
+  mode: GoalMode,
+  refreshState: (source: string) => void,
+) {
+  const choose = (questionPolicy: QuestionPolicy) =>
+    guarded(api, log, "goal.question-policy-failed", () => {
+      const current = sessionModel(api, workerSessionID)
+      if (!current) {
+        api.ui.toast({
+          variant: "error",
+          message: "Could not resolve the current session model",
+        })
+        return
+      }
+      askModel(api, log, "goal.setup", current, (model) =>
+        askGoalLimits(api, log, workerSessionID, mode, questionPolicy, model, refreshState),
+      )
+    })
+  api.ui.dialog.replace(() =>
+    api.ui.DialogSelect({
+      title: "Answer agent questions",
+      placeholder: "Choose how unattended questions are handled",
+      options: [
+        {
+          title: "Hybrid unattended (Recommended)",
+          value: "hybrid",
+          description: "Use explicit recommendations; otherwise let the worker model choose the best fit.",
+          onSelect: choose("hybrid"),
+        },
+        {
+          title: "Recommended only",
+          value: "recommended",
+          description: "Answer only an unambiguous option marked (Recommended).",
+          onSelect: choose("recommended"),
+        },
+        {
+          title: "Ask me",
+          value: "manual",
+          description: "Leave every agent question for you.",
+          onSelect: choose("manual"),
+        },
+      ],
+    }),
+  )
+}
+
+function startGoalWizard(api: TuiPluginApi, log: Log, workerSessionID: string, refreshState: (source: string) => void) {
+  const choose = (mode: GoalMode) =>
+    guarded(api, log, "goal.mode-failed", () => askQuestionPolicy(api, log, workerSessionID, mode, refreshState))
+  api.ui.dialog.replace(() =>
+    api.ui.DialogSelect({
+      title: "Start Autopilot",
+      placeholder: "Choose supervision mode",
+      options: [
+        {
+          title: "Drive automatically (Recommended)",
+          value: "drive",
+          description: "Verify each stop and continue until the goal is complete or genuinely blocked.",
+          onSelect: choose("drive"),
+        },
+        {
+          title: "Monitor only",
+          value: "monitor",
+          description: "Verify the next stop but do not automatically continue the worker.",
+          onSelect: choose("monitor"),
+        },
+      ],
     }),
   )
 }
@@ -282,7 +551,6 @@ function parseLimit(value: string): number | undefined {
 }
 
 async function initializeTui(api: TuiPluginApi, log: Log) {
-  const replying = new Set<string>()
   const [state, setState] = createSignal(readState())
 
   function refreshState(source: string) {
@@ -300,7 +568,10 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
       void api.client.tui
         .publish({
           directory: api.state.path.directory,
-          body: { type: "tui.command.execute", properties: { command: AUTOPILOT_REFRESH_COMMAND } },
+          body: {
+            type: "tui.command.execute",
+            properties: { command: AUTOPILOT_REFRESH_COMMAND },
+          },
         })
         .then((result) => {
           if (result.error) reportTuiError(api, log, "state.broadcast-failed", result.error, false)
@@ -311,57 +582,6 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
     }
   }
 
-  async function handleQuestion(request: QuestionRequest, directory: string): Promise<void> {
-    if (replying.has(request.id)) return
-    replying.add(request.id)
-    try {
-      const session: Session | undefined =
-        api.state.session.get(request.sessionID) ??
-        (await api.client.session.get({ sessionID: request.sessionID, directory }).then((result) => result.data))
-      const targetDirectory = session?.directory ?? directory
-      if ((await effectiveQuestionMode(api, request.sessionID, targetDirectory)) !== "recommended") return
-      const answers = recommendedAnswers(request)
-      if (!answers) {
-        log.debug("question.manual-no-recommendation", { requestID: request.id, sessionID: request.sessionID })
-        return
-      }
-      log.info("question.auto-reply", { requestID: request.id, sessionID: request.sessionID, answers: answers.flat() })
-      const result = await api.client.question.reply({ requestID: request.id, directory: targetDirectory, answers })
-      if (!result.error || settled(result.error)) return
-      api.ui.toast({ variant: "error", message: `Failed to auto-answer question: ${errorText(result.error)}` })
-    } catch (error) {
-      if (!settled(error)) {
-        log.error("question.auto-reply-failed", { requestID: request.id, error: errorText(error) })
-        api.ui.toast({ variant: "error", message: `Failed to auto-answer question: ${errorText(error)}` })
-      }
-    } finally {
-      replying.delete(request.id)
-    }
-  }
-
-  async function sweepQuestions(): Promise<void> {
-    const directory = api.state.path.directory
-    const result = await api.client.question.list({ directory })
-    if (result.error) throw result.error
-    for (const request of result.data ?? []) await handleQuestion(request, directory)
-  }
-
-  function queueQuestionSweep(source: string) {
-    void runTuiAction(api, log, "question.sweep-failed", sweepQuestions, false).then(() => {
-      log.debug("question.sweep-complete", { source })
-    })
-  }
-
-  api.event.on("question.asked", (event) => {
-    const request = event.properties
-    void runTuiAction(
-      api,
-      log,
-      "question.event-failed",
-      () => handleQuestion(request, api.state.session.get(request.sessionID)?.directory ?? api.state.path.directory),
-      false,
-    )
-  })
   api.event.on("tui.command.execute", (event) => {
     if (event.properties.command === AUTOPILOT_REFRESH_COMMAND) refreshState("server.notification")
   })
@@ -371,167 +591,191 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
         namespace: "palette",
         name: "autopilot.open",
         title: "Open Autopilot",
-        desc: "Configure recommended answers and supervised goal completion",
+        desc: "Configure supervised goals and unattended question handling",
         category: "Autopilot",
         slashName: "autopilot",
         async run() {
           await runTuiAction(api, log, "command.open-failed", async () => {
             const sessionID = currentSessionID(api)
+            if (!sessionID) {
+              api.ui.toast({
+                variant: "warning",
+                message: "Open a session before starting Autopilot",
+              })
+              return
+            }
             const current = readState()
             setState(() => current)
-            const questionGlobal = current.questions.global
-            const questionSession: SessionMode = sessionID
-              ? (current.questions.sessions[sessionID] ?? "inherit")
-              : "inherit"
-            const goal = sessionID ? sessionGoal(current, sessionID) : undefined
+            const goal = sessionGoal(current, sessionID)
             const workerSessionID = goal?.workerSessionID ?? sessionID
             const statusVisibility: StatusVisibility = workerSessionID
               ? (current.status.sessions[workerSessionID] ?? "auto")
               : "auto"
             const verifierView = Boolean(goal && sessionID && goal.workerSessionID !== sessionID)
             const canPause = Boolean(goal && ["working", "verifying", "continuing"].includes(goal.phase))
-            const canResume = Boolean(goal && ["paused", "blocked", "stalled"].includes(goal.phase))
-            const effective = sessionID
-              ? await effectiveQuestionMode(api, sessionID, api.state.path.directory)
-              : questionGlobal
-            const options = [
-            ...(sessionID && !verifierView
-              ? [
-                  {
-                    title: `Start goal · Drive automatically`,
-                    value: "goal-drive",
-                    description: "Your next normal message becomes the goal; limits default to Unlimited.",
-                    onSelect: () => askGoalLimits(api, log, sessionID, "drive", broadcastState),
-                  },
-                  {
-                    title: `Start goal · Monitor only`,
-                    value: "goal-monitor",
-                    description: "Verify idle checkpoints without automatically continuing.",
-                    onSelect: () => askGoalLimits(api, log, sessionID, "monitor", broadcastState),
-                  },
-                  ...(goal
-                    ? [
-                        {
-                          title: `View goal status · ${goal.phase}`,
-                          value: "goal-status",
-                            description: `Checkpoint ${goal.round}; continuations ${goal.continuations}/${formatLimit(goal.maxRounds)}.`,
-                          onSelect() {
-                            showStatus(api, log, goal)
+            const canResume = Boolean(goal && ["paused", "blocked", "stalled", "waiting-user"].includes(goal.phase))
+            const goalOptions =
+              sessionID && !verifierView
+                ? [
+                    {
+                      title: goal ? "Restart Autopilot goal" : "Start Autopilot goal",
+                      value: "goal-start",
+                      description: "Configure supervision, unattended questions, model, and optional limits.",
+                      onSelect: () => startGoalWizard(api, log, sessionID, broadcastState),
+                    },
+                    ...(goal
+                      ? [
+                          {
+                            title: `View goal status · ${goal.phase}`,
+                            value: "goal-status",
+                            description: `Checkpoint ${goal.round}/${formatLimit(goal.maxCheckpoints)}; ${goal.continuations} continuations.`,
+                            onSelect() {
+                              showStatus(api, goal)
+                            },
                           },
-                        },
-                        ...(canPause || canResume
-                          ? [
-                              {
-                                title: canResume ? "Resume goal" : "Pause goal",
-                                value: "goal-pause",
-                                description: "Keep goal state but stop or resume automatic verification.",
-                                onSelect() {
-                                  const phase = canResume ? "working" : "paused"
-                                  patchGoal(sessionID, {
-                                    phase,
-                                    revision: goal.revision + 1,
-                                    ...(canResume
-                                      ? {
-                                          lastIdleMessageID: undefined,
-                                          lastFingerprint: undefined,
-                                          noProgressRounds: 0,
-                                        }
-                                      : {}),
-                                  })
-                                  broadcastState("goal.phase")
-                                  log.info("goal.phase", { workerSessionID: sessionID, phase })
-                                  api.ui.dialog.clear()
-                                  api.ui.toast({
-                                    variant: "success",
-                                    message: `Autopilot ${phase === "paused" ? "paused" : "resumed"}`,
-                                  })
-                                },
-                              },
-                            ]
-                          : []),
-                        ...(goal.verifierSessionID
-                          ? [
-                              {
-                                title: "Open verifier transcript",
-                                value: "goal-verifier",
-                                description: goal.verifierSessionID,
-                                onSelect() {
-                                  api.ui.dialog.clear()
-                                  api.route.navigate("session", { sessionID: goal.verifierSessionID })
-                                },
-                              },
-                            ]
-                          : []),
-                        {
-                          title: "Stop and clear goal",
-                          value: "goal-stop",
-                          description: "Disable supervision and remove saved goal state.",
-                          onSelect() {
-                            removeGoal(sessionID)
-                            broadcastState("goal.cleared")
-                            log.info("goal.cleared", { workerSessionID: sessionID })
-                            api.ui.dialog.clear()
-                            api.ui.toast({ variant: "success", message: "Autopilot goal cleared" })
+                          {
+                            title: "Change Autopilot model",
+                            value: "goal-model",
+                            description: `${formatModel(goal.model)}. An active review finishes on its current model; the new model applies afterward.`,
+                            onSelect() {
+                              const preferred = goal.model ?? sessionModel(api, sessionID)
+                              if (!preferred) {
+                                api.ui.toast({
+                                  variant: "error",
+                                  message: "Could not resolve the current Autopilot model",
+                                })
+                                return
+                              }
+                              askModel(api, log, "goal.change-model", preferred, async (model) => {
+                                await switchSessionModel(api, sessionID, model)
+                                patchGoal(sessionID, { model })
+                                broadcastState("goal.model")
+                                log.info("goal.model", {
+                                  workerSessionID: sessionID,
+                                  model: modelKey(model),
+                                  variant: model.variant,
+                                  phase: goal.phase,
+                                })
+                                api.ui.dialog.clear()
+                                api.ui.toast({
+                                  variant: "success",
+                                  message:
+                                    goal.phase === "verifying"
+                                      ? `Autopilot will use ${formatModel(model)} after the active review finishes.`
+                                      : `Autopilot model changed to ${formatModel(model)}.`,
+                                })
+                              })
+                            },
                           },
-                        },
-                      ]
-                    : []),
-                  {
-                    title: `Questions · Session recommended${questionSession === "recommended" ? " (current)" : ""}`,
-                    value: "questions-session-recommended",
-                    description: "Auto-answer explicit recommendations in this session and its children.",
-                    onSelect() {
-                      setSessionQuestionMode(sessionID, "recommended")
-                      log.info("question.mode", { scope: "session", sessionID, mode: "recommended" })
-                      api.ui.dialog.clear()
-                      queueQuestionSweep("session-recommended")
+                          ...(canPause || canResume
+                            ? [
+                                {
+                                  title: canResume ? "Resume goal" : "Pause goal",
+                                  value: "goal-pause",
+                                  description: "Keep goal state but stop or resume automatic verification.",
+                                  onSelect() {
+                                    const phase = canResume ? "working" : "paused"
+                                    patchGoal(sessionID, {
+                                      phase,
+                                      revision: goal.revision + 1,
+                                      ...(canResume
+                                        ? {
+                                            lastIdleMessageID: undefined,
+                                            lastFingerprint: undefined,
+                                            noProgressRounds: 0,
+                                          }
+                                        : {}),
+                                    })
+                                    broadcastState("goal.phase")
+                                    log.info("goal.phase", {
+                                      workerSessionID: sessionID,
+                                      phase,
+                                    })
+                                    api.ui.dialog.clear()
+                                    api.ui.toast({
+                                      variant: "success",
+                                      message: `Autopilot ${phase === "paused" ? "paused" : "resumed"}`,
+                                    })
+                                  },
+                                },
+                              ]
+                            : []),
+                          ...(goal.verifierSessionID
+                            ? [
+                                {
+                                  title: "Open verifier transcript",
+                                  value: "goal-verifier",
+                                  description: goal.verifierSessionID,
+                                  onSelect() {
+                                    api.ui.dialog.clear()
+                                    api.route.navigate("session", {
+                                      sessionID: goal.verifierSessionID,
+                                    })
+                                  },
+                                },
+                              ]
+                            : []),
+                          ...(goal.chooserSessionID
+                            ? [
+                                {
+                                  title: "Open question chooser transcript",
+                                  value: "goal-chooser",
+                                  description: goal.chooserSessionID,
+                                  onSelect() {
+                                    api.ui.dialog.clear()
+                                    api.route.navigate("session", {
+                                      sessionID: goal.chooserSessionID,
+                                    })
+                                  },
+                                },
+                              ]
+                            : []),
+                          {
+                            title: "Stop and clear goal",
+                            value: "goal-stop",
+                            description: "Disable supervision and remove saved goal state.",
+                            onSelect() {
+                              removeGoal(sessionID)
+                              broadcastState("goal.cleared")
+                              log.info("goal.cleared", {
+                                workerSessionID: sessionID,
+                              })
+                              api.ui.dialog.clear()
+                              api.ui.toast({
+                                variant: "success",
+                                message: "Autopilot goal cleared",
+                              })
+                            },
+                          },
+                        ]
+                      : []),
+                  ]
+                : []
+            const verifierOptions =
+              verifierView && workerSessionID
+                ? [
+                    {
+                      title: "Return to worker session",
+                      value: "goal-worker",
+                      description: workerSessionID,
+                      onSelect() {
+                        api.ui.dialog.clear()
+                        api.route.navigate("session", {
+                          sessionID: workerSessionID,
+                        })
+                      },
                     },
-                  },
-                  {
-                    title: `Questions · Session manual${questionSession === "manual" ? " (current)" : ""}`,
-                    value: "questions-session-manual",
-                    description: "Always wait for a person in this session and its children.",
-                    onSelect() {
-                      setSessionQuestionMode(sessionID, "manual")
-                      log.info("question.mode", { scope: "session", sessionID, mode: "manual" })
-                      api.ui.dialog.clear()
+                    {
+                      title: `View goal status · ${goal?.phase}`,
+                      value: "goal-status",
+                      description: `Checkpoint ${goal?.round}/${formatLimit(goal?.maxCheckpoints)}; ${goal?.continuations} continuations.`,
+                      onSelect() {
+                        if (goal) showStatus(api, goal)
+                      },
                     },
-                  },
-                  {
-                    title: `Questions · Session inherit (${effective})${questionSession === "inherit" ? " (current)" : ""}`,
-                    value: "questions-session-inherit",
-                    description: "Use the nearest parent override or global setting.",
-                    onSelect() {
-                      setSessionQuestionMode(sessionID, "inherit")
-                      log.info("question.mode", { scope: "session", sessionID, mode: "inherit" })
-                      api.ui.dialog.clear()
-                      if (effective === "recommended") queueQuestionSweep("session-inherit")
-                    },
-                  },
-                ]
-              : []),
-            ...(verifierView && workerSessionID
-              ? [
-                  {
-                    title: "Return to worker session",
-                    value: "goal-worker",
-                    description: workerSessionID,
-                    onSelect() {
-                      api.ui.dialog.clear()
-                      api.route.navigate("session", { sessionID: workerSessionID })
-                    },
-                  },
-                  {
-                    title: `View goal status · ${goal?.phase}`,
-                    value: "goal-status",
-                    description: `Checkpoint ${goal?.round}; continuations ${goal?.continuations}/${formatLimit(goal?.maxRounds)}.`,
-                    onSelect() {
-                      if (goal) showStatus(api, log, goal)
-                    },
-                  },
-                ]
-              : []),
-            ...(workerSessionID
+                  ]
+                : []
+            const statusOptions = workerSessionID
               ? [
                   {
                     title: `Status · Automatic${statusVisibility === "auto" ? " (current)" : ""}`,
@@ -540,7 +784,10 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
                     onSelect() {
                       setStatusVisibility(workerSessionID, "auto")
                       broadcastState("status.visibility")
-                      log.info("status.visibility", { sessionID: workerSessionID, visibility: "auto" })
+                      log.info("status.visibility", {
+                        sessionID: workerSessionID,
+                        visibility: "auto",
+                      })
                       api.ui.dialog.clear()
                     },
                   },
@@ -551,51 +798,40 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
                     onSelect() {
                       setStatusVisibility(workerSessionID, "show")
                       broadcastState("status.visibility")
-                      log.info("status.visibility", { sessionID: workerSessionID, visibility: "show" })
+                      log.info("status.visibility", {
+                        sessionID: workerSessionID,
+                        visibility: "show",
+                      })
                       api.ui.dialog.clear()
                     },
                   },
                   {
                     title: `Status · Hidden${statusVisibility === "hide" ? " (current)" : ""}`,
                     value: "status-hide",
-                    description: "Hide the Autopilot status in this session, including while a goal is active.",
+                    description: "Hide the Autopilot status in this session, including while its goal is active.",
                     onSelect() {
                       setStatusVisibility(workerSessionID, "hide")
                       broadcastState("status.visibility")
-                      log.info("status.visibility", { sessionID: workerSessionID, visibility: "hide" })
+                      log.info("status.visibility", {
+                        sessionID: workerSessionID,
+                        visibility: "hide",
+                      })
                       api.ui.dialog.clear()
                     },
                   },
                 ]
-              : []),
-            {
-              title: `Questions · Global recommended${questionGlobal === "recommended" ? " (current)" : ""}`,
-              value: "questions-global-recommended",
-              description: "Auto-answer explicit recommendations unless a session overrides it.",
-              onSelect() {
-                setGlobalQuestionMode("recommended")
-                log.info("question.mode", { scope: "global", mode: "recommended" })
-                api.ui.dialog.clear()
-                queueQuestionSweep("global-recommended")
-              },
-            },
-            {
-              title: `Questions · Global manual${questionGlobal === "manual" ? " (current)" : ""}`,
-              value: "questions-global-manual",
-              description: "Always ask unless a session overrides it.",
-              onSelect() {
-                setGlobalQuestionMode("manual")
-                log.info("question.mode", { scope: "global", mode: "manual" })
-                api.ui.dialog.clear()
-              },
-            },
-            ]
+              : []
+            const options = [...goalOptions, ...verifierOptions, ...statusOptions]
             const guardedOptions = options.map((option) => ({
               ...option,
               onSelect: guarded(api, log, `command.action-failed.${option.value}`, option.onSelect),
             }))
             api.ui.dialog.replace(() =>
-              api.ui.DialogSelect({ title: "Autopilot", placeholder: "Choose an action", options: guardedOptions }),
+              api.ui.DialogSelect({
+                title: "Autopilot",
+                placeholder: "Choose an action",
+                options: guardedOptions,
+              }),
             )
           })
         },
@@ -606,7 +842,14 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
 
   api.keymap.registerLayer({
     mode: "question",
-    bindings: [{ key: "ctrl+p", cmd: "autopilot.open", desc: "Open Autopilot", group: "Question" }],
+    bindings: [
+      {
+        key: "ctrl+p",
+        cmd: "autopilot.open",
+        desc: "Open Autopilot",
+        group: "Question",
+      },
+    ],
   })
 
   api.slots.register({
@@ -630,12 +873,15 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
     command: "autopilot",
     statusSlot: "session_prompt_right",
   })
-  queueQuestionSweep("startup")
 }
 
 const tui: TuiPlugin = async (api) => {
   const log = createLog("tui")
-  log.info("startup.begin", { pid: process.pid, directory: api.state.path.directory, version: api.app.version })
+  log.info("startup.begin", {
+    pid: process.pid,
+    directory: api.state.path.directory,
+    version: api.app.version,
+  })
   try {
     await initializeTui(api, log)
   } catch (error) {

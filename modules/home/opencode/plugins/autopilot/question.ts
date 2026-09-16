@@ -1,52 +1,28 @@
-import type { QuestionRequest, Session } from "@opencode-ai/sdk/v2"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { readState, type Mode } from "./state"
+import type { QuestionInfo, QuestionRequest } from "@opencode-ai/sdk/v2"
+
+export function recommendedAnswer(question: QuestionInfo): string[] | undefined {
+  if (!question.header.trim() || !question.question.trim() || question.options.length === 0) return
+  const labels = question.options.map((option) => option.label)
+  const normalized = labels.map((label) => label.trim())
+  if (normalized.some((label) => !label)) return
+  if (new Set(normalized.map((label) => label.toLocaleLowerCase())).size !== normalized.length) return
+  const recommended = labels.filter((label) => {
+    const marker = /\s*\(Recommended\)\s*$/i
+    return marker.test(label) && label.replace(marker, "").trim().length > 0
+  })
+  if (question.multiple === true ? recommended.length === 0 : recommended.length !== 1) return
+  return recommended
+}
 
 export function recommendedAnswers(request: QuestionRequest): string[][] | undefined {
   if (request.questions.length === 0) return
   const answers: string[][] = []
   for (const question of request.questions) {
-    if (!question.header.trim() || !question.question.trim() || question.options.length === 0) return
-    const labels = question.options.map((option) => option.label)
-    const normalized = labels.map((label) => label.trim())
-    if (normalized.some((label) => !label)) return
-    if (new Set(normalized.map((label) => label.toLocaleLowerCase())).size !== normalized.length) return
-    const recommended = labels.filter((label) => {
-      const marker = /\s*\(Recommended\)\s*$/i
-      return marker.test(label) && label.replace(marker, "").trim().length > 0
-    })
-    if (question.multiple === true ? recommended.length === 0 : recommended.length !== 1) return
-    answers.push(recommended)
+    const answer = recommendedAnswer(question)
+    if (!answer) return
+    answers.push(answer)
   }
   return answers
-}
-
-async function resolveSession(
-  api: TuiPluginApi,
-  sessionID: string,
-  directory: string,
-): Promise<Session | undefined> {
-  const cached = api.state.session.get(sessionID)
-  if (cached) return cached
-  return api.client.session.get({ sessionID, directory }).then((result) => result.data)
-}
-
-export async function effectiveQuestionMode(
-  api: TuiPluginApi,
-  sessionID: string,
-  directory: string,
-): Promise<Mode> {
-  const state = readState()
-  const seen = new Set<string>()
-  let cursor: string | undefined = sessionID
-  while (cursor && !seen.has(cursor)) {
-    seen.add(cursor)
-    const override = state.questions.sessions[cursor]
-    if (override) return override
-    const session: Session | undefined = await resolveSession(api, cursor, directory).catch(() => undefined)
-    cursor = session?.parentID
-  }
-  return state.questions.global
 }
 
 export function errorText(error: unknown): string {
@@ -59,6 +35,24 @@ export function errorText(error: unknown): string {
     }
   }
   return String(error)
+}
+
+export function validateAnswers(request: QuestionRequest, value: unknown): string[][] | undefined {
+  if (!Array.isArray(value) || value.length !== request.questions.length) return
+  const answers: string[][] = []
+  for (let index = 0; index < request.questions.length; index += 1) {
+    const question = request.questions[index]
+    const answer = value[index]
+    if (!question || !Array.isArray(answer)) return
+    const labels = question.options.map((option) => option.label)
+    const normalized = labels.map((label) => label.trim().toLocaleLowerCase())
+    if (normalized.some((label) => !label) || new Set(normalized).size !== labels.length) return
+    if (answer.length === 0 || (question.multiple !== true && answer.length !== 1)) return
+    if (!answer.every((item): item is string => typeof item === "string" && labels.includes(item))) return
+    if (new Set(answer).size !== answer.length) return
+    answers.push(answer)
+  }
+  return answers
 }
 
 export function settled(error: unknown): boolean {

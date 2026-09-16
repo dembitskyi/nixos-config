@@ -126,6 +126,7 @@ let
   notificationPrompt = writePrompt "notification-prompt.md" config.mine.home.opencode.promptFiles.notification;
   followPromptPrompt = writePrompt "follow-prompt.md" config.mine.home.opencode.promptFiles.follow-prompt;
   autopilotVerifierPrompt = writePrompt "autopilot-verifier-prompt.md" ./prompts/autopilot-verifier.md;
+  autopilotChooserPrompt = writePrompt "autopilot-chooser-prompt.md" ./prompts/autopilot-chooser.md;
   orchestratorPrompt = writePrompt "orchestrator-prompt.md" ./prompts/orchestrator/orchestrator.md;
   explorerPrompt = writePrompt "explorer-prompt.md" ./prompts/orchestrator/explorer.md;
   librarianPrompt = writePrompt "librarian-prompt.md" ./prompts/orchestrator/librarian.md;
@@ -705,6 +706,16 @@ in
               patch = "deny";
               apply_patch = "deny";
               todowrite = "deny";
+            };
+          };
+          autopilot-chooser = {
+            description = "Hidden chooser for unattended Autopilot questions.";
+            mode = "subagent";
+            hidden = true;
+            model = config.mine.home.opencode.defaultModel;
+            prompt = "{file:${autopilotChooserPrompt}}";
+            permission = {
+              "*" = "deny";
             };
           };
         }

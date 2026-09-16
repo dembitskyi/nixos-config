@@ -9,8 +9,8 @@ import { RGBA } from "@opentui/core"
 import { createComponent, onCleanup } from "solid-js"
 import { createSlot, createSolidSlotRegistry, testRender, useRenderer } from "@opentui/solid"
 
-import type { Event, QuestionRequest, Session } from "@opencode-ai/sdk/v2"
-import { recommendedAnswers } from "./question"
+import type { Event, Provider, QuestionRequest, Session } from "@opencode-ai/sdk/v2"
+import { recommendedAnswers, validateAnswers } from "./question"
 import { createLog } from "./log"
 import { formatLimit, patchGoal, putGoal, readState, type Goal } from "./state"
 
@@ -45,7 +45,15 @@ function question(input?: Partial<QuestionRequest>): QuestionRequest {
   }
 }
 
-function session(id: string, parentID?: string): Session {
+function session(
+  id: string,
+  parentID?: string,
+  model: Session["model"] = {
+    providerID: "provider",
+    id: "current",
+    variant: "high",
+  },
+): Session {
   return {
     id,
     slug: id,
@@ -53,12 +61,13 @@ function session(id: string, parentID?: string): Session {
     directory: "/workspace",
     parentID,
     title: id,
+    model,
     version: "test",
     time: { created: 0, updated: 0 },
   }
 }
 
-async function setup(options: { dialogError?: Error } = {}) {
+async function setup(options: { dialogError?: Error; sessionModel?: Session["model"] } = {}) {
   const handlers = new Map<Event["type"], Array<(event: Event) => void>>()
   const layers: Array<{
     mode?: string
@@ -66,31 +75,129 @@ async function setup(options: { dialogError?: Error } = {}) {
     bindings?: Array<{ key: string; cmd: string }>
   }> = []
   const commands: Array<{ name: string; run: () => void | Promise<void> }> = []
-  const replies: Array<{ requestID: string; directory?: string; answers: string[][] }> = []
   const broadcasts: Array<Record<string, unknown>> = []
   const serverLogs: Array<Record<string, unknown>> = []
+  const modelSwitches: Array<Record<string, unknown>> = []
   let statusSlot: ((context: unknown, props: { session_id: string }) => unknown) | undefined
   const sessions: Record<string, Session> = {
-    ses_root: session("ses_root"),
+    ses_root: session("ses_root", undefined, options.sessionModel),
     ses_child: session("ses_child", "ses_root"),
   }
+  const providers: Provider[] = [
+    {
+      id: "provider",
+      name: "Provider",
+      source: "config",
+      env: [],
+      options: {},
+      models: {
+        current: {
+          id: "current",
+          providerID: "provider",
+          name: "Current Model",
+          api: { id: "current", url: "", npm: "" },
+          capabilities: {
+            temperature: true,
+            reasoning: true,
+            attachment: false,
+            toolcall: true,
+            input: {
+              text: true,
+              audio: false,
+              image: false,
+              video: false,
+              pdf: false,
+            },
+            output: {
+              text: true,
+              audio: false,
+              image: false,
+              video: false,
+              pdf: false,
+            },
+            interleaved: false,
+          },
+          cost: { input: 1, output: 1, cache: { read: 0, write: 0 } },
+          limit: { context: 100_000, output: 10_000 },
+          status: "active",
+          options: {},
+          headers: {},
+          release_date: "2026-01-01",
+          variants: { high: {}, max: {} },
+        },
+        alternate: {
+          id: "alternate",
+          providerID: "provider",
+          name: "Alternate Model",
+          api: { id: "alternate", url: "", npm: "" },
+          capabilities: {
+            temperature: true,
+            reasoning: true,
+            attachment: false,
+            toolcall: true,
+            input: {
+              text: true,
+              audio: false,
+              image: false,
+              video: false,
+              pdf: false,
+            },
+            output: {
+              text: true,
+              audio: false,
+              image: false,
+              video: false,
+              pdf: false,
+            },
+            interleaved: false,
+          },
+          cost: { input: 1, output: 1, cache: { read: 0, write: 0 } },
+          limit: { context: 100_000, output: 10_000 },
+          status: "active",
+          options: {},
+          headers: {},
+          release_date: "2026-02-01",
+          variants: { low: {}, max: {} },
+        },
+      },
+    },
+  ]
   let dialog:
     | {
-        options?: Array<{ value: string; onSelect?: () => void | Promise<void> }>
+        title?: string
+        placeholder?: string
+        current?: unknown
+        options?: Array<{
+          title?: string
+          description?: string
+          value: string
+          onSelect?: () => void | Promise<void>
+        }>
         onConfirm?: (value: string) => void | Promise<void>
       }
     | undefined
-  let route: { name: string; params?: { sessionID: string } } = { name: "session", params: { sessionID: "ses_root" } }
+  let route: { name: string; params?: { sessionID: string } } = {
+    name: "session",
+    params: { sessionID: "ses_root" },
+  }
   const api = {
     app: { version: "1.18.31" },
-    lifecycle: { onDispose() { return () => {} } },
+    lifecycle: {
+      onDispose() {
+        return () => {}
+      },
+    },
     route: {
       get current() {
         return route
       },
       navigate() {},
     },
-    state: { path: { directory: "/workspace" }, session: { get: (id: string) => sessions[id] } },
+    state: {
+      path: { directory: "/workspace" },
+      provider: providers,
+      session: { get: (id: string) => sessions[id], messages: () => [] },
+    },
     client: {
       app: {
         log: async (input: Record<string, unknown>) => {
@@ -104,12 +211,17 @@ async function setup(options: { dialogError?: Error } = {}) {
           return { data: true }
         },
       },
-      session: { get: async ({ sessionID }: { sessionID: string }) => ({ data: sessions[sessionID] }) },
-      question: {
-        list: async () => ({ data: [] }),
-        reply: async (input: { requestID: string; directory?: string; answers: string[][] }) => {
-          replies.push(input)
-          return { data: true }
+      session: {
+        get: async ({ sessionID }: { sessionID: string }) => ({
+          data: sessions[sessionID],
+        }),
+      },
+      v2: {
+        session: {
+          switchModel: async (input: Record<string, unknown>) => {
+            modelSwitches.push(input)
+            return { data: undefined }
+          },
         },
       },
     },
@@ -132,6 +244,7 @@ async function setup(options: { dialogError?: Error } = {}) {
           dialog = render()
         },
         clear() {},
+        setSize() {},
       },
       DialogSelect: (props: typeof dialog) => props,
       DialogPrompt: (props: typeof dialog) => props,
@@ -161,9 +274,9 @@ async function setup(options: { dialogError?: Error } = {}) {
   return {
     commands,
     layers,
-    replies,
     broadcasts,
     serverLogs,
+    modelSwitches,
     get statusSlot() {
       return statusSlot
     },
@@ -180,10 +293,6 @@ async function setup(options: { dialogError?: Error } = {}) {
   }
 }
 
-function asked(request: QuestionRequest): Event {
-  return { id: "evt_test", type: "question.asked", properties: request }
-}
-
 describe("autopilot TUI plugin", () => {
   test("formats compact status labels", () => {
     const goal = {
@@ -191,6 +300,7 @@ describe("autopilot TUI plugin", () => {
       directory: "/workspace",
       criteria: [],
       mode: "drive",
+      questionPolicy: "hybrid",
       phase: "working",
       startedAt: 1_000,
       updatedAt: 61_000,
@@ -206,11 +316,65 @@ describe("autopilot TUI plugin", () => {
     expect(statusLabel({ ...goal, phase: "waiting-goal" })).toBe("Idle")
   })
 
+  test("renders checkpoint progress rather than continuation progress", async () => {
+    scratch()
+    const color = RGBA.fromInts(200, 200, 200)
+    const goal = {
+      workerSessionID: "ses_root",
+      directory: "/workspace",
+      criteria: [],
+      mode: "drive",
+      questionPolicy: "hybrid",
+      phase: "working",
+      updatedAt: 1,
+      round: 61,
+      continuations: 23,
+      maxCheckpoints: 100,
+      noProgressLimit: 2,
+      noProgressRounds: 0,
+      revision: 1,
+    } satisfies Goal
+    const api = {
+      theme: {
+        current: {
+          success: color,
+          info: color,
+          warning: color,
+          error: color,
+          textMuted: color,
+          text: color,
+          backgroundElement: color,
+        },
+      },
+      ui: { toast() {} },
+      client: { app: { log: async () => ({ data: true }) } },
+      state: { path: { directory: "/workspace" } },
+    }
+    const app = await testRender(
+      () =>
+        createComponent(AutopilotStatus, {
+          api: api as any,
+          sessionID: "ses_root",
+          log: createLog("tui"),
+          state: () => ({ ...readState(), goals: { ses_root: goal } }),
+        }),
+      { width: 48, height: 3 },
+    )
+    try {
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("61/100")
+      expect(app.captureCharFrame()).not.toContain("23/100")
+    } finally {
+      app.renderer.destroy()
+    }
+  })
+
   test("hides status by default and supports automatic or manual visibility", () => {
     scratch()
     const state = readState()
     expect(statusVisible(state, "ses_root")).toBe(false)
     expect(statusVisible({ ...state, status: { sessions: { ses_root: "show" } } }, "ses_root")).toBe(true)
+    expect(statusVisible({ ...state, status: { sessions: { ses_root: "hide" } } }, "ses_root")).toBe(false)
     expect(
       statusVisible(
         {
@@ -221,6 +385,7 @@ describe("autopilot TUI plugin", () => {
               directory: "/workspace",
               criteria: [],
               mode: "drive",
+              questionPolicy: "hybrid",
               phase: "working",
               updatedAt: 1,
               round: 0,
@@ -234,18 +399,18 @@ describe("autopilot TUI plugin", () => {
         "ses_root",
       ),
     ).toBe(true)
-    expect(statusVisible({ ...state, status: { sessions: { ses_root: "hide" } } }, "ses_root")).toBe(false)
     expect(
       statusVisible(
         {
           ...state,
-          status: { sessions: { ses_root: "hide" } },
+          status: { sessions: {} },
           goals: {
             ses_root: {
               workerSessionID: "ses_root",
               directory: "/workspace",
               criteria: [],
               mode: "drive",
+              questionPolicy: "hybrid",
               phase: "working",
               updatedAt: 1,
               round: 0,
@@ -259,6 +424,7 @@ describe("autopilot TUI plugin", () => {
               directory: "/workspace",
               criteria: [],
               mode: "drive",
+              questionPolicy: "hybrid",
               phase: "working",
               updatedAt: 1,
               round: 0,
@@ -281,6 +447,7 @@ describe("autopilot TUI plugin", () => {
       directory: "/workspace",
       criteria: [],
       mode: "drive",
+      questionPolicy: "hybrid",
       phase: "waiting-goal",
       updatedAt: Date.now(),
       round: 0,
@@ -294,7 +461,9 @@ describe("autopilot TUI plugin", () => {
     expect(renderStatus).toBeDefined()
     if (!renderStatus) throw new Error("Autopilot did not register its status slot")
     function SlotHarness() {
-      const registry = createSolidSlotRegistry<{ session_prompt_right: { session_id: string } }>(useRenderer(), {})
+      const registry = createSolidSlotRegistry<{
+        session_prompt_right: { session_id: string }
+      }>(useRenderer(), {})
       const Slot = createSlot(registry)
       const unregister = registry.register({
         id: "autopilot:test",
@@ -310,7 +479,10 @@ describe("autopilot TUI plugin", () => {
         </box>
       )
     }
-    const app = await testRender(() => <SlotHarness />, { width: 48, height: 3 })
+    const app = await testRender(() => <SlotHarness />, {
+      width: 48,
+      height: 3,
+    })
     try {
       await app.renderOnce()
       const hidden = app.captureCharFrame()
@@ -404,7 +576,10 @@ describe("autopilot TUI plugin", () => {
     const command = harness.commands.find((item) => item.name === "autopilot.open")!
     await expect(command.run()).resolves.toBeUndefined()
     await Bun.sleep(0)
-    expect(harness.serverLogs[0]).toMatchObject({ service: "autopilot.tui", message: "command.open-failed" })
+    expect(harness.serverLogs[0]).toMatchObject({
+      service: "autopilot.tui",
+      message: "command.open-failed",
+    })
     expect(readFileSync(join(root, "opencode", "log", "autopilot.log"), "utf8")).toContain(
       '"event":"command.open-failed"',
     )
@@ -438,7 +613,10 @@ describe("autopilot TUI plugin", () => {
               question: "Which option?",
               options: [
                 { label: "Safe (Recommended)", description: "One" },
-                { label: " safe (recommended) ", description: "Duplicate with different casing" },
+                {
+                  label: " safe (recommended) ",
+                  description: "Duplicate with different casing",
+                },
               ],
             },
           ],
@@ -460,8 +638,27 @@ describe("autopilot TUI plugin", () => {
     ).toBeUndefined()
   })
 
-  test("uses /autopilot and can recover from an open question with ctrl+p", async () => {
-    const data = scratch()
+  test("accepts only exact listed chooser answers", () => {
+    scratch()
+    const request = question({
+      questions: [
+        {
+          header: "Approach",
+          question: "Which approach?",
+          options: [
+            { label: "Safe", description: "Preferred" },
+            { label: "Risky", description: "Alternative" },
+          ],
+        },
+      ],
+    })
+    expect(validateAnswers(request, [["Safe"]])).toEqual([["Safe"]])
+    expect(validateAnswers(request, [["Invented"]])).toBeUndefined()
+    expect(validateAnswers(request, [["Safe", "Risky"]])).toBeUndefined()
+  })
+
+  test("registers /autopilot and its question-mode recovery shortcut", async () => {
+    scratch()
     const harness = await setup()
     const command = harness.commands.find((item) => item.name === "autopilot.open")!
     expect(command).toBeDefined()
@@ -474,40 +671,51 @@ describe("autopilot TUI plugin", () => {
     ).toBe(true)
 
     await command.run()
-    await harness.dialog!.options!.find((item) => item.value === "questions-global-recommended")!.onSelect?.()
-    await harness.emit(asked(question()))
-
-    expect(harness.replies).toEqual([
-      { requestID: "que_test", directory: "/workspace", answers: [["Safe (Recommended)"]] },
-    ])
-    expect(JSON.parse(readFileSync(join(data, "opencode", "autopilot.json"), "utf8"))).toMatchObject({
-      questions: { global: "recommended", sessions: {} },
-    })
+    expect(harness.dialog!.options!.some((item) => item.value === "goal-start")).toBe(true)
+    expect(harness.dialog!.options!.some((item) => item.value.startsWith("questions-"))).toBe(false)
   })
 
-  test("inherits parent question policy and leaves ambiguous questions manual", async () => {
+  test("runs one setup wizard with per-goal unattended question handling", async () => {
     scratch()
     const harness = await setup()
     const command = harness.commands.find((item) => item.name === "autopilot.open")!
     await command.run()
-    await harness.dialog!.options!.find((item) => item.value === "questions-session-recommended")!.onSelect?.()
-    await harness.emit(asked(question({ id: "que_child", sessionID: "ses_child" })))
-    await harness.emit(
-      asked(
-        question({
-          id: "que_manual",
-          sessionID: "ses_child",
-          questions: [
-            {
-              header: "Choice",
-              question: "Which option?",
-              options: [{ label: "No default", description: "Requires a person" }],
-            },
-          ],
-        }),
-      ),
+    await harness.dialog!.options!.find((item) => item.value === "goal-start")!.onSelect?.()
+    await Bun.sleep(0)
+    await harness.dialog!.options!.find((item) => item.value === "drive")!.onSelect?.()
+    await Bun.sleep(0)
+    await harness.dialog!.options!.find((item) => item.value === "hybrid")!.onSelect?.()
+    await Bun.sleep(0)
+    expect(harness.dialog).toMatchObject({
+      title: "Autopilot model",
+      current: "provider/current",
+    })
+    expect(harness.dialog!.options!.find((item) => item.value === "provider/current")?.description).toContain(
+      "Current session model · high",
     )
-    expect(harness.replies).toHaveLength(1)
+    await harness.dialog!.options!.find((item) => item.value === "provider/current")!.onSelect?.()
+    await Bun.sleep(0)
+    expect(harness.dialog).toMatchObject({
+      title: "Autopilot model variant",
+      current: "high",
+    })
+    await harness.dialog!.options!.find((item) => item.value === "high")!.onSelect?.()
+    await Bun.sleep(0)
+    await harness.dialog!.onConfirm?.("")
+    await harness.dialog!.onConfirm?.("")
+
+    expect(readState().goals.ses_root).toMatchObject({
+      phase: "waiting-goal",
+      mode: "drive",
+      questionPolicy: "hybrid",
+      model: { providerID: "provider", modelID: "current", variant: "high" },
+    })
+    expect(harness.modelSwitches).toEqual([
+      {
+        sessionID: "ses_root",
+        model: { providerID: "provider", id: "current", variant: "high" },
+      },
+    ])
   })
 
   test("goal setup defaults both limits to Unlimited", async () => {
@@ -515,14 +723,95 @@ describe("autopilot TUI plugin", () => {
     const harness = await setup()
     const command = harness.commands.find((item) => item.name === "autopilot.open")!
     await command.run()
-    await harness.dialog!.options!.find((item) => item.value === "goal-drive")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "goal-start")!.onSelect?.()
+    await Bun.sleep(0)
+    await harness.dialog!.options!.find((item) => item.value === "drive")!.onSelect?.()
+    await Bun.sleep(0)
+    await harness.dialog!.options!.find((item) => item.value === "recommended")!.onSelect?.()
+    await Bun.sleep(0)
+    await harness.dialog!.options!.find((item) => item.value === "provider/current")!.onSelect?.()
+    await Bun.sleep(0)
+    await harness.dialog!.options!.find((item) => item.value === "high")!.onSelect?.()
+    await Bun.sleep(0)
     await harness.dialog!.onConfirm?.("")
     await harness.dialog!.onConfirm?.("")
     const goal = readState().goals.ses_root
-    expect(goal).toMatchObject({ phase: "waiting-goal", mode: "drive", round: 0, continuations: 0 })
-    expect(goal.maxRounds).toBeUndefined()
+    expect(goal).toMatchObject({
+      phase: "waiting-goal",
+      mode: "drive",
+      questionPolicy: "recommended",
+      round: 0,
+      continuations: 0,
+    })
+    expect(goal.maxCheckpoints).toBeUndefined()
     expect(goal.maxMinutes).toBeUndefined()
-    expect(formatLimit(goal.maxRounds)).toBe("Unlimited")
+    expect(formatLimit(goal.maxCheckpoints)).toBe("Unlimited")
+  })
+
+  test("overrides the current model during setup", async () => {
+    scratch()
+    const harness = await setup()
+    const command = harness.commands.find((item) => item.name === "autopilot.open")!
+    await command.run()
+    await harness.dialog!.options!.find((item) => item.value === "goal-start")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "drive")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "hybrid")!.onSelect?.()
+    expect(harness.dialog?.placeholder).toContain("Search models")
+    await harness.dialog!.options!.find((item) => item.value === "provider/alternate")!.onSelect?.()
+    expect(harness.dialog).toMatchObject({
+      title: "Autopilot model variant",
+      current: "default",
+    })
+    await harness.dialog!.options!.find((item) => item.value === "max")!.onSelect?.()
+    await harness.dialog!.onConfirm?.("4")
+    await harness.dialog!.onConfirm?.("30")
+
+    expect(readState().goals.ses_root.model).toEqual({
+      providerID: "provider",
+      modelID: "alternate",
+      variant: "max",
+    })
+    expect(harness.modelSwitches.at(-1)).toEqual({
+      sessionID: "ses_root",
+      model: { providerID: "provider", id: "alternate", variant: "max" },
+    })
+  })
+
+  test("changes the active goal model without changing its phase or revision", async () => {
+    scratch()
+    putGoal({
+      workerSessionID: "ses_root",
+      directory: "/workspace",
+      text: "Finish it",
+      criteria: [],
+      model: { providerID: "provider", modelID: "current", variant: "high" },
+      mode: "drive",
+      questionPolicy: "hybrid",
+      phase: "verifying",
+      updatedAt: 1,
+      round: 2,
+      continuations: 1,
+      noProgressLimit: 2,
+      noProgressRounds: 0,
+      revision: 7,
+    })
+    const harness = await setup()
+    const command = harness.commands.find((item) => item.name === "autopilot.open")!
+    await command.run()
+    expect(harness.dialog!.options!.some((item) => item.value === "goal-model")).toBe(true)
+    await harness.dialog!.options!.find((item) => item.value === "goal-model")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "provider/alternate")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "low")!.onSelect?.()
+
+    expect(readState().goals.ses_root).toMatchObject({
+      phase: "verifying",
+      revision: 7,
+      model: { providerID: "provider", modelID: "alternate", variant: "low" },
+    })
+    expect(harness.modelSwitches.at(-1)).toEqual({
+      sessionID: "ses_root",
+      model: { providerID: "provider", id: "alternate", variant: "low" },
+    })
   })
 
   test("persists manual status visibility from /autopilot", async () => {
@@ -533,12 +822,14 @@ describe("autopilot TUI plugin", () => {
     await harness.dialog!.options!.find((item) => item.value === "status-show")!.onSelect?.()
     expect(readState().status.sessions.ses_root).toBe("show")
     expect(harness.broadcasts.at(-1)).toMatchObject({
-      body: { type: "tui.command.execute", properties: { command: "autopilot.refresh" } },
+      body: {
+        type: "tui.command.execute",
+        properties: { command: "autopilot.refresh" },
+      },
     })
     await command.run()
     await harness.dialog!.options!.find((item) => item.value === "status-hide")!.onSelect?.()
     expect(readState().status.sessions.ses_root).toBe("hide")
     expect(readState().status.sessions.ses_child).toBeUndefined()
   })
-
 })
