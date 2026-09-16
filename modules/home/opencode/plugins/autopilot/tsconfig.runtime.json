@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["log.ts", "question.ts", "server.ts", "state.ts", "tui.tsx"]
+}

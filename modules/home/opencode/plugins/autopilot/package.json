@@ -1,0 +1,26 @@
+{
+  "name": "opencode-autopilot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "main": "./server.ts",
+  "exports": {
+    ".": "./server.ts",
+    "./server": "./server.ts",
+    "./tui": "./tui.tsx"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.31",
+    "@opencode-ai/sdk": "1.18.31",
+    "@opentui/core": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "@types/bun": "1.3.13",
+    "@types/node": "24.12.2",
+    "solid-js": "1.9.10",
+    "typescript": "5.8.2"
+  }
+}

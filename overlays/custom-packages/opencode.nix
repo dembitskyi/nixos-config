@@ -1,5 +1,5 @@
 # OpenCode local source patches, layered on top of the upstream package (pinned
-# by the `opencode-pin` overlay to anomalyco/opencode v1.18.29). Consumed by
+# by the `opencode-pin` overlay to anomalyco/opencode v1.18.31). Consumed by
 # custom-packages/default.nix as `opencode = import ./opencode.nix prev;`.
 #
 # Patches live as reviewable unified diffs in ./opencode/*.patch and apply in the

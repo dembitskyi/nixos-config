@@ -1,0 +1,930 @@
+// Autopilot server: supervises build goals across normal provider stops.
+
+import { createHash } from "node:crypto"
+import type { Part, Todo } from "@opencode-ai/sdk"
+import type { AssistantMessage, Event, UserMessage } from "@opencode-ai/sdk/v2"
+import type { Hooks, Plugin } from "@opencode-ai/plugin"
+import { createLog } from "./log"
+import {
+  AUTOPILOT_REFRESH_COMMAND,
+  formatLimit,
+  goalSummary,
+  parseCriteria,
+  patchGoal,
+  patchGoalIf,
+  putGoal,
+  readState,
+  removeGoal,
+  type Goal,
+} from "./state"
+
+type ModelRef = { providerID: string; modelID: string; variant?: string }
+type RuntimeMessage = UserMessage | AssistantMessage
+type MessageWithParts = { info: RuntimeMessage; parts: Part[] }
+type AssistantWithParts = { info: AssistantMessage; parts: Part[] }
+type RuntimeSession = {
+  id: string
+  parentID?: string
+  directory: string
+  title: string
+  agent?: string
+  model?: { providerID: string; id?: string; modelID?: string; variant?: string }
+}
+type VerifierVerdict = {
+  verdict: "complete" | "continue" | "adjust" | "blocked"
+  confidence: number
+  verified: string[]
+  missing: string[]
+  instruction: string
+}
+
+type VerifierSubmitArgs = {
+  verdict?: unknown
+  confidence?: unknown
+  verified?: unknown
+  missing?: unknown
+  instruction?: unknown
+}
+
+interface SessionClient {
+  get(options: { path: { id: string }; query?: { directory?: string } }): Promise<{ data?: RuntimeSession }>
+  create(options?: {
+    query?: { directory?: string }
+    body?: { parentID?: string; title?: string }
+  }): Promise<{ data?: RuntimeSession }>
+  update(options: {
+    path: { id: string }
+    query?: { directory?: string }
+    body?: { title?: string }
+  }): Promise<unknown>
+  children(options: { path: { id: string }; query?: { directory?: string } }): Promise<{ data?: RuntimeSession[] }>
+  todo(options: { path: { id: string }; query?: { directory?: string } }): Promise<{ data?: Todo[] }>
+  diff(options: { path: { id: string }; query?: { directory?: string } }): Promise<{ data?: unknown[] }>
+  messages(options: {
+    path: { id: string }
+    query?: { directory?: string; limit?: number }
+  }): Promise<{ data?: MessageWithParts[] }>
+  status(options?: { query?: { directory?: string } }): Promise<{ data?: Record<string, { type?: string }> }>
+  prompt(options: {
+    path: { id: string }
+    query?: { directory?: string }
+    body: {
+      model: { providerID: string; modelID: string }
+      messageID?: string
+      agent: string
+      variant?: string
+      noReply?: boolean
+      parts: Array<{ type: "text"; text: string; synthetic?: boolean; metadata?: Record<string, unknown> }>
+    }
+  }): Promise<{ data?: MessageWithParts; error?: unknown }>
+  promptAsync(options: {
+    path: { id: string }
+    query?: { directory?: string }
+    body: {
+      model: { providerID: string; modelID: string }
+      messageID?: string
+      agent: string
+      variant?: string
+      noReply?: boolean
+      parts: Array<{ type: "text"; text: string; synthetic?: boolean; metadata?: Record<string, unknown> }>
+    }
+  }): Promise<{ error?: unknown }>
+}
+
+interface RuntimeClient {
+  readonly session: SessionClient
+  readonly tui?: {
+    publish(options: {
+      query?: { directory?: string }
+      body: { type: "tui.command.execute"; properties: { command: string } }
+    }): Promise<{ error?: unknown }>
+  }
+  readonly _client?: {
+    get(options: { url: string; query?: { directory?: string } }): Promise<{ data?: unknown; error?: unknown }>
+  }
+}
+
+const active = (phase: Goal["phase"]) => ["working", "continuing"].includes(phase)
+const interrupted = (phase: Goal["phase"]) => ["working", "verifying", "continuing"].includes(phase)
+
+function addPending(pending: Map<string, Set<string>>, sessionID: string, requestID: string) {
+  const requests = pending.get(sessionID) ?? new Set<string>()
+  requests.add(requestID)
+  pending.set(sessionID, requests)
+}
+
+function removePending(pending: Map<string, Set<string>>, sessionID: string, requestID: string) {
+  const requests = pending.get(sessionID)
+  if (!requests) return
+  requests.delete(requestID)
+  if (requests.size === 0) pending.delete(sessionID)
+}
+
+function hasPending(pending: Map<string, Set<string>>, sessionID: string) {
+  return (pending.get(sessionID)?.size ?? 0) > 0
+}
+
+export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
+  const log = createLog("server")
+  const client = input.client as unknown as RuntimeClient
+  const supervising = new Set<string>()
+  const models = new Map<string, ModelRef>()
+  const agents = new Map<string, string>()
+  const pendingQuestions = new Map<string, Set<string>>()
+  const pendingPermissions = new Map<string, Set<string>>()
+  const humanRevision = new Map<string, number>()
+  const internalMessages = new Set<string>()
+  const submittedVerdicts = new Map<string, VerifierVerdict>()
+  const verifierModels = new Map<string, ModelRef>()
+
+  const initial = readState()
+  log.info("startup.begin", {
+    pid: process.pid,
+    directory: input.directory,
+    goals: Object.keys(initial.goals).length,
+    pendingTransport: Boolean(client._client),
+  })
+  let recovered = 0
+  for (const goal of Object.values(initial.goals)) {
+    if (goal.directory !== input.directory || !interrupted(goal.phase)) continue
+    patchGoal(goal.workerSessionID, {
+      phase: "paused",
+      lastCheckpoint: "Autopilot restored this goal in paused mode after the server plugin restarted.",
+    })
+    recovered += 1
+    log.warn("goal.recovered-paused", { workerSessionID: goal.workerSessionID, phase: goal.phase })
+  }
+  log.info("startup.recovery-complete", { directory: input.directory, recovered })
+
+  async function hydratePendingRequests() {
+    const startedAt = Date.now()
+    log.info("pending.bootstrap-start", { directory: input.directory })
+    const [questions, permissions] = await Promise.all([
+      listPendingRequests("question").catch((error) => {
+        log.warn("question.bootstrap-failed", { directory: input.directory, error: errorText(error) })
+        return []
+      }),
+      listPendingRequests("permission").catch((error) => {
+        log.warn("permission.bootstrap-failed", { directory: input.directory, error: errorText(error) })
+        return []
+      }),
+    ])
+    for (const request of questions) addPending(pendingQuestions, request.sessionID, request.id)
+    for (const request of permissions) addPending(pendingPermissions, request.sessionID, request.id)
+    log.info("pending.bootstrap-complete", {
+      questions: questions.length,
+      permissions: permissions.length,
+      durationMs: Date.now() - startedAt,
+    })
+  }
+
+  async function listPendingRequests(kind: "question" | "permission") {
+    const startedAt = Date.now()
+    log.debug("pending.request-start", { kind, directory: input.directory })
+    const transport = client._client
+    if (!transport) {
+      log.warn("pending.request-unavailable", { kind, directory: input.directory })
+      return []
+    }
+    let settled = false
+    const slowTimer = setTimeout(() => {
+      if (!settled) log.warn("pending.request-slow", { kind, directory: input.directory, elapsedMs: Date.now() - startedAt })
+    }, 5_000)
+    try {
+      const response = await transport.get({ url: `/${kind}`, query: { directory: input.directory } })
+      if (response.error) throw response.error
+      const requests = Array.isArray(response.data)
+        ? response.data.filter(
+            (request): request is { id: string; sessionID: string } =>
+              Boolean(
+                request &&
+                  typeof request === "object" &&
+                  "id" in request &&
+                  typeof request.id === "string" &&
+                  "sessionID" in request &&
+                  typeof request.sessionID === "string",
+              ),
+          )
+        : []
+      log.debug("pending.request-complete", {
+        kind,
+        directory: input.directory,
+        requests: requests.length,
+        durationMs: Date.now() - startedAt,
+      })
+      return requests
+    } catch (error) {
+      log.warn("pending.request-failed", {
+        kind,
+        directory: input.directory,
+        durationMs: Date.now() - startedAt,
+        error: errorText(error),
+      })
+      throw error
+    } finally {
+      settled = true
+      clearTimeout(slowTimer)
+    }
+  }
+
+  async function onIdle(sessionID: string) {
+    const observed = readState().goals[sessionID]
+    if (!observed) return
+    log.debug("worker.idle", { workerSessionID: sessionID, phase: observed.phase, round: observed.round })
+    if (!active(observed.phase) || supervising.has(sessionID)) return
+    supervising.add(sessionID)
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      const goal = readState().goals[sessionID]
+      if (!goal || !active(goal.phase)) return
+      await verify(goal)
+    } catch (error) {
+      const goal = readState().goals[sessionID]
+      log.error("verification.failed", { workerSessionID: sessionID, error: errorText(error) })
+      if (goal && interrupted(goal.phase)) await pause(goal, "blocked", `Autopilot verification failed: ${errorText(error)}`)
+    } finally {
+      supervising.delete(sessionID)
+      notifyTuiState("worker.idle", sessionID)
+    }
+  }
+
+  function notifyTuiState(source: string, workerSessionID: string) {
+    const request = client.tui?.publish({
+      query: { directory: input.directory },
+      body: { type: "tui.command.execute", properties: { command: AUTOPILOT_REFRESH_COMMAND } },
+    })
+    if (!request) {
+      log.warn("state.notify-unavailable", { source, workerSessionID })
+      return
+    }
+    void request
+      .then((result) => {
+        if (result.error) {
+          log.warn("state.notify-failed", { source, workerSessionID, error: errorText(result.error) })
+          return
+        }
+        log.debug("state.notified", { source, workerSessionID })
+      })
+      .catch((error) => log.warn("state.notify-failed", { source, workerSessionID, error: errorText(error) }))
+  }
+
+  async function verify(goal: Goal) {
+    log.info("verification.start", { workerSessionID: goal.workerSessionID, round: goal.round + 1 })
+    const worker = await sessionInfo(goal.workerSessionID, goal.directory)
+    if (!worker) return pause(goal, "blocked", "Worker session no longer exists.")
+    if ((agents.get(goal.workerSessionID) ?? goal.workerAgent ?? "build") !== "build") {
+      return pause(goal, "blocked", "Autopilot goal completion only drives the build agent.")
+    }
+
+    const messages = await sessionMessages(goal.workerSessionID, worker.directory)
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((message): message is AssistantWithParts => message.info.role === "assistant")
+    if (!lastAssistant) {
+      log.debug("verification.skip-no-assistant", { workerSessionID: worker.id })
+      return
+    }
+    const lastAssistantID = lastAssistant.info.id
+    if (lastAssistantID === goal.lastIdleMessageID) {
+      log.debug("verification.skip-duplicate-idle", { workerSessionID: worker.id, lastAssistantID })
+      return
+    }
+    if (lastAssistant.info.error) return pause(goal, "blocked", `Worker stopped with an error: ${errorText(lastAssistant.info.error)}`)
+    if (hasPending(pendingQuestions, worker.id)) {
+      log.info("verification.waiting-question", { workerSessionID: worker.id })
+      return
+    }
+    if (hasPending(pendingPermissions, worker.id)) {
+      log.info("verification.waiting-permission", { workerSessionID: worker.id })
+      return
+    }
+
+    const [children, todos, diffs] = await Promise.all([
+      client.session.children({ path: { id: worker.id }, query: { directory: worker.directory } }),
+      client.session.todo({ path: { id: worker.id }, query: { directory: worker.directory } }).catch(() => ({ data: [] })),
+      client.session.diff({ path: { id: worker.id }, query: { directory: worker.directory } }).catch(() => ({ data: [] })),
+    ])
+    const statuses = await client.session
+      .status({ query: { directory: worker.directory } })
+      .catch((error) => {
+        log.warn("verification.status-failed", { workerSessionID: worker.id, error: errorText(error) })
+        return undefined
+      })
+    if (!statuses) return
+    const descendants = await collectDescendants(client.session, children.data ?? [], worker.directory)
+    if (descendants.some((child) => hasPending(pendingQuestions, child.id))) {
+      log.info("verification.waiting-child-question", { workerSessionID: worker.id })
+      return
+    }
+    if (descendants.some((child) => hasPending(pendingPermissions, child.id))) {
+      log.info("verification.waiting-child-permission", { workerSessionID: worker.id })
+      return
+    }
+    const busyChildren = descendants.filter((child) => {
+      const status = statuses.data?.[child.id]
+      return status !== undefined && status.type !== "idle"
+    })
+    if (busyChildren.length > 0) {
+      log.info("verification.waiting-children", {
+        workerSessionID: worker.id,
+        children: busyChildren.map((child) => child.id),
+      })
+      return
+    }
+
+    const revision = goal.revision
+    const model = currentModel(worker, messages, models.get(goal.workerSessionID))
+    if (!model) return pause(goal, "blocked", "Could not resolve the worker model for verification.")
+    const verifier = await ensureVerifier(goal, worker, model)
+    if (!verifier) return pause(goal, "blocked", "Could not create the verifier session.")
+
+    const packet = verificationPacket({ goal, worker, model, messages, todos: todos.data ?? [], diffs: diffs.data ?? [], children: descendants, lastAssistant })
+    log.info("verification.evidence", {
+      workerSessionID: worker.id,
+      verifierSessionID: verifier.id,
+      model: `${model.providerID}/${model.modelID}`,
+      variant: model.variant,
+      messages: messages.length,
+      todos: (todos.data ?? []).length,
+      diffs: (diffs.data ?? []).length,
+      children: descendants.length,
+    })
+    const started = patchGoalIf(
+      worker.id,
+      (current) => current.revision === revision && active(current.phase),
+      { phase: "verifying", verifier: model },
+    )
+    if (!started) {
+      log.info("verification.cancelled-stale", { workerSessionID: worker.id, revision })
+      return
+    }
+    verifierModels.set(verifier.id, model)
+    const response: { data?: MessageWithParts; error?: unknown } = await client.session
+      .prompt({
+        path: { id: verifier.id },
+        query: { directory: worker.directory },
+        body: {
+          model: { providerID: model.providerID, modelID: model.modelID },
+          variant: model.variant,
+          agent: "autopilot-verifier",
+          parts: [{ type: "text", text: packet }],
+        },
+      })
+      .catch((error): { error: unknown } => ({ error }))
+    if (response.error || !response.data) {
+      verifierModels.delete(verifier.id)
+      return pause(goal, "blocked", `Verifier failed: ${errorText(response.error)}`)
+    }
+    const current = readState().goals[worker.id]
+    if (!current || current.revision !== revision || current.phase !== "verifying") {
+      submittedVerdicts.delete(verifier.id)
+      verifierModels.delete(verifier.id)
+      return
+    }
+    const verdict =
+      submittedVerdicts.get(verifier.id) ??
+      (response.data.info.role === "assistant" ? parseVerdict(response.data.info.structured) : undefined)
+    submittedVerdicts.delete(verifier.id)
+    verifierModels.delete(verifier.id)
+    if (!verdict) return pause(goal, "blocked", "Verifier returned an invalid structured verdict.")
+
+    const fingerprint = progressFingerprint(goal, verdict, todos.data ?? [], diffs.data ?? [])
+    const noProgressRounds = fingerprint === goal.lastFingerprint ? goal.noProgressRounds + 1 : 1
+    log.info("verification.verdict", {
+      workerSessionID: worker.id,
+      verifierSessionID: verifier.id,
+      verdict: verdict.verdict,
+      confidence: verdict.confidence,
+      verified: verdict.verified.length,
+      missing: verdict.missing.length,
+      noProgressRounds,
+    })
+    const checkpoint = checkpointText(goal, model, verifier.id, verdict, {
+      messages: messages.length,
+      todos: todos.data ?? [],
+      diffs: diffs.data ?? [],
+      children: descendants,
+      finish: typeof lastAssistant.info.finish === "string" ? lastAssistant.info.finish : "unknown",
+    })
+    const basePatch = {
+      round: goal.round + 1,
+      noProgressRounds,
+      lastFingerprint: fingerprint,
+      lastInstruction: verdict.instruction,
+      lastCheckpoint: checkpoint,
+      lastVerifierMessageID: response.data.info.id as string,
+      lastIdleMessageID: lastAssistantID,
+      verifier: model,
+    }
+
+    if (verdict.verdict === "complete") {
+      patchGoal(worker.id, { ...basePatch, phase: "complete" })
+      await sendWorker(worker, model, checkpoint, true)
+      return
+    }
+    if (verdict.verdict === "blocked") {
+      patchGoal(worker.id, { ...basePatch, phase: "blocked" })
+      await sendWorker(worker, model, checkpoint, true)
+      return
+    }
+    const limit = limitReason(goal)
+    if (limit) {
+      const exhausted = `${checkpoint}\n\nAutopilot paused: ${limit}`
+      patchGoal(worker.id, { ...basePatch, phase: "exhausted", lastCheckpoint: exhausted })
+      await sendWorker(worker, model, exhausted, true)
+      return
+    }
+    if (noProgressRounds >= goal.noProgressLimit) {
+      const stalled = `${checkpoint}\n\nAutopilot paused: no progress was detected across ${noProgressRounds} consecutive verification rounds.`
+      patchGoal(worker.id, { ...basePatch, phase: "stalled", lastCheckpoint: stalled })
+      await sendWorker(worker, model, stalled, true)
+      return
+    }
+    if (goal.mode === "monitor") {
+      patchGoal(worker.id, { ...basePatch, phase: "paused" })
+      await sendWorker(worker, model, checkpoint, true)
+      return
+    }
+
+    const next = continuationText(checkpoint, verdict.instruction)
+    patchGoal(worker.id, { ...basePatch, phase: "continuing", continuations: goal.continuations + 1 })
+    await sendWorker(worker, model, next, false)
+    log.info("worker.continue", {
+      workerSessionID: worker.id,
+      round: goal.round + 1,
+      instructionBytes: verdict.instruction.length,
+      instructionHash: createHash("sha256").update(verdict.instruction).digest("hex").slice(0, 12),
+    })
+  }
+
+  async function ensureVerifier(goal: Goal, worker: RuntimeSession, model: ModelRef): Promise<RuntimeSession | undefined> {
+    if (goal.verifierSessionID) {
+      const existing = await sessionInfo(goal.verifierSessionID, worker.directory)
+      if (existing) {
+        log.debug("verifier.reuse", { workerSessionID: worker.id, verifierSessionID: existing.id })
+        return existing
+      }
+    }
+    const created = await client.session.create({
+      query: { directory: worker.directory },
+      body: { parentID: worker.id, title: `Autopilot Verifier · ${short(goal.text ?? "Goal")}` },
+    })
+    const verifier = created.data
+    if (!verifier) return
+    patchGoal(worker.id, { verifierSessionID: verifier.id, verifier: model })
+    log.info("verifier.created", { workerSessionID: worker.id, verifierSessionID: verifier.id })
+    return verifier
+  }
+
+  async function sendWorker(worker: RuntimeSession, model: ModelRef, text: string, noReply: boolean) {
+    const messageID = `msg_autopilot_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    internalMessages.add(messageID)
+    const result = await client.session.promptAsync({
+      path: { id: worker.id },
+      query: { directory: worker.directory },
+      body: {
+        messageID,
+        model: { providerID: model.providerID, modelID: model.modelID },
+        variant: model.variant,
+        agent: "build",
+        noReply,
+        parts: [{ type: "text", text }],
+      },
+    })
+    if (result.error) throw new Error(errorText(result.error))
+    log.debug("worker.inject", { workerSessionID: worker.id, messageID, noReply })
+  }
+
+  async function sessionInfo(sessionID: string, directory: string) {
+    return client.session.get({ path: { id: sessionID }, query: { directory } }).then((result) => result.data).catch(() => undefined)
+  }
+
+  async function sessionMessages(sessionID: string, directory: string) {
+    return client.session.messages({ path: { id: sessionID }, query: { directory, limit: 200 } }).then((result) => result.data ?? []).catch(() => [])
+  }
+
+  async function pause(goal: Goal, phase: Goal["phase"], reason: string) {
+    const worker = await sessionInfo(goal.workerSessionID, goal.directory)
+    const model = worker
+      ? currentModel(worker, await sessionMessages(worker.id, worker.directory), models.get(worker.id))
+      : undefined
+    const checkpoint = `Autopilot paused\n\nReason: ${reason}\n\n${goalSummary({ ...goal, phase })}`
+    patchGoal(goal.workerSessionID, { phase, lastCheckpoint: checkpoint })
+    log.warn("goal.paused", { workerSessionID: goal.workerSessionID, phase, reason })
+    if (worker && model) await sendWorker(worker, model, checkpoint, true).catch(() => {})
+  }
+
+  async function sweepIdleGoals() {
+    const goals = Object.values(readState().goals).filter(
+      (goal) => goal.directory === input.directory && active(goal.phase),
+    )
+    if (goals.length === 0) return
+    const statuses = await client.session
+      .status({ query: { directory: input.directory } })
+      .catch((error) => {
+        log.warn("sweep.status-failed", { directory: input.directory, error: errorText(error) })
+        return undefined
+      })
+    if (!statuses) return
+    for (const goal of goals) {
+      const status = statuses.data?.[goal.workerSessionID]
+      if (!status || status.type === "idle") await onIdle(goal.workerSessionID)
+    }
+  }
+
+  const sweepTimer = setInterval(() => {
+    void sweepIdleGoals().catch((error) =>
+      log.error("sweep.failed", { directory: input.directory, error: errorText(error) }),
+    )
+  }, 2_000)
+  const bootstrapTimer = setTimeout(() => {
+    void hydratePendingRequests().catch((error) =>
+      log.error("pending.bootstrap-failed", { directory: input.directory, error: errorText(error) }),
+    )
+  }, 0)
+  log.info("pending.bootstrap-scheduled", { directory: input.directory })
+  log.info("startup.ready", {
+    pid: process.pid,
+    directory: input.directory,
+    sweepIntervalMs: 2_000,
+    bootstrapDeferred: true,
+  })
+
+  return {
+    tool: {
+      autopilot_submit: {
+        description: "Submit the final structured Autopilot verification verdict. Only the autopilot-verifier agent may call this tool.",
+        args: {
+          verdict: {
+            type: "string",
+            enum: ["complete", "continue", "adjust", "blocked"],
+            description: "Verification result.",
+          },
+          confidence: { type: "number", minimum: 0, maximum: 1, description: "Confidence from 0 to 1." },
+          verified: { type: "array", items: { type: "string" }, description: "Criteria supported by evidence." },
+          missing: { type: "array", items: { type: "string" }, description: "Criteria that remain unsupported." },
+          instruction: { type: "string", description: "Precise next action for the build agent." },
+        },
+        execute: async (args: VerifierSubmitArgs, context: { sessionID: string; agent: string }) => {
+          if (context.agent !== "autopilot-verifier") return "Autopilot verdict rejected: wrong agent."
+          const verdict = parseVerdict(args)
+          if (!verdict) return "Autopilot verdict rejected: invalid fields."
+          const expected = verifierModels.get(context.sessionID)
+          if (!expected) return "Autopilot verdict rejected: no verification is active for this session."
+          const actual = models.get(context.sessionID)
+          if (
+            actual &&
+            (actual.providerID !== expected.providerID ||
+              actual.modelID !== expected.modelID ||
+              (actual.variant ?? "default") !== (expected.variant ?? "default"))
+          ) {
+            log.error("verifier.model-mismatch", {
+              verifierSessionID: context.sessionID,
+              expected: `${expected.providerID}/${expected.modelID}:${expected.variant ?? "default"}`,
+              actual: `${actual.providerID}/${actual.modelID}:${actual.variant ?? "default"}`,
+            })
+            return "Autopilot verdict rejected: verifier model does not match the worker model."
+          }
+          if (submittedVerdicts.has(context.sessionID)) return "Autopilot verdict rejected: a verdict was already submitted."
+          submittedVerdicts.set(context.sessionID, verdict)
+          log.info("verifier.submitted", {
+            verifierSessionID: context.sessionID,
+            verdict: verdict.verdict,
+            confidence: verdict.confidence,
+          })
+          return "Autopilot verdict recorded. End this turn now."
+        },
+      },
+    } as unknown as Hooks["tool"],
+    "chat.message": async (message, output) => {
+      const model: ModelRef | undefined = message.model
+        ? { providerID: message.model.providerID, modelID: message.model.modelID, variant: message.variant }
+        : undefined
+      if (model) models.set(message.sessionID, model)
+      if (message.agent) agents.set(message.sessionID, message.agent)
+      const goal = readState().goals[message.sessionID]
+      if (!goal) return
+      if (internalMessages.delete(message.messageID ?? "")) {
+        if (goal.phase === "continuing") {
+          patchGoal(message.sessionID, { phase: "working" })
+          notifyTuiState("worker.working", message.sessionID)
+        }
+        return
+      }
+
+      if (goal.phase === "waiting-goal") {
+        if ((message.agent ?? output.message.agent) !== "build") {
+          const blocked = "Autopilot goal completion requires the build agent. Switch to build and start the goal again."
+          patchGoal(message.sessionID, { phase: "blocked", lastCheckpoint: blocked })
+          output.parts.push({ type: "text", text: blocked, synthetic: true } as unknown as Part)
+          log.warn("goal.rejected-agent", { workerSessionID: message.sessionID, agent: message.agent ?? output.message.agent })
+          return
+        }
+        const text = output.parts
+          .filter((part): part is Extract<Part, { type: "text" }> => part.type === "text" && !part.synthetic)
+          .map((part) => part.text)
+          .join("\n")
+          .trim()
+        if (!text) return
+        const criteria = parseCriteria(text)
+        const now = Date.now()
+        const armed: Goal = {
+          ...goal,
+          text,
+          criteria,
+          phase: "working",
+          startedAt: now,
+          updatedAt: now,
+          revision: goal.revision + 1,
+          workerAgent: message.agent ?? output.message.agent ?? "build",
+          verifier: model,
+          acknowledgementPending: true,
+        }
+        putGoal(armed)
+        notifyTuiState("goal.armed", message.sessionID)
+        log.info("goal.armed", {
+          workerSessionID: message.sessionID,
+          mode: armed.mode,
+          maxRounds: armed.maxRounds ?? "unlimited",
+          maxMinutes: armed.maxMinutes ?? "unlimited",
+          criteria: criteria.length,
+          model: model ? `${model.providerID}/${model.modelID}` : "unresolved",
+          variant: message.variant,
+        })
+        output.parts.push({
+          type: "text",
+          text: `${initialContract(armed)}\n\nUse the user's complete goal message below as the task specification.`,
+          synthetic: true,
+          metadata: { autopilot: true },
+        } as unknown as Part)
+        return
+      }
+
+      const synthetic = output.parts.length > 0 && output.parts.every((part) => "synthetic" in part && part.synthetic === true)
+      if (synthetic) return
+      const revision = Math.max(humanRevision.get(message.sessionID) ?? 0, goal.revision) + 1
+      humanRevision.set(message.sessionID, revision)
+      if (active(goal.phase) || goal.phase === "verifying") {
+        patchGoal(message.sessionID, {
+          phase: "paused",
+          revision,
+          lastCheckpoint: "Autopilot paused because a new user message changed the supervised session context.",
+        })
+        notifyTuiState("goal.human-steer", message.sessionID)
+      }
+      log.info("goal.human-steer", { workerSessionID: message.sessionID, revision })
+    },
+    "experimental.text.complete": async (message, output) => {
+      const goal = readState().goals[message.sessionID]
+      if (!goal?.acknowledgementPending) return
+      output.text = `${initialContract(goal)}\n\n${output.text}`
+      patchGoal(message.sessionID, { acknowledgementPending: false })
+      log.info("goal.acknowledged", { workerSessionID: message.sessionID, messageID: message.messageID })
+    },
+    event: async ({ event }) => {
+      const data = event as Event
+      if (data.type === "message.updated" && data.properties.info.role === "user") {
+        const info = data.properties.info
+        if (info.model) models.set(info.sessionID, { providerID: info.model.providerID, modelID: info.model.modelID, variant: info.model.variant })
+        agents.set(info.sessionID, info.agent)
+      }
+      if (data.type === "session.deleted") {
+        const id = data.properties.info.id
+        const goal = readState().goals[id]
+        if (goal) {
+          removeGoal(id)
+          notifyTuiState("goal.removed-session-deleted", id)
+          log.info("goal.removed-session-deleted", { workerSessionID: id })
+        }
+      }
+      if (data.type === "question.asked") {
+        addPending(pendingQuestions, data.properties.sessionID, data.properties.id)
+        log.info("question.pending", {
+          sessionID: data.properties.sessionID,
+          requestID: data.properties.id,
+          pending: pendingQuestions.get(data.properties.sessionID)?.size ?? 0,
+        })
+      }
+      if (data.type === "question.replied" || data.type === "question.rejected") {
+        removePending(pendingQuestions, data.properties.sessionID, data.properties.requestID)
+        log.info("question.settled", {
+          sessionID: data.properties.sessionID,
+          requestID: data.properties.requestID,
+          pending: pendingQuestions.get(data.properties.sessionID)?.size ?? 0,
+        })
+      }
+      if (data.type === "permission.asked") {
+        addPending(pendingPermissions, data.properties.sessionID, data.properties.id)
+        log.info("permission.pending", {
+          sessionID: data.properties.sessionID,
+          requestID: data.properties.id,
+          pending: pendingPermissions.get(data.properties.sessionID)?.size ?? 0,
+        })
+      }
+      if (data.type === "permission.replied") {
+        removePending(pendingPermissions, data.properties.sessionID, data.properties.requestID)
+        log.info("permission.settled", {
+          sessionID: data.properties.sessionID,
+          requestID: data.properties.requestID,
+          pending: pendingPermissions.get(data.properties.sessionID)?.size ?? 0,
+        })
+      }
+      if (data.type === "session.status" && data.properties.status.type === "idle") await onIdle(data.properties.sessionID)
+      if (data.type === "session.idle") await onIdle(data.properties.sessionID)
+    },
+    dispose: async () => {
+      clearTimeout(bootstrapTimer)
+      clearInterval(sweepTimer)
+      log.info("shutdown", { directory: input.directory })
+    },
+  }
+}
+
+function currentModel(worker: RuntimeSession, messages: MessageWithParts[], observed?: ModelRef): ModelRef | undefined {
+  if (worker.model) {
+    const modelID = worker.model.id ?? worker.model.modelID
+    if (modelID) return { providerID: worker.model.providerID, modelID, variant: worker.model.variant }
+  }
+  const recent = [...messages].reverse().find((message) => message.info.role === "user")?.info
+  if (recent?.role === "user") {
+    return {
+      providerID: recent.model.providerID,
+      modelID: recent.model.modelID,
+      variant: recent.model.variant,
+    }
+  }
+  return observed
+}
+
+async function collectDescendants(
+  sessions: SessionClient,
+  roots: RuntimeSession[],
+  directory: string,
+): Promise<RuntimeSession[]> {
+  const result = [...roots]
+  const seen = new Set(result.map((session) => session.id))
+  for (let index = 0; index < result.length; index += 1) {
+    const parent = result[index]
+    if (!parent) continue
+    const children = await sessions
+      .children({ path: { id: parent.id }, query: { directory } })
+      .then((value) => value.data ?? [])
+    for (const child of children) {
+      if (seen.has(child.id)) continue
+      seen.add(child.id)
+      result.push(child)
+    }
+  }
+  return result
+}
+
+function parseVerdict(value: unknown): VerifierVerdict | undefined {
+  if (!value || typeof value !== "object") return
+  const data = value as Partial<VerifierVerdict>
+  if (!data.verdict || !["complete", "continue", "adjust", "blocked"].includes(data.verdict)) return
+  if (typeof data.confidence !== "number" || !Number.isFinite(data.confidence)) return
+  if (data.confidence < 0 || data.confidence > 1) return
+  if (!stringList(data.verified) || !stringList(data.missing) || typeof data.instruction !== "string") return
+  const instruction = data.instruction.trim()
+  if (data.verdict !== "complete" && !instruction) return
+  if (data.verdict === "complete" && data.missing.length > 0) return
+  return {
+    verdict: data.verdict,
+    confidence: data.confidence,
+    verified: data.verified.map((item) => item.trim()),
+    missing: data.missing.map((item) => item.trim()),
+    instruction,
+  }
+}
+
+function stringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.trim().length > 0)
+}
+
+function verificationPacket(input: {
+  goal: Goal
+  worker: RuntimeSession
+  model: ModelRef
+  messages: MessageWithParts[]
+  todos: Todo[]
+  diffs: unknown[]
+  children: RuntimeSession[]
+  lastAssistant: AssistantWithParts
+}) {
+  const transcript = input.messages.slice(-40).map((message) => ({
+    info: message.info,
+    parts: message.parts.filter((part) => part.type === "text" || part.type === "tool"),
+  }))
+  return JSON.stringify(
+    {
+      kind: "autopilot-verification",
+      round: input.goal.round + 1,
+      worker: { sessionID: input.worker.id, agent: "build" },
+      verifier: { ...input.model, source: "current worker session" },
+      limits: {
+        rounds: formatLimit(input.goal.maxRounds),
+        minutes: formatLimit(input.goal.maxMinutes),
+        noProgressRounds: input.goal.noProgressLimit,
+      },
+      goal: input.goal.text,
+      acceptanceCriteria: input.goal.criteria,
+      evidence: {
+        messages: transcript,
+        todos: input.todos,
+        diff: input.diffs,
+        childSessions: input.children.map((child) => ({ id: child.id, title: child.title })),
+        lastWorkerMessage: input.lastAssistant,
+      },
+    },
+    null,
+    2,
+  )
+}
+
+function checkpointText(
+  goal: Goal,
+  model: ModelRef,
+  verifierSessionID: string,
+  verdict: VerifierVerdict,
+  evidence: { messages: number; todos: Todo[]; diffs: unknown[]; children: RuntimeSession[]; finish: string },
+) {
+  return [
+    `<autopilot checkpoint="${goal.round + 1}">`,
+    `Autopilot checkpoint · ${goal.round + 1}`,
+    "",
+    `Worker stopped: finish=${evidence.finish}`,
+    `Verifier session: ${verifierSessionID}`,
+    `Verifier model: ${model.providerID}/${model.modelID}${model.variant ? ` · ${model.variant}` : ""}`,
+    `Continuations used: ${goal.continuations}/${formatLimit(goal.maxRounds)}`,
+    `Evidence supplied: ${evidence.messages} messages, ${evidence.todos.length} todos, ${evidence.diffs.length} file diffs, ${evidence.children.length} child sessions`,
+    "",
+    `Verdict: ${verdict.verdict.toUpperCase()}`,
+    `Confidence: ${Math.round(verdict.confidence * 100)}%`,
+    verdict.verified.length ? `\nVerified:\n${verdict.verified.map((item) => `- ${item}`).join("\n")}` : "",
+    verdict.missing.length ? `\nMissing:\n${verdict.missing.map((item) => `- ${item}`).join("\n")}` : "",
+    verdict.instruction ? `\nNext instruction:\n${verdict.instruction}` : "",
+    "</autopilot>",
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+function continuationText(checkpoint: string, instruction: string) {
+  return `${checkpoint}\n\nContinue working on the active goal now. ${instruction || "Resolve the missing criteria above."} Do not merely summarize.`
+}
+
+function initialContract(goal: Goal) {
+  return [
+    "<autopilot>",
+    "Autopilot armed",
+    "",
+    `Goal:\n${goal.text}`,
+    goal.criteria.length ? `\nAcceptance criteria:\n${goal.criteria.map((item) => `- ${item}`).join("\n")}` : "\nAcceptance criteria: inferred from the full goal message",
+    "",
+    `Worker agent: ${goal.workerAgent ?? "build"}`,
+    `Verifier: same model and variant as the current worker session`,
+    `Resolved verifier: ${goal.verifier ? `${goal.verifier.providerID}/${goal.verifier.modelID}${goal.verifier.variant ? ` · ${goal.verifier.variant}` : ""}` : "will resolve at the first checkpoint"}`,
+    `Continuation rounds: ${formatLimit(goal.maxRounds)}`,
+    `Duration: ${formatLimit(goal.maxMinutes, "m")}`,
+    `No-progress breaker: ${goal.noProgressLimit} identical rounds`,
+    "Verifier receives: goal, criteria, recent transcript, todos, diffs, child-session state, and recorded validation evidence. Pending requests are checked before verification.",
+    "Begin work now. Do not claim completion without evidence for every required criterion.",
+    "</autopilot>",
+  ]
+    .filter(Boolean)
+    .join("\n")
+}
+
+function progressFingerprint(goal: Goal, verdict: VerifierVerdict, todos: Todo[], diffs: unknown[]) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        goal: goal.text,
+        verified: verdict.verified,
+        missing: verdict.missing,
+        instruction: verdict.instruction,
+        todos,
+        diffs,
+      }),
+    )
+    .digest("hex")
+}
+
+function limitReason(goal: Goal): string | undefined {
+  if (goal.maxRounds !== undefined && goal.continuations >= goal.maxRounds) return `Maximum continuation rounds reached (${goal.maxRounds}).`
+  if (goal.maxMinutes !== undefined && goal.startedAt && Date.now() - goal.startedAt >= goal.maxMinutes * 60_000) {
+    return `Maximum duration reached (${goal.maxMinutes} minutes).`
+  }
+}
+
+function short(text: string) {
+  return text.replace(/\s+/g, " ").trim().slice(0, 60)
+}
+
+function errorText(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (error && typeof error === "object" && "message" in error && typeof error.message === "string") return error.message
+  return String(error)
+}
+
+export default { id: "autopilot", server: AutopilotServer }

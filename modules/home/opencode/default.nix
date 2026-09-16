@@ -47,6 +47,9 @@ let
     skillPicker = lib.getExe skill-picker;
   };
 
+  # Autopilot ships separate TUI and server entrypoints with shared state.
+  autopilotPlugin = ./plugins/autopilot;
+
   # /preset TUI plugin: picks the active orchestrator model preset via a
   # DialogSelect, persisted for new sessions. Same TUI-only rationale as
   # skillPlugin above — listed in tui.json, not the server plugin drop-in dir.
@@ -122,6 +125,7 @@ let
   browserPrompt = writePrompt "browser-prompt.md" config.mine.home.opencode.promptFiles.browser;
   notificationPrompt = writePrompt "notification-prompt.md" config.mine.home.opencode.promptFiles.notification;
   followPromptPrompt = writePrompt "follow-prompt.md" config.mine.home.opencode.promptFiles.follow-prompt;
+  autopilotVerifierPrompt = writePrompt "autopilot-verifier-prompt.md" ./prompts/autopilot-verifier.md;
   orchestratorPrompt = writePrompt "orchestrator-prompt.md" ./prompts/orchestrator/orchestrator.md;
   explorerPrompt = writePrompt "explorer-prompt.md" ./prompts/orchestrator/explorer.md;
   librarianPrompt = writePrompt "librarian-prompt.md" ./prompts/orchestrator/librarian.md;
@@ -383,6 +387,8 @@ in
       default = "perplexity";
       description = "Provider used by the /search command (perplexity or google).";
     };
+    mine.home.opencode.autopilot.enable =
+      lib.mkEnableOption "Autopilot question automation and supervised build goals";
     mine.home.opencode.parallelOrchestration = {
       enable = lib.mkEnableOption "parallel multi-agent orchestration (orchestrator + specialist subagents + council)";
       models = {
@@ -583,13 +589,15 @@ in
         };
         theme = "catppuccin";
         # The TUI does not auto-load the plugin drop-in dir (only the server
-        # does), so the /skill picker plugin is listed here explicitly.
+        # does), so TUI plugin entrypoints are listed here explicitly.
         plugin = [
           "${skillPlugin}"
         ]
+        ++ lib.optional config.mine.home.opencode.autopilot.enable "${autopilotPlugin}/tui.tsx"
         ++ lib.optional (parallelCfg.enable && parallelCfg.presets != { }) "${presetPlugin}";
       };
       settings = {
+        plugin = lib.optional config.mine.home.opencode.autopilot.enable "${autopilotPlugin}/server.ts";
         share = "disabled";
         autoupdate = false;
         model = config.mine.home.opencode.defaultModel;
@@ -675,6 +683,32 @@ in
               };
             };
           };
+        }
+        // lib.optionalAttrs config.mine.home.opencode.autopilot.enable {
+          autopilot-verifier = {
+            description = "Read-only verifier for Autopilot goal completion.";
+            mode = "subagent";
+            hidden = true;
+            model = config.mine.home.opencode.defaultModel;
+            prompt = "{file:${autopilotVerifierPrompt}}";
+            tools = lib.mergeAttrsList [
+              tools.readTools
+              tools.readonlyBash
+              { autopilot_submit = true; }
+            ];
+            permission = {
+              bash = readonlyAgentBash;
+              question = "deny";
+              task = "deny";
+              edit = "deny";
+              write = "deny";
+              patch = "deny";
+              apply_patch = "deny";
+              todowrite = "deny";
+            };
+          };
+        }
+        // {
           debug = {
             description = "Finds and fixes bugs in the codebase based on error messages, logs, or a description of the issue.";
             mode = "primary";

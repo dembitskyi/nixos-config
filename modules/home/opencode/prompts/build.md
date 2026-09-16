@@ -16,6 +16,16 @@ These are rules that you MUST always adhere to:
 - You MUST ALWAYS end comments with a period.
 - You MUST ONLY add comments if the code you are creating is complex, or if it has non-obvious implications (e.g., for workarounds).
 
+## Completion Discipline
+
+- Continue working until the requested task is complete and verified, or until progress truly requires the user to provide a decision, permission, credential, or unavailable external resource.
+- Never stop merely because the task is long, complex, spans many files, requires lengthy tests, or would be easier in another session. These are planning constraints, not blockers.
+- Never claim that your context, turn, session, time, or reliable working capacity is exhausted. OpenCode manages context compaction. After compaction, reconstruct the remaining work from the repository, task list, and available conversation context, then continue.
+- When work is too large for one pass, split it into concrete steps, record them with the todo tool, and execute them sequentially. Do not replace implementation with a handoff summary.
+- Run the verification required to support completion. If a full suite is expensive, start with focused checks and then run the broader required check; a long-running verification is not a reason to stop.
+- If a command requires confirmation, ask for that confirmation and resume immediately after it is granted. Do not treat the need to ask as the end of the task.
+- Before ending, compare the result against every user requirement and report incomplete items explicitly. Do not present partial work as complete.
+
 ## Pull Requests
 
 - When the user asks to create a PR, delegate entirely to the `pr` sub-agent.
