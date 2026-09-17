@@ -7,6 +7,14 @@ import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createLog, type Log } from "./log"
 import { errorName, errorText, interruptedError } from "./question"
 import {
+  AUTOPILOT_RUNTIME,
+  parseRuntimeResponse,
+  runtimeLabel,
+  runtimeMatches,
+  runtimeRequest,
+  type RuntimeIdentity,
+} from "./runtime"
+import {
   AUTOPILOT_REFRESH_COMMAND,
   formatLimit,
   formatModel,
@@ -555,6 +563,7 @@ function askGoalLimits(
                 directory: session.directory,
                 criteria: [],
                 reviewModel: model,
+                runtime: AUTOPILOT_RUNTIME,
                 mode,
                 questionPolicy,
                 phase: "waiting-goal",
@@ -673,6 +682,7 @@ function parseLimit(value: string): number | undefined {
 
 async function initializeTui(api: TuiPluginApi, log: Log) {
   const [state, setState] = createSignal(readState())
+  const runtimeWaiters = new Map<string, (runtime: RuntimeIdentity) => void>()
 
   function refreshState(source: string) {
     try {
@@ -704,8 +714,39 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
   }
 
   api.event.on("tui.command.execute", (event) => {
+    const response = parseRuntimeResponse(event.properties.command)
+    if (response) {
+      runtimeWaiters.get(response.nonce)?.(response.runtime)
+      runtimeWaiters.delete(response.nonce)
+      return
+    }
     if (event.properties.command === AUTOPILOT_REFRESH_COMMAND) refreshState("server.notification")
   })
+
+  async function requireAlignedRuntime(): Promise<RuntimeIdentity> {
+    const request = runtimeRequest()
+    const server = new Promise<RuntimeIdentity | undefined>((resolve) => {
+      runtimeWaiters.set(request.nonce, resolve)
+      setTimeout(() => {
+        runtimeWaiters.delete(request.nonce)
+        resolve(undefined)
+      }, 1_500)
+    })
+    const result = await api.client.tui.publish({
+      directory: api.state.path.directory,
+      body: { type: "tui.command.execute", properties: { command: request.command } },
+    })
+    if (result.error) throw new Error(`Could not check the Autopilot server version: ${errorText(result.error)}`)
+    const identity = await server
+    if (!identity)
+      throw new Error(`Autopilot server did not answer the version check. TUI: ${runtimeLabel(AUTOPILOT_RUNTIME)}`)
+    if (!runtimeMatches(identity)) {
+      throw new Error(
+        `Autopilot TUI/server version mismatch. TUI: ${runtimeLabel(AUTOPILOT_RUNTIME)}; server: ${runtimeLabel(identity)}. Restart both before continuing.`,
+      )
+    }
+    return identity
+  }
   api.keymap.registerLayer({
     commands: [
       {
@@ -717,6 +758,7 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
         slashName: "autopilot",
         async run() {
           await runTuiAction(api, log, "command.open-failed", async () => {
+            const serverRuntime = await requireAlignedRuntime()
             const sessionID = currentSessionID(api)
             if (!sessionID) {
               api.ui.toast({
@@ -725,10 +767,22 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
               })
               return
             }
-            const current = readState()
+            let current = readState()
+            let goal = sessionGoal(current, sessionID)
+            let workerSessionID = goal?.workerSessionID ?? sessionID
+            if (goal && !runtimeMatches(goal.runtime)) {
+              const previousRuntime = goal.runtime
+              patchGoal(workerSessionID, { runtime: AUTOPILOT_RUNTIME })
+              current = readState()
+              goal = sessionGoal(current, sessionID)
+              workerSessionID = goal?.workerSessionID ?? sessionID
+              log.info("runtime.goal-adopted", {
+                workerSessionID,
+                previousRuntime,
+                runtime: AUTOPILOT_RUNTIME,
+              })
+            }
             setState(() => current)
-            const goal = sessionGoal(current, sessionID)
-            const workerSessionID = goal?.workerSessionID ?? sessionID
             const statusVisibility: StatusVisibility = workerSessionID
               ? (current.status.sessions[workerSessionID] ?? "auto")
               : "auto"
@@ -768,7 +822,7 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
                                 return
                               }
                               askModel(api, log, "goal.change-model", preferred, async (model) => {
-                                patchGoal(sessionID, { reviewModel: model })
+                                patchGoal(sessionID, { reviewModel: model, runtime: AUTOPILOT_RUNTIME })
                                 broadcastState("goal.review-model")
                                 log.info("goal.review-model", {
                                   workerSessionID: sessionID,
@@ -943,7 +997,22 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
                   },
                 ]
               : []
-            const options = [...goalOptions, ...verifierOptions, ...statusOptions]
+            const runtimeOptions = [
+              {
+                title: `Runtime · aligned · ${runtimeLabel(serverRuntime)}`,
+                value: "runtime-status",
+                description: "The TUI and server Autopilot source fingerprints match.",
+                onSelect() {
+                  api.ui.dialog.replace(() =>
+                    api.ui.DialogAlert({
+                      title: "Autopilot runtime",
+                      message: `Aligned: yes\nTUI: ${runtimeLabel(AUTOPILOT_RUNTIME)}\nServer: ${runtimeLabel(serverRuntime)}`,
+                    }),
+                  )
+                },
+              },
+            ]
+            const options = [...goalOptions, ...verifierOptions, ...statusOptions, ...runtimeOptions]
             const guardedOptions = options.map((option) => ({
               ...option,
               onSelect: guarded(api, log, `command.action-failed.${option.value}`, option.onSelect),
@@ -994,6 +1063,7 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
     version: api.app.version,
     command: "autopilot",
     statusSlot: "session_prompt_right",
+    runtime: AUTOPILOT_RUNTIME,
   })
 }
 

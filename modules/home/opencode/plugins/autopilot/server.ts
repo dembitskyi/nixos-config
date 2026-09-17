@@ -14,6 +14,7 @@ import {
   settled,
   validateAnswers,
 } from "./question"
+import { AUTOPILOT_RUNTIME, parseRuntimeRequest, runtimeMatches, runtimeResponse } from "./runtime"
 import {
   AUTOPILOT_REFRESH_COMMAND,
   formatLimit,
@@ -24,6 +25,7 @@ import {
   putGoal,
   readState,
   removeGoal,
+  storedStateVersion,
   type Goal,
   type GoalRecovery,
   type ModelRef,
@@ -181,6 +183,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     directory: input.directory,
     goals: Object.keys(initial.goals).length,
     pendingTransport: Boolean(client._client),
+    runtime: AUTOPILOT_RUNTIME,
   })
   let recovered = 0
   for (const goal of Object.values(initial.goals)) {
@@ -200,6 +203,27 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     directory: input.directory,
     recovered,
   })
+
+  function compatibleGoal(goal: Goal): boolean {
+    if (runtimeMatches(goal.runtime)) return true
+    log.error("runtime.goal-mismatch", {
+      workerSessionID: goal.workerSessionID,
+      goalRuntime: goal.runtime,
+      serverRuntime: AUTOPILOT_RUNTIME,
+    })
+    patchGoal(goal.workerSessionID, {
+      phase: "blocked",
+      lastCheckpoint:
+        "Autopilot stopped because the TUI and server plugin versions do not match. Restart both before continuing.",
+      recovery: {
+        kind: "autopilot-error",
+        summary: "Autopilot TUI/server version mismatch.",
+        detail: `Goal runtime: ${goal.runtime ? `${goal.runtime.protocol}/${goal.runtime.fingerprint}` : "missing"}; server runtime: ${AUTOPILOT_RUNTIME.protocol}/${AUTOPILOT_RUNTIME.fingerprint}`,
+      },
+    })
+    notifyTuiState("runtime.goal-mismatch", goal.workerSessionID)
+    return false
+  }
 
   async function hydratePendingRequests() {
     const startedAt = Date.now()
@@ -307,7 +331,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       phase: observed.phase,
       round: observed.round,
     })
-    if (!active(observed.phase) || supervising.has(sessionID)) return
+    if (!active(observed.phase) || supervising.has(sessionID) || !compatibleGoal(observed)) return
     supervising.add(sessionID)
     try {
       await new Promise((resolve) => setTimeout(resolve, 200))
@@ -389,7 +413,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     if (disposed) return
     if (answeringQuestions.has(request.id)) return
     const goal = await goalForSession(request.sessionID, input.directory)
-    if (!goal || !automatingQuestions(goal.phase) || goal.questionPolicy === "manual") {
+    if (!goal || !automatingQuestions(goal.phase) || goal.questionPolicy === "manual" || !compatibleGoal(goal)) {
       log.debug("question.automation-skip", {
         sessionID: request.sessionID,
         requestID: request.id,
@@ -763,7 +787,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     })
     const started = patchGoalIf(worker.id, (current) => current.revision === revision && active(current.phase), {
       phase: "verifying",
-      verifier: model,
+      activeReviewModel: model,
     })
     if (!started) {
       log.info("verification.cancelled-stale", {
@@ -839,7 +863,8 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       lastCheckpoint: checkpoint,
       lastVerifierMessageID: response.data.info.id as string,
       lastIdleMessageID: lastAssistantID,
-      verifier: model,
+      activeReviewModel: undefined,
+      lastReviewModel: model,
     }
 
     if (verdict.verdict === "complete") {
@@ -919,7 +944,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     })
     const verifier = created.data
     if (!verifier) return
-    patchGoal(worker.id, { verifierSessionID: verifier.id, verifier: model })
+    patchGoal(worker.id, { verifierSessionID: verifier.id })
     log.info("verifier.created", {
       workerSessionID: worker.id,
       verifierSessionID: verifier.id,
@@ -1063,6 +1088,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     directory: input.directory,
     sweepIntervalMs: 2_000,
     bootstrapDeferred: true,
+    runtime: AUTOPILOT_RUNTIME,
   })
 
   return {
@@ -1141,6 +1167,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       if (message.agent) agents.set(message.sessionID, message.agent)
       const goal = readState().goals[message.sessionID]
       if (!goal) return
+      if (!compatibleGoal(goal)) return
       if (internalMessages.delete(message.messageID ?? "")) {
         if (goal.phase === "continuing") {
           patchGoal(message.sessionID, { phase: "working" })
@@ -1187,7 +1214,8 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
           revision: goal.revision + 1,
           workerAgent: message.agent ?? output.message.agent ?? "build",
           reviewModel: selectedReviewModel,
-          verifier: undefined,
+          activeReviewModel: undefined,
+          lastReviewModel: undefined,
           acknowledgementPending: true,
         }
         putGoal(armed)
@@ -1244,6 +1272,13 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     },
     event: async ({ event }) => {
       const data = event as Event
+      if (data.type === "tui.command.execute") {
+        const request = parseRuntimeRequest(data.properties.command)
+        if (request) {
+          notifyRuntime(request.nonce, request.runtime)
+          return
+        }
+      }
       if (data.type === "message.updated" && data.properties.info.role === "user") {
         const info = data.properties.info
         if (info.model)
@@ -1330,6 +1365,21 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       clearInterval(sweepTimer)
       log.info("shutdown", { directory: input.directory })
     },
+  }
+
+  function notifyRuntime(nonce: string, tuiRuntime: typeof AUTOPILOT_RUNTIME) {
+    const response = client.tui?.publish({
+      query: { directory: input.directory },
+      body: { type: "tui.command.execute", properties: { command: runtimeResponse(nonce) } },
+    })
+    log.info("runtime.handshake", {
+      nonce,
+      compatible: runtimeMatches(tuiRuntime),
+      tuiRuntime,
+      serverRuntime: AUTOPILOT_RUNTIME,
+      storedStateVersion: storedStateVersion(),
+    })
+    void response?.catch((error) => log.warn("runtime.response-failed", { nonce, error: errorText(error) }))
   }
 }
 

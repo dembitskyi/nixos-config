@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } 
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import type { RuntimeIdentity } from "./runtime"
 
 export type StatusVisibility = "auto" | "show" | "hide"
 export type QuestionPolicy = "manual" | "recommended" | "hybrid"
@@ -58,8 +59,10 @@ export type Goal = {
   revision: number
   workerAgent?: string
   acknowledgementPending?: boolean
-  verifier?: ModelRef
+  activeReviewModel?: ModelRef
+  lastReviewModel?: ModelRef
   recovery?: GoalRecovery
+  runtime?: RuntimeIdentity
 }
 
 export type State = {
@@ -91,6 +94,16 @@ const GOAL_PHASES = new Set<GoalPhase>([
 
 export function statePath(): string {
   return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode", "autopilot.json")
+}
+
+export function storedStateVersion(): number | undefined {
+  try {
+    const value: unknown = JSON.parse(readFileSync(statePath(), "utf8"))
+    if (!value || typeof value !== "object" || Array.isArray(value) || !("version" in value)) return
+    return typeof value.version === "number" && Number.isSafeInteger(value.version) ? value.version : undefined
+  } catch {
+    return
+  }
 }
 
 export function readState(): State {
@@ -151,7 +164,7 @@ function parseGoal(workerSessionID: string, value: unknown): Goal | undefined {
     goal.questionPolicy === "recommended" || goal.questionPolicy === "manual" || goal.questionPolicy === "hybrid"
       ? goal.questionPolicy
       : "hybrid"
-  const legacy = value as { maxRounds?: unknown; model?: unknown }
+  const legacy = value as { maxRounds?: unknown; model?: unknown; verifier?: unknown }
   const maxCheckpoints =
     typeof goal.maxCheckpoints === "number"
       ? goal.maxCheckpoints
@@ -161,18 +174,24 @@ function parseGoal(workerSessionID: string, value: unknown): Goal | undefined {
   const {
     maxRounds: _,
     model: _legacyModel,
+    verifier: _legacyVerifier,
     ...migrated
   } = goal as Partial<Goal> & {
     maxRounds?: number
     model?: unknown
+    verifier?: unknown
   }
   return {
     ...migrated,
     questionPolicy,
     maxCheckpoints,
     reviewModel: parseModelRef(goal.reviewModel ?? legacy.model),
-    verifier: parseModelRef(goal.verifier),
+    activeReviewModel: parseModelRef(
+      goal.activeReviewModel ?? (goal.phase === "verifying" ? legacy.verifier : undefined),
+    ),
+    lastReviewModel: parseModelRef(goal.lastReviewModel ?? (goal.phase !== "verifying" ? legacy.verifier : undefined)),
     recovery: parseRecovery(goal.recovery),
+    runtime: parseRuntimeIdentity(goal.runtime),
   } as Goal
 }
 
@@ -201,6 +220,14 @@ function parseRecovery(value: unknown): GoalRecovery | undefined {
     ...(typeof recovery.errorName === "string" && recovery.errorName ? { errorName: recovery.errorName } : {}),
     ...(typeof recovery.detail === "string" && recovery.detail ? { detail: recovery.detail } : {}),
   }
+}
+
+function parseRuntimeIdentity(value: unknown): RuntimeIdentity | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return
+  const runtime = value as Partial<RuntimeIdentity>
+  if (!Number.isSafeInteger(runtime.protocol) || (runtime.protocol ?? 0) <= 0) return
+  if (typeof runtime.fingerprint !== "string" || !/^[a-f0-9]{64}$/i.test(runtime.fingerprint)) return
+  return { protocol: runtime.protocol!, fingerprint: runtime.fingerprint.toLowerCase() }
 }
 
 export function writeState(state: State): void {
@@ -344,7 +371,10 @@ export function goalSummary(goal: Goal): string {
     `Checkpoints: ${goal.round}/${formatLimit(goal.maxCheckpoints)}`,
     `Continuations: ${goal.continuations}`,
     `Duration: ${goal.startedAt ? `${Math.max(0, Math.floor((Date.now() - goal.startedAt) / 60_000))}m` : "0m"}/${formatLimit(goal.maxMinutes, "m")}`,
-    `Last verifier: ${goal.verifier ? formatModel(goal.verifier) : "not run yet"}`,
+    ...(goal.phase === "verifying"
+      ? [`Active review model: ${formatModel(goal.activeReviewModel)}`]
+      : [`Last review model: ${goal.lastReviewModel ? formatModel(goal.lastReviewModel) : "not run yet"}`]),
+    `Runtime: ${goal.runtime ? `protocol ${goal.runtime.protocol} · ${goal.runtime.fingerprint.slice(0, 12)}` : "unverified"}`,
     ...(goal.recovery ? [`Stopped: ${goal.recovery.summary}`] : []),
     goal.text ? `Goal: ${goal.text}` : "Goal: waiting for your next message",
   ].join("\n")

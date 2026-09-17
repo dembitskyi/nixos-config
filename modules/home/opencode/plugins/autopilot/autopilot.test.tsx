@@ -12,6 +12,7 @@ import { createSlot, createSolidSlotRegistry, testRender, useRenderer } from "@o
 import type { Event, Message, Provider, QuestionRequest, Session } from "@opencode-ai/sdk/v2"
 import { recommendedAnswers, validateAnswers } from "./question"
 import { createLog } from "./log"
+import { AUTOPILOT_RUNTIME, parseRuntimeRequest, runtimeResponse } from "./runtime"
 import { formatLimit, patchGoal, putGoal, readState, type Goal } from "./state"
 
 ensureRuntimePluginSupport()
@@ -67,7 +68,15 @@ function session(
   }
 }
 
-async function setup(options: { dialogError?: Error; sessionModel?: Session["model"]; messages?: Message[] } = {}) {
+async function setup(
+  options: {
+    dialogError?: Error
+    sessionModel?: Session["model"]
+    messages?: Message[]
+    serverRuntime?: typeof AUTOPILOT_RUNTIME
+    skipRuntimeResponse?: boolean
+  } = {},
+) {
   const handlers = new Map<Event["type"], Array<(event: Event) => void>>()
   const layers: Array<{
     mode?: string
@@ -209,6 +218,18 @@ async function setup(options: { dialogError?: Error; sessionModel?: Session["mod
       tui: {
         publish: async (input: Record<string, unknown>) => {
           broadcasts.push(input)
+          const command = (input.body as { properties?: { command?: string } } | undefined)?.properties?.command
+          const request = command ? parseRuntimeRequest(command) : undefined
+          if (request && !options.skipRuntimeResponse) {
+            queueMicrotask(() => {
+              const event = {
+                id: "evt_runtime",
+                type: "tui.command.execute",
+                properties: { command: runtimeResponse(request.nonce, options.serverRuntime) },
+              } as Event
+              for (const handler of handlers.get(event.type) ?? []) handler(event)
+            })
+          }
           return { data: true }
         },
       },
@@ -586,6 +607,21 @@ describe("autopilot TUI plugin", () => {
     )
   })
 
+  test("refuses Autopilot controls when the server runtime does not match", async () => {
+    const root = scratch()
+    const harness = await setup({
+      serverRuntime: { protocol: AUTOPILOT_RUNTIME.protocol, fingerprint: "0".repeat(64) },
+    })
+    const command = harness.commands.find((item) => item.name === "autopilot.open")!
+
+    await command.run()
+
+    expect(harness.dialog).toBeUndefined()
+    expect(readFileSync(join(root, "opencode", "log", "autopilot.log"), "utf8")).toContain(
+      "Autopilot TUI/server version mismatch",
+    )
+  })
+
   test("selects explicit recommendations conservatively", () => {
     scratch()
     expect(recommendedAnswers(question())).toEqual([["Safe (Recommended)"]])
@@ -681,6 +717,7 @@ describe("autopilot TUI plugin", () => {
     const harness = await setup()
     const command = harness.commands.find((item) => item.name === "autopilot.open")!
     await command.run()
+    await Bun.sleep(0)
     await harness.dialog!.options!.find((item) => item.value === "goal-start")!.onSelect?.()
     await Bun.sleep(0)
     await harness.dialog!.options!.find((item) => item.value === "drive")!.onSelect?.()
@@ -710,6 +747,7 @@ describe("autopilot TUI plugin", () => {
       mode: "drive",
       questionPolicy: "hybrid",
       reviewModel: { providerID: "provider", modelID: "current", variant: "high" },
+      runtime: AUTOPILOT_RUNTIME,
     })
   })
 

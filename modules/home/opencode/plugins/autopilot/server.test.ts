@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import server from "./server"
+import { AUTOPILOT_RUNTIME, runtimeRequest } from "./runtime"
 import { putGoal, readState, type Goal } from "./state"
 
 afterEach(() => {
@@ -35,6 +36,7 @@ function goal(patch: Partial<Goal> = {}): Goal {
     noProgressRounds: 0,
     revision: 1,
     workerAgent: "build",
+    runtime: AUTOPILOT_RUNTIME,
     ...patch,
   }
 }
@@ -288,6 +290,44 @@ describe("autopilot server", () => {
     )
     expect(visible.text).toContain("Autopilot armed")
     expect(visible.text).toContain("Autopilot checkpoints: Unlimited")
+    await hooks.dispose()
+  })
+
+  test("answers the TUI runtime handshake with the exact server identity", async () => {
+    scratch()
+    const { hooks, calls } = await setup()
+    const request = runtimeRequest()
+
+    await hooks.event({
+      event: { type: "tui.command.execute", properties: { command: request.command } },
+    })
+
+    expect(calls.publish.at(-1).body.properties.command).toContain(`:${request.nonce}:`)
+    expect(calls.publish.at(-1).body.properties.command).toEndWith(
+      `:${AUTOPILOT_RUNTIME.protocol}:${AUTOPILOT_RUNTIME.fingerprint}`,
+    )
+    await hooks.dispose()
+  })
+
+  test("fails closed when a goal was created by a mismatched TUI runtime", async () => {
+    scratch()
+    const { hooks, calls } = await setup("adjust")
+    putGoal(
+      goal({
+        runtime: { protocol: AUTOPILOT_RUNTIME.protocol, fingerprint: "0".repeat(64) },
+      }),
+    )
+
+    await hooks.event({
+      event: { type: "session.status", properties: { sessionID: "ses_worker", status: { type: "idle" } } },
+    })
+
+    expect(calls.prompt).toHaveLength(0)
+    expect(calls.promptAsync).toHaveLength(0)
+    expect(readState().goals.ses_worker).toMatchObject({
+      phase: "blocked",
+      recovery: { kind: "autopilot-error", summary: "Autopilot TUI/server version mismatch." },
+    })
     await hooks.dispose()
   })
 

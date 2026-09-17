@@ -15,6 +15,7 @@ import {
   setStatusVisibility,
   statePath,
 } from "./state"
+import { AUTOPILOT_RUNTIME } from "./runtime"
 
 afterEach(() => {
   delete process.env.XDG_DATA_HOME
@@ -58,6 +59,7 @@ describe("autopilot state", () => {
       text: "Finish the feature",
       criteria: ["Tests pass"],
       reviewModel: { providerID: "provider", modelID: "model", variant: "high" },
+      runtime: AUTOPILOT_RUNTIME,
       mode: "drive",
       questionPolicy: "hybrid",
       phase: "working",
@@ -75,6 +77,7 @@ describe("autopilot state", () => {
       phase: "verifying",
       round: 1,
       reviewModel: { providerID: "provider", modelID: "model", variant: "high" },
+      runtime: AUTOPILOT_RUNTIME,
     })
     expect(statSync(statePath()).mode & 0o777).toBe(0o600)
     expect(JSON.parse(readFileSync(statePath(), "utf8")).version).toBe(3)
