@@ -5,7 +5,7 @@
 import { createSignal, ErrorBoundary, Show, type Accessor } from "solid-js"
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createLog, type Log } from "./log"
-import { errorText } from "./question"
+import { errorName, errorText, interruptedError } from "./question"
 import {
   AUTOPILOT_REFRESH_COMMAND,
   formatLimit,
@@ -18,6 +18,7 @@ import {
   setStatusVisibility,
   type Goal,
   type GoalMode,
+  type GoalRecovery,
   type ModelRef,
   type QuestionPolicy,
   type State,
@@ -103,6 +104,139 @@ function showStatus(api: TuiPluginApi, goal: Goal) {
     api.ui.DialogAlert({
       title: "Autopilot status",
       message: [goalSummary(goal), goal.lastCheckpoint ? `\nLast checkpoint:\n${goal.lastCheckpoint}` : ""].join("\n"),
+    }),
+  )
+}
+
+function sessionRecovery(api: TuiPluginApi, goal: Goal): GoalRecovery | undefined {
+  const latest = [...api.state.session.messages(goal.workerSessionID)]
+    .reverse()
+    .find((message) => message.role === "assistant" && message.error)
+  if (latest?.role !== "assistant" || !latest.error) return
+  const detail = errorText(latest.error)
+  const interrupted = interruptedError(latest.error)
+  const name = errorName(latest.error)
+  return {
+    kind: interrupted ? "interrupted" : "worker-error",
+    summary: interrupted
+      ? `Worker turn interrupted${detail ? `: ${detail}` : ""}`
+      : `${name ?? "Worker error"}: ${detail}`,
+    messageID: latest.id,
+    errorName: name,
+    detail,
+  }
+}
+
+function effectiveRecovery(api: TuiPluginApi, goal: Goal): GoalRecovery | undefined {
+  return goal.recovery ?? sessionRecovery(api, goal)
+}
+
+function showRecovery(api: TuiPluginApi, goal: Goal) {
+  const recovery = effectiveRecovery(api, goal)
+  api.ui.dialog.replace(() =>
+    api.ui.DialogAlert({
+      title: recovery?.kind === "interrupted" ? "Autopilot interruption" : "Autopilot block",
+      message: recovery
+        ? [
+            recovery.summary,
+            recovery.errorName ? `Error: ${recovery.errorName}` : "",
+            recovery.messageID ? `Message: ${recovery.messageID}` : "",
+            recovery.detail && recovery.detail !== recovery.summary ? `\nDetails:\n${recovery.detail}` : "",
+            `\n${goalSummary(goal)}`,
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : [
+            "No structured recovery details were saved for this older block.",
+            goal.lastCheckpoint ? `\nLast checkpoint:\n${goal.lastCheckpoint}` : "",
+            `\n${goalSummary(goal)}`,
+          ].join("\n"),
+    }),
+  )
+}
+
+function continueFromCurrentState(api: TuiPluginApi, log: Log, goal: Goal, broadcastState: (source: string) => void) {
+  const model = sessionModel(api, goal.workerSessionID)
+  if (!model) throw new Error("Could not resolve the current build model")
+  const recovery = effectiveRecovery(api, goal)
+  const messageID = `msg_autopilot_resume_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  const text = [
+    "<autopilot-resume>",
+    "Continue the active Autopilot goal from the repository's current state.",
+    "The previous worker turn was interrupted or ended with an error. Do not blindly repeat its last command.",
+    "First inspect the current files, diffs, todos, running child sessions, and available validation evidence; then perform only the remaining work.",
+    recovery ? `Previous stop: ${recovery.summary}` : "Previous stop details were not recorded.",
+    `Goal: ${goal.text ?? "Use the active session goal."}`,
+    "</autopilot-resume>",
+  ].join("\n")
+
+  return api.client.session
+    .promptAsync({
+      sessionID: goal.workerSessionID,
+      directory: goal.directory,
+      messageID,
+      model: { providerID: model.providerID, modelID: model.modelID },
+      variant: model.variant,
+      agent: "build",
+      parts: [{ type: "text", text, synthetic: true, metadata: { autopilot: true, recovery: true } }],
+    })
+    .then((result) => {
+      if (result.error) throw new Error(`Could not continue the worker: ${errorText(result.error)}`)
+      patchGoal(goal.workerSessionID, {
+        phase: "working",
+        revision: goal.revision + 1,
+        lastIdleMessageID: undefined,
+        lastFingerprint: undefined,
+        noProgressRounds: 0,
+        recovery: undefined,
+        lastCheckpoint: "Autopilot continued from the repository's current state after user confirmation.",
+      })
+      broadcastState("goal.continue-current")
+      log.info("goal.continue-current", { workerSessionID: goal.workerSessionID, messageID })
+      api.ui.dialog.clear()
+      api.ui.toast({ variant: "success", message: "Autopilot is continuing from the current state" })
+    })
+}
+
+function showRecoveryMenu(api: TuiPluginApi, log: Log, goal: Goal, broadcastState: (source: string) => void) {
+  api.ui.dialog.replace(() =>
+    api.ui.DialogSelect({
+      title: goal.phase === "blocked" ? "Resolve blocked goal" : "Resume Autopilot",
+      placeholder: "Inspect the stop or choose how to proceed",
+      options: [
+        {
+          title: goal.phase === "blocked" ? "Inspect block" : "Inspect last stop",
+          value: "inspect",
+          description: "Show the exact saved stop reason without changing goal state.",
+          onSelect: guarded(api, log, "goal.inspect-stop-failed", () => showRecovery(api, goal)),
+        },
+        {
+          title: "Continue from current state",
+          value: "continue",
+          description: "Start a fresh worker turn after re-reading repository state; do not repeat blindly.",
+          onSelect: guarded(api, log, "goal.continue-current-failed", () =>
+            continueFromCurrentState(api, log, goal, broadcastState),
+          ),
+        },
+        {
+          title: goal.phase === "blocked" ? "Clear block and stay paused" : "Clear stop and stay paused",
+          value: "clear",
+          description: "Remove the stop marker without starting a worker turn.",
+          onSelect: guarded(api, log, "goal.clear-stop-failed", () => {
+            patchGoal(goal.workerSessionID, {
+              phase: "paused",
+              revision: goal.revision + 1,
+              recovery: undefined,
+              lastIdleMessageID: undefined,
+              lastCheckpoint: "Autopilot stop cleared by the user; goal remains paused.",
+            })
+            broadcastState("goal.stop-cleared")
+            log.info("goal.stop-cleared", { workerSessionID: goal.workerSessionID })
+            api.ui.dialog.clear()
+            api.ui.toast({ variant: "success", message: "Autopilot stop cleared; goal remains paused" })
+          }),
+        },
+      ],
     }),
   )
 }
@@ -196,7 +330,7 @@ function askModelVariant(
     })
   api.ui.dialog.replace(() =>
     api.ui.DialogSelect({
-      title: "Autopilot model variant",
+      title: "Autopilot review-model variant",
       placeholder: "Choose a reasoning variant",
       current: model.variant ?? "default",
       options: [
@@ -242,8 +376,8 @@ function askModel(
   api.ui.dialog.setSize("large")
   api.ui.dialog.replace(() =>
     api.ui.DialogSelect({
-      title: "Autopilot model",
-      placeholder: "Search models by name or provider/model",
+      title: "Autopilot review model",
+      placeholder: "Search review models by name or provider/model",
       flat: true,
       current: modelKey(current),
       options: choices.map((choice) => ({
@@ -252,25 +386,13 @@ function askModel(
         category: choice.providerName,
         description:
           choice.key === preferredKey
-            ? `Current session model${preferred?.variant ? ` · ${preferred.variant}` : " · default variant"}`
+            ? `Current/default review model${preferred?.variant ? ` · ${preferred.variant}` : " · default variant"}`
             : choice.key,
         disabled: choice.disabled,
         onSelect: choose(choice.ref),
       })),
     }),
   )
-}
-
-async function switchSessionModel(api: TuiPluginApi, workerSessionID: string, model: ModelRef) {
-  const result = await api.client.v2.session.switchModel({
-    sessionID: workerSessionID,
-    model: {
-      providerID: model.providerID,
-      id: model.modelID,
-      variant: model.variant,
-    },
-  })
-  if (result.error) throw new Error(`Could not switch the worker model: ${errorText(result.error)}`)
 }
 
 export function statusLabel(goal: Goal): string {
@@ -427,13 +549,12 @@ function askGoalLimits(
               }
               const session = api.state.session.get(workerSessionID)
               if (!session) return
-              await switchSessionModel(api, workerSessionID, model)
               const now = Date.now()
               const goal: Goal = {
                 workerSessionID,
                 directory: session.directory,
                 criteria: [],
-                model,
+                reviewModel: model,
                 mode,
                 questionPolicy,
                 phase: "waiting-goal",
@@ -453,14 +574,14 @@ function askGoalLimits(
                 workerSessionID,
                 mode,
                 questionPolicy,
-                model: modelKey(model),
+                reviewModel: modelKey(model),
                 variant: model.variant,
                 maxCheckpoints: rounds ?? "unlimited",
                 maxMinutes: minutes ?? "unlimited",
               })
               api.ui.toast({
                 variant: "success",
-                message: `Autopilot is waiting for your next message. Model: ${formatModel(model)}; checkpoints: ${formatLimit(rounds)}; duration: ${formatLimit(minutes, "m")}.`,
+                message: `Autopilot is waiting for your next message. Review model: ${formatModel(model)}; checkpoints: ${formatLimit(rounds)}; duration: ${formatLimit(minutes, "m")}.`,
               })
             }),
           }),
@@ -499,7 +620,7 @@ function askQuestionPolicy(
         {
           title: "Hybrid unattended (Recommended)",
           value: "hybrid",
-          description: "Use explicit recommendations; otherwise let the worker model choose the best fit.",
+          description: "Use explicit recommendations; otherwise let the selected review model choose the best fit.",
           onSelect: choose("hybrid"),
         },
         {
@@ -613,7 +734,7 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
               : "auto"
             const verifierView = Boolean(goal && sessionID && goal.workerSessionID !== sessionID)
             const canPause = Boolean(goal && ["working", "verifying", "continuing"].includes(goal.phase))
-            const canResume = Boolean(goal && ["paused", "blocked", "stalled", "waiting-user"].includes(goal.phase))
+            const canRecover = Boolean(goal && ["blocked", "paused", "stalled", "exhausted"].includes(goal.phase))
             const goalOptions =
               sessionID && !verifierView
                 ? [
@@ -634,25 +755,24 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
                             },
                           },
                           {
-                            title: "Change Autopilot model",
-                            value: "goal-model",
-                            description: `${formatModel(goal.model)}. An active review finishes on its current model; the new model applies afterward.`,
+                            title: "Change review model",
+                            value: "goal-review-model",
+                            description: `${formatModel(goal.reviewModel)}. The build session model is not changed.`,
                             onSelect() {
-                              const preferred = goal.model ?? sessionModel(api, sessionID)
+                              const preferred = goal.reviewModel ?? sessionModel(api, sessionID)
                               if (!preferred) {
                                 api.ui.toast({
                                   variant: "error",
-                                  message: "Could not resolve the current Autopilot model",
+                                  message: "Could not resolve the current review model",
                                 })
                                 return
                               }
                               askModel(api, log, "goal.change-model", preferred, async (model) => {
-                                await switchSessionModel(api, sessionID, model)
-                                patchGoal(sessionID, { model })
-                                broadcastState("goal.model")
-                                log.info("goal.model", {
+                                patchGoal(sessionID, { reviewModel: model })
+                                broadcastState("goal.review-model")
+                                log.info("goal.review-model", {
                                   workerSessionID: sessionID,
-                                  model: modelKey(model),
+                                  reviewModel: modelKey(model),
                                   variant: model.variant,
                                   phase: goal.phase,
                                 })
@@ -661,41 +781,43 @@ async function initializeTui(api: TuiPluginApi, log: Log) {
                                   variant: "success",
                                   message:
                                     goal.phase === "verifying"
-                                      ? `Autopilot will use ${formatModel(model)} after the active review finishes.`
-                                      : `Autopilot model changed to ${formatModel(model)}.`,
+                                      ? `Autopilot will review with ${formatModel(model)} after the active review finishes.`
+                                      : `Autopilot review model changed to ${formatModel(model)}.`,
                                 })
                               })
                             },
                           },
-                          ...(canPause || canResume
+                          ...(canRecover
                             ? [
                                 {
-                                  title: canResume ? "Resume goal" : "Pause goal",
-                                  value: "goal-pause",
-                                  description: "Keep goal state but stop or resume automatic verification.",
+                                  title:
+                                    goal.phase === "blocked" ? "Resolve blocked goal" : "Resume / recovery options",
+                                  value: "goal-recovery",
+                                  description: "Inspect the stop, continue from current state, or remain paused.",
                                   onSelect() {
-                                    const phase = canResume ? "working" : "paused"
+                                    showRecoveryMenu(api, log, goal, broadcastState)
+                                  },
+                                },
+                              ]
+                            : []),
+                          ...(canPause
+                            ? [
+                                {
+                                  title: "Pause goal",
+                                  value: "goal-pause",
+                                  description: "Keep goal state but stop automatic verification.",
+                                  onSelect() {
                                     patchGoal(sessionID, {
-                                      phase,
+                                      phase: "paused",
                                       revision: goal.revision + 1,
-                                      ...(canResume
-                                        ? {
-                                            lastIdleMessageID: undefined,
-                                            lastFingerprint: undefined,
-                                            noProgressRounds: 0,
-                                          }
-                                        : {}),
                                     })
                                     broadcastState("goal.phase")
                                     log.info("goal.phase", {
                                       workerSessionID: sessionID,
-                                      phase,
+                                      phase: "paused",
                                     })
                                     api.ui.dialog.clear()
-                                    api.ui.toast({
-                                      variant: "success",
-                                      message: `Autopilot ${phase === "paused" ? "paused" : "resumed"}`,
-                                    })
+                                    api.ui.toast({ variant: "success", message: "Autopilot paused" })
                                   },
                                 },
                               ]

@@ -33,8 +33,21 @@ export function errorText(error: unknown): string {
       const message = error.data.message
       if (typeof message === "string") return message
     }
+    try {
+      return JSON.stringify(error)
+    } catch {}
   }
   return String(error)
+}
+
+export function errorName(error: unknown): string | undefined {
+  if (error instanceof Error) return error.name || undefined
+  if (!error || typeof error !== "object" || !("name" in error)) return
+  return typeof error.name === "string" && error.name ? error.name : undefined
+}
+
+export function interruptedError(error: unknown): boolean {
+  return errorName(error) === "MessageAbortedError"
 }
 
 export function validateAnswers(request: QuestionRequest, value: unknown): string[][] | undefined {

@@ -57,7 +57,7 @@ describe("autopilot state", () => {
       directory: "/workspace",
       text: "Finish the feature",
       criteria: ["Tests pass"],
-      model: { providerID: "provider", modelID: "model", variant: "high" },
+      reviewModel: { providerID: "provider", modelID: "model", variant: "high" },
       mode: "drive",
       questionPolicy: "hybrid",
       phase: "working",
@@ -74,10 +74,43 @@ describe("autopilot state", () => {
     expect(readState().goals.ses_worker).toMatchObject({
       phase: "verifying",
       round: 1,
-      model: { providerID: "provider", modelID: "model", variant: "high" },
+      reviewModel: { providerID: "provider", modelID: "model", variant: "high" },
     })
     expect(statSync(statePath()).mode & 0o777).toBe(0o600)
-    expect(JSON.parse(readFileSync(statePath(), "utf8")).version).toBe(2)
+    expect(JSON.parse(readFileSync(statePath(), "utf8")).version).toBe(3)
+  })
+
+  test("persists structured recovery details", () => {
+    scratch()
+    putGoal({
+      workerSessionID: "ses_worker",
+      directory: "/workspace",
+      criteria: [],
+      mode: "drive",
+      questionPolicy: "hybrid",
+      phase: "blocked",
+      updatedAt: 1,
+      round: 0,
+      continuations: 0,
+      noProgressLimit: 2,
+      noProgressRounds: 0,
+      revision: 1,
+      recovery: {
+        kind: "worker-error",
+        summary: "APIError: Provider quota exhausted",
+        messageID: "msg_failed",
+        errorName: "APIError",
+        detail: "Provider quota exhausted",
+      },
+    })
+
+    expect(readState().goals.ses_worker.recovery).toEqual({
+      kind: "worker-error",
+      summary: "APIError: Provider quota exhausted",
+      messageID: "msg_failed",
+      errorName: "APIError",
+      detail: "Provider quota exhausted",
+    })
   })
 
   test("only patches a goal when the current revision matches", () => {
@@ -155,7 +188,7 @@ describe("autopilot state", () => {
     writeFileSync(statePath(), JSON.stringify(legacy))
 
     expect(readState()).toMatchObject({
-      version: 2,
+      version: 3,
       status: { sessions: {} },
       goals: { ses_worker: { questionPolicy: "hybrid", maxCheckpoints: 12 } },
     })
@@ -201,7 +234,7 @@ describe("autopilot state", () => {
     expect(readState().goals.ses_worker.questionPolicy).toBe("hybrid")
   })
 
-  test("keeps legacy goals without a selected model for runtime resolution", () => {
+  test("keeps legacy goals without a selected review model for runtime resolution", () => {
     scratch()
     putGoal({
       workerSessionID: "ses_worker",
@@ -218,10 +251,43 @@ describe("autopilot state", () => {
       revision: 1,
     })
 
-    expect(readState().goals.ses_worker.model).toBeUndefined()
+    expect(readState().goals.ses_worker.reviewModel).toBeUndefined()
   })
 
-  test("ignores malformed persisted model selections", () => {
+  test("migrates a v2 goal model to the isolated review model", () => {
+    scratch()
+    const persisted = {
+      version: 2,
+      status: { sessions: {} },
+      goals: {
+        ses_worker: {
+          workerSessionID: "ses_worker",
+          directory: "/workspace",
+          criteria: [],
+          model: { providerID: "review", modelID: "model", variant: "high" },
+          mode: "drive",
+          questionPolicy: "hybrid",
+          phase: "working",
+          updatedAt: 1,
+          round: 0,
+          continuations: 0,
+          noProgressLimit: 2,
+          noProgressRounds: 0,
+          revision: 1,
+        },
+      },
+    }
+    mkdirSync(join(process.env.XDG_DATA_HOME!, "opencode"), { recursive: true })
+    writeFileSync(statePath(), JSON.stringify(persisted))
+
+    expect(readState()).toMatchObject({
+      version: 3,
+      goals: { ses_worker: { reviewModel: { providerID: "review", modelID: "model", variant: "high" } } },
+    })
+    expect("model" in readState().goals.ses_worker).toBe(false)
+  })
+
+  test("ignores malformed persisted review-model selections", () => {
     scratch()
     const persisted = {
       version: 2,
@@ -247,6 +313,6 @@ describe("autopilot state", () => {
     mkdirSync(join(process.env.XDG_DATA_HOME!, "opencode"), { recursive: true })
     writeFileSync(statePath(), JSON.stringify(persisted))
 
-    expect(readState().goals.ses_worker.model).toBeUndefined()
+    expect(readState().goals.ses_worker.reviewModel).toBeUndefined()
   })
 })

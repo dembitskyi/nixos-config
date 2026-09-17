@@ -47,11 +47,11 @@ async function setup(
     permissions?: Array<{ id: string; sessionID: string }>
   } = {},
   chooserAnswers: unknown = [["Safe"]],
+  workerError?: { name: string; data?: { message?: string } },
 ) {
   const calls = {
     create: [] as any[],
     questionReply: [] as any[],
-    modelSwitch: [] as any[],
     prompt: [] as any[],
     promptAsync: [] as any[],
     publish: [] as any[],
@@ -107,6 +107,7 @@ async function setup(
           cache: { read: 0, write: 0 },
         },
         finish: "stop",
+        error: workerError,
       },
       parts: [{ type: "text", text: "Implemented part of it." }],
     },
@@ -117,10 +118,6 @@ async function setup(
       data: url === "/question" ? (pending.questions ?? []) : (pending.permissions ?? []),
     }),
     post: async (input: any) => {
-      if (input.url === "/api/session/{sessionID}/model") {
-        calls.modelSwitch.push(input)
-        return { data: true }
-      }
       calls.questionReply.push(input)
       return { data: true }
     },
@@ -273,13 +270,13 @@ describe("autopilot server", () => {
     expect(readState().goals.ses_worker).toMatchObject({
       phase: "working",
       criteria: ["Tests pass", "Typecheck passes"],
-      model: { providerID: "provider", modelID: "model", variant: "high" },
+      reviewModel: { providerID: "provider", modelID: "model", variant: "high" },
     })
     const contract = output.parts.at(-1)
     expect(contract?.type).toBe("text")
     if (contract?.type !== "text") throw new Error("Autopilot did not append its goal contract")
     expect(contract.text).toContain("Autopilot checkpoints: Unlimited")
-    expect(contract.text).toContain("Autopilot model: provider/model · high")
+    expect(contract.text).toContain("Review model: provider/model · high")
     const visible = { text: "Starting implementation." }
     await hooks["experimental.text.complete"](
       {
@@ -294,7 +291,7 @@ describe("autopilot server", () => {
     await hooks.dispose()
   })
 
-  test("enforces a setup override on the first goal turn", async () => {
+  test("keeps the build model unchanged when the review model differs", async () => {
     scratch()
     const selected = {
       providerID: "selected-provider",
@@ -308,7 +305,7 @@ describe("autopilot server", () => {
         phase: "waiting-goal",
         startedAt: undefined,
         revision: 0,
-        model: selected,
+        reviewModel: selected,
       }),
     )
     const { hooks, calls } = await setup()
@@ -331,31 +328,20 @@ describe("autopilot server", () => {
       output,
     )
 
-    expect(calls.modelSwitch).toHaveLength(1)
-    expect(calls.modelSwitch[0]).toMatchObject({
-      path: { sessionID: "ses_worker" },
-      body: {
-        model: {
-          providerID: "selected-provider",
-          id: "selected-model",
-          variant: "max",
-        },
-      },
-    })
     expect(output.message.model).toEqual({
-      providerID: "selected-provider",
-      modelID: "selected-model",
-      variant: "max",
+      providerID: "provider",
+      modelID: "model",
+      variant: "high",
     })
     expect(readState().goals.ses_worker).toMatchObject({
       phase: "working",
-      model: selected,
+      reviewModel: selected,
     })
     expect(readState().goals.ses_worker.verifier).toBeUndefined()
     await hooks.dispose()
   })
 
-  test("uses the worker model for verification and injects a visible corrective continuation", async () => {
+  test("defaults review to the build model and injects a visible corrective continuation", async () => {
     scratch()
     const { hooks, calls } = await setup("adjust")
     putGoal(goal())
@@ -393,7 +379,7 @@ describe("autopilot server", () => {
     await hooks.dispose()
   })
 
-  test("uses a selected goal model for verification, continuation, and question choice", async () => {
+  test("uses the review model for verifier and chooser while preserving the build model for continuation", async () => {
     scratch()
     const selected = {
       providerID: "selected-provider",
@@ -401,7 +387,7 @@ describe("autopilot server", () => {
       variant: "max",
     }
     const { hooks, calls } = await setup("adjust")
-    putGoal(goal({ model: selected, questionPolicy: "hybrid" }))
+    putGoal(goal({ reviewModel: selected, questionPolicy: "hybrid" }))
 
     await hooks.event({
       event: {
@@ -438,17 +424,17 @@ describe("autopilot server", () => {
       agent: "autopilot-verifier",
     })
     expect(calls.promptAsync.at(-1).body).toMatchObject({
-      model: { providerID: "selected-provider", modelID: "selected-model" },
-      variant: "max",
+      model: { providerID: "provider", modelID: "model" },
+      variant: "high",
       agent: "build",
     })
     await hooks.dispose()
   })
 
-  test("resolves and persists the worker model for a legacy goal", async () => {
+  test("resolves and persists the build model as the review default for a legacy goal", async () => {
     scratch()
     const { hooks, calls } = await setup("adjust")
-    putGoal(goal({ model: undefined }))
+    putGoal(goal({ reviewModel: undefined }))
 
     await hooks.event({
       event: {
@@ -457,7 +443,7 @@ describe("autopilot server", () => {
       },
     })
 
-    expect(readState().goals.ses_worker.model).toEqual({
+    expect(readState().goals.ses_worker.reviewModel).toEqual({
       providerID: "provider",
       modelID: "model",
       variant: "high",
@@ -469,7 +455,7 @@ describe("autopilot server", () => {
     await hooks.dispose()
   })
 
-  test("finishes an active review on its captured model and continues on a newly selected model", async () => {
+  test("finishes an active review on its captured model and keeps the build model for continuation", async () => {
     scratch()
     const original = {
       providerID: "review-provider",
@@ -485,7 +471,7 @@ describe("autopilot server", () => {
       putGoal(
         goal({
           ...readState().goals.ses_worker,
-          model: next,
+          reviewModel: next,
           phase: "verifying",
         }),
       )
@@ -525,7 +511,7 @@ describe("autopilot server", () => {
         },
       }
     })
-    putGoal(goal({ model: original }))
+    putGoal(goal({ reviewModel: original }))
 
     await hooks.event({
       event: {
@@ -539,29 +525,29 @@ describe("autopilot server", () => {
       variant: original.variant,
     })
     expect(calls.promptAsync[0].body).toMatchObject({
-      model: { providerID: next.providerID, modelID: next.modelID },
-      variant: next.variant,
+      model: { providerID: "provider", modelID: "model" },
+      variant: "high",
       noReply: false,
     })
-    expect(readState().goals.ses_worker).toMatchObject({ model: next, phase: "continuing", round: 1 })
+    expect(readState().goals.ses_worker).toMatchObject({ reviewModel: next, phase: "continuing", round: 1 })
     await hooks.dispose()
   })
 
-  test("keeps selected models independent across goals", async () => {
+  test("keeps selected review models independent across goals", async () => {
     scratch()
-    putGoal(goal({ model: { providerID: "one", modelID: "first" } }))
+    putGoal(goal({ reviewModel: { providerID: "one", modelID: "first" } }))
     putGoal(
       goal({
         workerSessionID: "ses_other",
-        model: { providerID: "two", modelID: "second", variant: "high" },
+        reviewModel: { providerID: "two", modelID: "second", variant: "high" },
       }),
     )
 
-    expect(readState().goals.ses_worker.model).toEqual({
+    expect(readState().goals.ses_worker.reviewModel).toEqual({
       providerID: "one",
       modelID: "first",
     })
-    expect(readState().goals.ses_other.model).toEqual({
+    expect(readState().goals.ses_other.reviewModel).toEqual({
       providerID: "two",
       modelID: "second",
       variant: "high",
@@ -584,6 +570,59 @@ describe("autopilot server", () => {
     expect(calls.promptAsync[0].body.noReply).toBe(true)
     expect(calls.promptAsync[0].body.parts[0].text).toContain("Verdict: COMPLETE")
     expect(readState().goals.ses_worker.phase).toBe("complete")
+    await hooks.dispose()
+  })
+
+  test("treats an intentionally interrupted worker turn as a recoverable pause", async () => {
+    scratch()
+    const { hooks, calls } = await setup("adjust", true, {}, [["Safe"]], {
+      name: "MessageAbortedError",
+      data: { message: "The operation was aborted." },
+    })
+    putGoal(goal())
+
+    await hooks.event({
+      event: { type: "session.status", properties: { sessionID: "ses_worker", status: { type: "idle" } } },
+    })
+
+    expect(calls.prompt).toHaveLength(0)
+    expect(readState().goals.ses_worker).toMatchObject({
+      phase: "paused",
+      recovery: {
+        kind: "interrupted",
+        errorName: "MessageAbortedError",
+        messageID: "msg_assistant",
+        detail: "The operation was aborted.",
+      },
+    })
+    expect(readState().goals.ses_worker.lastCheckpoint).toContain("Worker turn interrupted: The operation was aborted.")
+    expect(readState().goals.ses_worker.lastCheckpoint).not.toContain("[object Object]")
+    await hooks.dispose()
+  })
+
+  test("keeps genuine worker failures blocked with their structured error detail", async () => {
+    scratch()
+    const { hooks, calls } = await setup("adjust", true, {}, [["Safe"]], {
+      name: "APIError",
+      data: { message: "Provider quota exhausted" },
+    })
+    putGoal(goal())
+
+    await hooks.event({
+      event: { type: "session.status", properties: { sessionID: "ses_worker", status: { type: "idle" } } },
+    })
+
+    expect(calls.prompt).toHaveLength(0)
+    expect(readState().goals.ses_worker).toMatchObject({
+      phase: "blocked",
+      recovery: {
+        kind: "worker-error",
+        errorName: "APIError",
+        detail: "Provider quota exhausted",
+      },
+    })
+    expect(readState().goals.ses_worker.lastCheckpoint).toContain("APIError: Provider quota exhausted")
+    expect(readState().goals.ses_worker.lastCheckpoint).not.toContain("[object Object]")
     await hooks.dispose()
   })
 
@@ -769,7 +808,7 @@ describe("autopilot server", () => {
     await hooks.dispose()
   })
 
-  test("uses the worker model to choose an unmarked best-fit answer", async () => {
+  test("uses the review model to choose an unmarked best-fit answer", async () => {
     scratch()
     const { hooks, calls } = await setup()
     putGoal(goal({ questionPolicy: "hybrid" }))

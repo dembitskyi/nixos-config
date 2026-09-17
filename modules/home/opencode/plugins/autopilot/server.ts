@@ -5,7 +5,15 @@ import type { Part, Todo } from "@opencode-ai/sdk"
 import type { AssistantMessage, Event, QuestionRequest, UserMessage } from "@opencode-ai/sdk/v2"
 import type { Hooks, Plugin } from "@opencode-ai/plugin"
 import { createLog } from "./log"
-import { recommendedAnswer, recommendedAnswers, settled, validateAnswers } from "./question"
+import {
+  errorName,
+  errorText,
+  interruptedError,
+  recommendedAnswer,
+  recommendedAnswers,
+  settled,
+  validateAnswers,
+} from "./question"
 import {
   AUTOPILOT_REFRESH_COMMAND,
   formatLimit,
@@ -17,6 +25,7 @@ import {
   readState,
   removeGoal,
   type Goal,
+  type GoalRecovery,
   type ModelRef,
 } from "./state"
 
@@ -307,12 +316,17 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       await verify(goal)
     } catch (error) {
       const goal = readState().goals[sessionID]
+      const detail = errorText(error)
       log.error("verification.failed", {
         workerSessionID: sessionID,
-        error: errorText(error),
+        error: detail,
       })
       if (goal && interrupted(goal.phase))
-        await pause(goal, "blocked", `Autopilot verification failed: ${errorText(error)}`)
+        await pause(goal, "blocked", `Autopilot verification failed: ${detail}`, {
+          kind: "autopilot-error",
+          summary: detail,
+          detail,
+        })
     } finally {
       supervising.delete(sessionID)
       notifyTuiState("worker.idle", sessionID)
@@ -519,7 +533,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     const messages = await sessionMessages(goal.workerSessionID, goal.directory)
     const questionMessages =
       request.sessionID === goal.workerSessionID ? messages : await sessionMessages(request.sessionID, goal.directory)
-    const model = await goalModel(goal, worker, messages)
+    const model = await reviewModel(goal, worker, messages)
     if (!model) {
       log.warn("question.chooser-model-missing", {
         workerSessionID: goal.workerSessionID,
@@ -633,9 +647,9 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       })
       return
     }
-    const reviewModel = await goalModel(goal, worker, messages)
-    if (!reviewModel) return pause(goal, "blocked", "Could not resolve the worker model for verification.")
-    await runVerification(goal, worker, messages, lastAssistant, reviewModel)
+    const model = await reviewModel(goal, worker, messages)
+    if (!model) return pause(goal, "blocked", "Could not resolve the review model for verification.")
+    await runVerification(goal, worker, messages, lastAssistant, model)
   }
 
   async function runVerification(
@@ -653,8 +667,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       })
       return
     }
-    if (lastAssistant.info.error)
-      return pause(goal, "blocked", `Worker stopped with an error: ${errorText(lastAssistant.info.error)}`)
+    if (lastAssistant.info.error) return handleWorkerError(goal, lastAssistant)
     if (hasPending(pendingQuestions, worker.id)) {
       log.info("verification.waiting-question", {
         workerSessionID: worker.id,
@@ -788,7 +801,12 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     submittedVerdicts.delete(verifier.id)
     verifierModels.delete(verifier.id)
     if (!verdict) return pause(goal, "blocked", "Verifier returned an invalid structured verdict.")
-    const workerModel = () => readState().goals[worker.id]?.model ?? current.model ?? model
+    const workerModel = () => currentModel(worker, messages, models.get(worker.id))
+    const sendCurrentWorker = async (text: string, noReply: boolean) => {
+      const selected = workerModel()
+      if (!selected) throw new Error("Could not resolve the current build model.")
+      await sendWorker(worker, selected, text, noReply)
+    }
     const applyReview = (patch: Partial<Goal>) => {
       const latest = readState().goals[worker.id]
       if (!latest || latest.revision !== revision || latest.phase !== "verifying") return
@@ -827,13 +845,13 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     if (verdict.verdict === "complete") {
       if (!applyReview({ ...basePatch, phase: "complete" })) return
       notifyTuiState("goal.complete", worker.id)
-      await sendWorker(worker, workerModel(), checkpoint, true)
+      await sendCurrentWorker(checkpoint, true)
       return
     }
     if (verdict.verdict === "blocked") {
       if (!applyReview({ ...basePatch, phase: "blocked" })) return
       notifyTuiState("goal.blocked", worker.id)
-      await sendWorker(worker, workerModel(), checkpoint, true)
+      await sendCurrentWorker(checkpoint, true)
       return
     }
     const limit = limitReason(goal)
@@ -841,20 +859,20 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       const exhausted = `${checkpoint}\n\nAutopilot paused: ${limit}`
       if (!applyReview({ ...basePatch, phase: "exhausted", lastCheckpoint: exhausted })) return
       notifyTuiState("goal.exhausted", worker.id)
-      await sendWorker(worker, workerModel(), exhausted, true)
+      await sendCurrentWorker(exhausted, true)
       return
     }
     if (noProgressRounds >= goal.noProgressLimit) {
       const stalled = `${checkpoint}\n\nAutopilot paused: no progress was detected across ${noProgressRounds} consecutive verification rounds.`
       if (!applyReview({ ...basePatch, phase: "stalled", lastCheckpoint: stalled })) return
       notifyTuiState("goal.stalled", worker.id)
-      await sendWorker(worker, workerModel(), stalled, true)
+      await sendCurrentWorker(stalled, true)
       return
     }
     if (goal.mode === "monitor") {
       if (!applyReview({ ...basePatch, phase: "paused" })) return
       notifyTuiState("goal.monitor-paused", worker.id)
-      await sendWorker(worker, workerModel(), checkpoint, true)
+      await sendCurrentWorker(checkpoint, true)
       return
     }
 
@@ -868,7 +886,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     )
       return
     notifyTuiState("goal.continuing", worker.id)
-    await sendWorker(worker, workerModel(), next, false)
+    await sendCurrentWorker(next, false)
     log.info("worker.continue", {
       workerSessionID: worker.id,
       round: goal.round + 1,
@@ -946,14 +964,19 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       .catch(() => [])
   }
 
-  async function pause(goal: Goal, phase: Goal["phase"], reason: string) {
+  async function pause(
+    goal: Goal,
+    phase: Goal["phase"],
+    reason: string,
+    recovery: GoalRecovery = { kind: "autopilot-error", summary: reason, detail: reason },
+  ) {
     const worker = await sessionInfo(goal.workerSessionID, goal.directory)
     const latest = readState().goals[goal.workerSessionID] ?? goal
     const model = worker
-      ? await goalModel(latest, worker, await sessionMessages(worker.id, worker.directory))
+      ? currentModel(worker, await sessionMessages(worker.id, worker.directory), models.get(worker.id))
       : undefined
     const checkpoint = `Autopilot paused\n\nReason: ${reason}\n\n${goalSummary({ ...latest, phase })}`
-    patchGoal(goal.workerSessionID, { phase, lastCheckpoint: checkpoint })
+    patchGoal(goal.workerSessionID, { phase, lastCheckpoint: checkpoint, recovery })
     notifyTuiState("goal.paused", goal.workerSessionID)
     log.warn("goal.paused", {
       workerSessionID: goal.workerSessionID,
@@ -963,19 +986,37 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     if (worker && model) await sendWorker(worker, model, checkpoint, true).catch(() => {})
   }
 
-  async function goalModel(
+  async function handleWorkerError(goal: Goal, assistant: AssistantWithParts) {
+    const error = assistant.info.error
+    if (!error) return
+    const interrupted = interruptedError(error)
+    const detail = errorText(error)
+    const name = errorName(error)
+    const summary = interrupted
+      ? `Worker turn interrupted${detail ? `: ${detail}` : ""}`
+      : `${name ?? "Worker error"}: ${detail}`
+    await pause(goal, interrupted ? "paused" : "blocked", summary, {
+      kind: interrupted ? "interrupted" : "worker-error",
+      summary,
+      messageID: assistant.info.id,
+      errorName: name,
+      detail,
+    })
+  }
+
+  async function reviewModel(
     goal: Goal,
     worker: RuntimeSession,
     messages: MessageWithParts[],
   ): Promise<ModelRef | undefined> {
-    if (goal.model) return goal.model
+    if (goal.reviewModel) return goal.reviewModel
     const resolved = currentModel(worker, messages, models.get(goal.workerSessionID))
     if (!resolved) return
-    patchGoal(goal.workerSessionID, { model: resolved })
-    notifyTuiState("goal.model-resolved", goal.workerSessionID)
-    log.info("goal.model-resolved", {
+    patchGoal(goal.workerSessionID, { reviewModel: resolved })
+    notifyTuiState("goal.review-model-resolved", goal.workerSessionID)
+    log.info("goal.review-model-resolved", {
       workerSessionID: goal.workerSessionID,
-      model: `${resolved.providerID}/${resolved.modelID}`,
+      reviewModel: `${resolved.providerID}/${resolved.modelID}`,
       variant: resolved.variant,
     })
     return resolved
@@ -1074,7 +1115,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
               expected: `${expected.providerID}/${expected.modelID}:${expected.variant ?? "default"}`,
               actual: `${actual.providerID}/${actual.modelID}:${actual.variant ?? "default"}`,
             })
-            return "Autopilot verdict rejected: verifier model does not match the worker model."
+            return "Autopilot verdict rejected: verifier model does not match the active review model."
           }
           if (submittedVerdicts.has(context.sessionID))
             return "Autopilot verdict rejected: a verdict was already submitted."
@@ -1135,16 +1176,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
         if (!text) return
         const criteria = parseCriteria(text)
         const now = Date.now()
-        const workerModel = goal.model ?? model
-        if (goal.model && !sameModel(goal.model, model)) {
-          await switchWorkerModel(goal.workerSessionID, goal.directory, goal.model)
-          output.message.model = {
-            providerID: goal.model.providerID,
-            modelID: goal.model.modelID,
-            variant: goal.model.variant,
-          } as typeof output.message.model
-          models.set(goal.workerSessionID, goal.model)
-        }
+        const selectedReviewModel = goal.reviewModel ?? model
         const armed: Goal = {
           ...goal,
           text,
@@ -1154,7 +1186,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
           updatedAt: now,
           revision: goal.revision + 1,
           workerAgent: message.agent ?? output.message.agent ?? "build",
-          model: workerModel,
+          reviewModel: selectedReviewModel,
           verifier: undefined,
           acknowledgementPending: true,
         }
@@ -1167,8 +1199,11 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
           maxCheckpoints: armed.maxCheckpoints ?? "unlimited",
           maxMinutes: armed.maxMinutes ?? "unlimited",
           criteria: criteria.length,
-          model: armed.model ? `${armed.model.providerID}/${armed.model.modelID}` : "unresolved",
-          variant: armed.model?.variant,
+          workerModel: model ? `${model.providerID}/${model.modelID}` : "unresolved",
+          reviewModel: armed.reviewModel
+            ? `${armed.reviewModel.providerID}/${armed.reviewModel.modelID}`
+            : "unresolved",
+          reviewVariant: armed.reviewModel?.variant,
         })
         output.parts.push({
           type: "text",
@@ -1296,25 +1331,6 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       log.info("shutdown", { directory: input.directory })
     },
   }
-
-  async function switchWorkerModel(sessionID: string, directory: string, model: ModelRef) {
-    const transport = client._client
-    if (!transport) throw new Error("Session model switch transport is unavailable")
-    const result = await transport.post({
-      url: "/api/session/{sessionID}/model",
-      path: { sessionID },
-      query: { directory },
-      body: {
-        model: {
-          providerID: model.providerID,
-          id: model.modelID,
-          variant: model.variant,
-        },
-      },
-      headers: { "Content-Type": "application/json" },
-    })
-    if (result.error) throw result.error
-  }
 }
 
 function currentModel(worker: RuntimeSession, messages: MessageWithParts[], observed?: ModelRef): ModelRef | undefined {
@@ -1336,15 +1352,6 @@ function currentModel(worker: RuntimeSession, messages: MessageWithParts[], obse
     }
   }
   return observed
-}
-
-function sameModel(left: ModelRef | undefined, right: ModelRef | undefined): boolean {
-  if (!left || !right) return false
-  return (
-    left.providerID === right.providerID &&
-    left.modelID === right.modelID &&
-    (left.variant ?? "default") === (right.variant ?? "default")
-  )
 }
 
 async function collectDescendants(
@@ -1537,8 +1544,8 @@ function initialContract(goal: Goal) {
     "",
     `Worker agent: ${goal.workerAgent ?? "build"}`,
     `Question handling: ${questionPolicyLabel(goal.questionPolicy)}`,
-    `Autopilot model: ${goal.model ? `${goal.model.providerID}/${goal.model.modelID}${goal.model.variant ? ` · ${goal.model.variant}` : ""}` : "current worker model (will resolve at the first checkpoint)"}`,
-    `Worker continuations, verifier reviews, and question chooser turns use the Autopilot model.`,
+    `Review model: ${goal.reviewModel ? `${goal.reviewModel.providerID}/${goal.reviewModel.modelID}${goal.reviewModel.variant ? ` · ${goal.reviewModel.variant}` : ""}` : "current build model (resolved at the first checkpoint)"}`,
+    `The verifier and question chooser use the review model. Worker turns keep the build session's current model.`,
     `Autopilot checkpoints: ${formatLimit(goal.maxCheckpoints)}`,
     `Duration: ${formatLimit(goal.maxMinutes, "m")}`,
     `No-progress breaker: ${goal.noProgressLimit} identical rounds`,
@@ -1551,7 +1558,7 @@ function initialContract(goal: Goal) {
 }
 
 function questionPolicyLabel(policy: Goal["questionPolicy"]) {
-  if (policy === "hybrid") return "Hybrid unattended (explicit recommendations, then worker-model best fit)"
+  if (policy === "hybrid") return "Hybrid unattended (explicit recommendations, then review-model best fit)"
   if (policy === "recommended") return "Recommended only"
   return "Ask me"
 }
@@ -1582,13 +1589,6 @@ function limitReason(goal: Goal): string | undefined {
 
 function short(text: string) {
   return text.replace(/\s+/g, " ").trim().slice(0, 60)
-}
-
-function errorText(error: unknown): string {
-  if (error instanceof Error) return error.message
-  if (error && typeof error === "object" && "message" in error && typeof error.message === "string")
-    return error.message
-  return String(error)
 }
 
 export default { id: "autopilot", server: AutopilotServer }

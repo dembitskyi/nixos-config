@@ -9,7 +9,7 @@ import { RGBA } from "@opentui/core"
 import { createComponent, onCleanup } from "solid-js"
 import { createSlot, createSolidSlotRegistry, testRender, useRenderer } from "@opentui/solid"
 
-import type { Event, Provider, QuestionRequest, Session } from "@opencode-ai/sdk/v2"
+import type { Event, Message, Provider, QuestionRequest, Session } from "@opencode-ai/sdk/v2"
 import { recommendedAnswers, validateAnswers } from "./question"
 import { createLog } from "./log"
 import { formatLimit, patchGoal, putGoal, readState, type Goal } from "./state"
@@ -67,7 +67,7 @@ function session(
   }
 }
 
-async function setup(options: { dialogError?: Error; sessionModel?: Session["model"] } = {}) {
+async function setup(options: { dialogError?: Error; sessionModel?: Session["model"]; messages?: Message[] } = {}) {
   const handlers = new Map<Event["type"], Array<(event: Event) => void>>()
   const layers: Array<{
     mode?: string
@@ -77,7 +77,8 @@ async function setup(options: { dialogError?: Error; sessionModel?: Session["mod
   const commands: Array<{ name: string; run: () => void | Promise<void> }> = []
   const broadcasts: Array<Record<string, unknown>> = []
   const serverLogs: Array<Record<string, unknown>> = []
-  const modelSwitches: Array<Record<string, unknown>> = []
+  const promptAsyncCalls: Array<Record<string, unknown>> = []
+  const alerts: Array<{ title?: string; message?: string }> = []
   let statusSlot: ((context: unknown, props: { session_id: string }) => unknown) | undefined
   const sessions: Record<string, Session> = {
     ses_root: session("ses_root", undefined, options.sessionModel),
@@ -196,7 +197,7 @@ async function setup(options: { dialogError?: Error; sessionModel?: Session["mod
     state: {
       path: { directory: "/workspace" },
       provider: providers,
-      session: { get: (id: string) => sessions[id], messages: () => [] },
+      session: { get: (id: string) => sessions[id], messages: () => options.messages ?? [] },
     },
     client: {
       app: {
@@ -215,13 +216,9 @@ async function setup(options: { dialogError?: Error; sessionModel?: Session["mod
         get: async ({ sessionID }: { sessionID: string }) => ({
           data: sessions[sessionID],
         }),
-      },
-      v2: {
-        session: {
-          switchModel: async (input: Record<string, unknown>) => {
-            modelSwitches.push(input)
-            return { data: undefined }
-          },
+        promptAsync: async (input: Record<string, unknown>) => {
+          promptAsyncCalls.push(input)
+          return { data: undefined }
         },
       },
     },
@@ -248,7 +245,10 @@ async function setup(options: { dialogError?: Error; sessionModel?: Session["mod
       },
       DialogSelect: (props: typeof dialog) => props,
       DialogPrompt: (props: typeof dialog) => props,
-      DialogAlert: (props: typeof dialog) => props,
+      DialogAlert: (props: typeof dialog) => {
+        alerts.push(props as { title?: string; message?: string })
+        return props
+      },
       toast() {},
     },
     slots: {
@@ -276,7 +276,8 @@ async function setup(options: { dialogError?: Error; sessionModel?: Session["mod
     layers,
     broadcasts,
     serverLogs,
-    modelSwitches,
+    promptAsyncCalls,
+    alerts,
     get statusSlot() {
       return statusSlot
     },
@@ -687,16 +688,16 @@ describe("autopilot TUI plugin", () => {
     await harness.dialog!.options!.find((item) => item.value === "hybrid")!.onSelect?.()
     await Bun.sleep(0)
     expect(harness.dialog).toMatchObject({
-      title: "Autopilot model",
+      title: "Autopilot review model",
       current: "provider/current",
     })
     expect(harness.dialog!.options!.find((item) => item.value === "provider/current")?.description).toContain(
-      "Current session model · high",
+      "Current/default review model · high",
     )
     await harness.dialog!.options!.find((item) => item.value === "provider/current")!.onSelect?.()
     await Bun.sleep(0)
     expect(harness.dialog).toMatchObject({
-      title: "Autopilot model variant",
+      title: "Autopilot review-model variant",
       current: "high",
     })
     await harness.dialog!.options!.find((item) => item.value === "high")!.onSelect?.()
@@ -708,14 +709,8 @@ describe("autopilot TUI plugin", () => {
       phase: "waiting-goal",
       mode: "drive",
       questionPolicy: "hybrid",
-      model: { providerID: "provider", modelID: "current", variant: "high" },
+      reviewModel: { providerID: "provider", modelID: "current", variant: "high" },
     })
-    expect(harness.modelSwitches).toEqual([
-      {
-        sessionID: "ses_root",
-        model: { providerID: "provider", id: "current", variant: "high" },
-      },
-    ])
   })
 
   test("goal setup defaults both limits to Unlimited", async () => {
@@ -748,7 +743,7 @@ describe("autopilot TUI plugin", () => {
     expect(formatLimit(goal.maxCheckpoints)).toBe("Unlimited")
   })
 
-  test("overrides the current model during setup", async () => {
+  test("selects a distinct review model without switching the build session", async () => {
     scratch()
     const harness = await setup()
     const command = harness.commands.find((item) => item.name === "autopilot.open")!
@@ -756,35 +751,32 @@ describe("autopilot TUI plugin", () => {
     await harness.dialog!.options!.find((item) => item.value === "goal-start")!.onSelect?.()
     await harness.dialog!.options!.find((item) => item.value === "drive")!.onSelect?.()
     await harness.dialog!.options!.find((item) => item.value === "hybrid")!.onSelect?.()
-    expect(harness.dialog?.placeholder).toContain("Search models")
+    expect(harness.dialog?.placeholder).toContain("Search review models")
     await harness.dialog!.options!.find((item) => item.value === "provider/alternate")!.onSelect?.()
     expect(harness.dialog).toMatchObject({
-      title: "Autopilot model variant",
+      title: "Autopilot review-model variant",
       current: "default",
     })
     await harness.dialog!.options!.find((item) => item.value === "max")!.onSelect?.()
     await harness.dialog!.onConfirm?.("4")
     await harness.dialog!.onConfirm?.("30")
 
-    expect(readState().goals.ses_root.model).toEqual({
+    expect(readState().goals.ses_root.reviewModel).toEqual({
       providerID: "provider",
       modelID: "alternate",
       variant: "max",
     })
-    expect(harness.modelSwitches.at(-1)).toEqual({
-      sessionID: "ses_root",
-      model: { providerID: "provider", id: "alternate", variant: "max" },
-    })
+    expect(harness.promptAsyncCalls).toHaveLength(0)
   })
 
-  test("changes the active goal model without changing its phase or revision", async () => {
+  test("changes the active review model without changing the build session, phase, or revision", async () => {
     scratch()
     putGoal({
       workerSessionID: "ses_root",
       directory: "/workspace",
       text: "Finish it",
       criteria: [],
-      model: { providerID: "provider", modelID: "current", variant: "high" },
+      reviewModel: { providerID: "provider", modelID: "current", variant: "high" },
       mode: "drive",
       questionPolicy: "hybrid",
       phase: "verifying",
@@ -798,20 +790,186 @@ describe("autopilot TUI plugin", () => {
     const harness = await setup()
     const command = harness.commands.find((item) => item.name === "autopilot.open")!
     await command.run()
-    expect(harness.dialog!.options!.some((item) => item.value === "goal-model")).toBe(true)
-    await harness.dialog!.options!.find((item) => item.value === "goal-model")!.onSelect?.()
+    expect(harness.dialog!.options!.some((item) => item.value === "goal-review-model")).toBe(true)
+    await harness.dialog!.options!.find((item) => item.value === "goal-review-model")!.onSelect?.()
     await harness.dialog!.options!.find((item) => item.value === "provider/alternate")!.onSelect?.()
     await harness.dialog!.options!.find((item) => item.value === "low")!.onSelect?.()
 
     expect(readState().goals.ses_root).toMatchObject({
       phase: "verifying",
       revision: 7,
-      model: { providerID: "provider", modelID: "alternate", variant: "low" },
+      reviewModel: { providerID: "provider", modelID: "alternate", variant: "low" },
     })
-    expect(harness.modelSwitches.at(-1)).toEqual({
+    expect(harness.promptAsyncCalls).toHaveLength(0)
+  })
+
+  test("shows explicit recovery actions instead of a broken blocked resume", async () => {
+    scratch()
+    putGoal({
+      workerSessionID: "ses_root",
+      directory: "/workspace",
+      text: "Finish it",
+      criteria: [],
+      reviewModel: { providerID: "provider", modelID: "current", variant: "high" },
+      mode: "drive",
+      questionPolicy: "hybrid",
+      phase: "blocked",
+      updatedAt: 1,
+      round: 2,
+      continuations: 1,
+      noProgressLimit: 2,
+      noProgressRounds: 0,
+      revision: 7,
+      recovery: {
+        kind: "worker-error",
+        summary: "APIError: Provider quota exhausted",
+        messageID: "msg_failed",
+        errorName: "APIError",
+        detail: "Provider quota exhausted",
+      },
+    })
+    const harness = await setup()
+    const command = harness.commands.find((item) => item.name === "autopilot.open")!
+    await command.run()
+    const values = harness.dialog!.options!.map((item) => item.value)
+    expect(values).toContain("goal-recovery")
+    expect(values).not.toContain("goal-pause")
+
+    await harness.dialog!.options!.find((item) => item.value === "goal-recovery")!.onSelect?.()
+    expect(harness.dialog!.options!.map((item) => item.value)).toEqual(["inspect", "continue", "clear"])
+    await harness.dialog!.options!.find((item) => item.value === "inspect")!.onSelect?.()
+    expect(harness.alerts.at(-1)).toMatchObject({ title: "Autopilot block" })
+    expect(harness.alerts.at(-1)?.message).toContain("Provider quota exhausted")
+  })
+
+  test("continues a blocked goal through a fresh state-aware worker turn", async () => {
+    scratch()
+    putGoal({
+      workerSessionID: "ses_root",
+      directory: "/workspace",
+      text: "Finish it",
+      criteria: [],
+      reviewModel: { providerID: "provider", modelID: "current", variant: "high" },
+      mode: "drive",
+      questionPolicy: "hybrid",
+      phase: "blocked",
+      updatedAt: 1,
+      round: 2,
+      continuations: 1,
+      noProgressLimit: 2,
+      noProgressRounds: 1,
+      lastFingerprint: "old",
+      lastIdleMessageID: "msg_failed",
+      revision: 7,
+      recovery: {
+        kind: "interrupted",
+        summary: "Worker turn interrupted: The operation was aborted.",
+        messageID: "msg_failed",
+        errorName: "MessageAbortedError",
+        detail: "The operation was aborted.",
+      },
+    })
+    const harness = await setup()
+    const command = harness.commands.find((item) => item.name === "autopilot.open")!
+    await command.run()
+    await harness.dialog!.options!.find((item) => item.value === "goal-recovery")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "continue")!.onSelect?.()
+
+    expect(harness.promptAsyncCalls).toHaveLength(1)
+    expect(harness.promptAsyncCalls[0]).toMatchObject({
       sessionID: "ses_root",
-      model: { providerID: "provider", id: "alternate", variant: "low" },
+      directory: "/workspace",
+      model: { providerID: "provider", modelID: "current" },
+      variant: "high",
+      agent: "build",
     })
+    expect(JSON.stringify(harness.promptAsyncCalls[0])).toContain("repository's current state")
+    expect(JSON.stringify(harness.promptAsyncCalls[0])).toContain("Do not blindly repeat")
+    expect(readState().goals.ses_root).toMatchObject({ phase: "working", revision: 8, noProgressRounds: 0 })
+    expect(readState().goals.ses_root.recovery).toBeUndefined()
+    expect(readState().goals.ses_root.lastIdleMessageID).toBeUndefined()
+  })
+
+  test("clears a legacy block while keeping the goal paused", async () => {
+    scratch()
+    putGoal({
+      workerSessionID: "ses_root",
+      directory: "/workspace",
+      text: "Finish it",
+      criteria: [],
+      reviewModel: { providerID: "provider", modelID: "current" },
+      mode: "drive",
+      questionPolicy: "hybrid",
+      phase: "blocked",
+      updatedAt: 1,
+      round: 0,
+      continuations: 0,
+      noProgressLimit: 2,
+      noProgressRounds: 0,
+      revision: 1,
+      lastCheckpoint: "Worker stopped with an error: [object Object]",
+    })
+    const harness = await setup()
+    const command = harness.commands.find((item) => item.name === "autopilot.open")!
+    await command.run()
+    await harness.dialog!.options!.find((item) => item.value === "goal-recovery")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "clear")!.onSelect?.()
+
+    expect(readState().goals.ses_root).toMatchObject({
+      phase: "paused",
+      revision: 2,
+      lastCheckpoint: "Autopilot stop cleared by the user; goal remains paused.",
+    })
+    expect(harness.promptAsyncCalls).toHaveLength(0)
+  })
+
+  test("recovers exact interruption details for a legacy blocked goal from the session transcript", async () => {
+    scratch()
+    putGoal({
+      workerSessionID: "ses_root",
+      directory: "/workspace",
+      text: "Finish it",
+      criteria: [],
+      reviewModel: { providerID: "provider", modelID: "current" },
+      mode: "drive",
+      questionPolicy: "hybrid",
+      phase: "blocked",
+      updatedAt: 1,
+      round: 0,
+      continuations: 0,
+      noProgressLimit: 2,
+      noProgressRounds: 0,
+      revision: 1,
+      lastCheckpoint: "Worker stopped with an error: [object Object]",
+    })
+    const harness = await setup({
+      messages: [
+        {
+          id: "msg_interrupted",
+          sessionID: "ses_root",
+          role: "assistant",
+          time: { created: 1, completed: 2 },
+          parentID: "msg_user",
+          providerID: "provider",
+          modelID: "current",
+          mode: "build",
+          agent: "build",
+          path: { cwd: "/workspace", root: "/workspace" },
+          cost: 0,
+          tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
+          error: { name: "MessageAbortedError", data: { message: "The operation was aborted." } },
+        },
+      ],
+    })
+    const command = harness.commands.find((item) => item.name === "autopilot.open")!
+    await command.run()
+    await harness.dialog!.options!.find((item) => item.value === "goal-recovery")!.onSelect?.()
+    await harness.dialog!.options!.find((item) => item.value === "inspect")!.onSelect?.()
+
+    expect(harness.alerts.at(-1)).toMatchObject({ title: "Autopilot interruption" })
+    expect(harness.alerts.at(-1)?.message).toContain("The operation was aborted.")
+    expect(harness.alerts.at(-1)?.message).toContain("msg_interrupted")
+    expect(harness.alerts.at(-1)?.message).not.toContain("[object Object]")
   })
 
   test("persists manual status visibility from /autopilot", async () => {

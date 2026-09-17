@@ -11,6 +11,13 @@ export type ModelRef = {
   modelID: string
   variant?: string
 }
+export type GoalRecovery = {
+  kind: "interrupted" | "worker-error" | "autopilot-error"
+  summary: string
+  messageID?: string
+  errorName?: string
+  detail?: string
+}
 export const AUTOPILOT_REFRESH_COMMAND = "autopilot.refresh"
 export type GoalPhase =
   | "waiting-goal"
@@ -31,7 +38,7 @@ export type Goal = {
   directory: string
   text?: string
   criteria: string[]
-  model?: ModelRef
+  reviewModel?: ModelRef
   mode: GoalMode
   questionPolicy: QuestionPolicy
   phase: GoalPhase
@@ -52,10 +59,11 @@ export type Goal = {
   workerAgent?: string
   acknowledgementPending?: boolean
   verifier?: ModelRef
+  recovery?: GoalRecovery
 }
 
 export type State = {
-  version: 2
+  version: 3
   status: {
     sessions: Record<string, StatusVisibility>
   }
@@ -63,7 +71,7 @@ export type State = {
 }
 
 export const DEFAULT_STATE: State = {
-  version: 2,
+  version: 3,
   status: { sessions: {} },
   goals: {},
 }
@@ -110,7 +118,7 @@ export function readState(): State {
           )
         : {}
     return {
-      version: 2,
+      version: 3,
       status: { sessions: status },
       goals,
     }
@@ -143,22 +151,28 @@ function parseGoal(workerSessionID: string, value: unknown): Goal | undefined {
     goal.questionPolicy === "recommended" || goal.questionPolicy === "manual" || goal.questionPolicy === "hybrid"
       ? goal.questionPolicy
       : "hybrid"
-  const legacy = value as { maxRounds?: unknown }
+  const legacy = value as { maxRounds?: unknown; model?: unknown }
   const maxCheckpoints =
     typeof goal.maxCheckpoints === "number"
       ? goal.maxCheckpoints
       : typeof legacy.maxRounds === "number"
         ? legacy.maxRounds
         : undefined
-  const { maxRounds: _, ...migrated } = goal as Partial<Goal> & {
+  const {
+    maxRounds: _,
+    model: _legacyModel,
+    ...migrated
+  } = goal as Partial<Goal> & {
     maxRounds?: number
+    model?: unknown
   }
   return {
     ...migrated,
     questionPolicy,
     maxCheckpoints,
-    model: parseModelRef(goal.model),
+    reviewModel: parseModelRef(goal.reviewModel ?? legacy.model),
     verifier: parseModelRef(goal.verifier),
+    recovery: parseRecovery(goal.recovery),
   } as Goal
 }
 
@@ -172,6 +186,20 @@ function parseModelRef(value: unknown): ModelRef | undefined {
     providerID: model.providerID.trim(),
     modelID: model.modelID.trim(),
     ...(variant && variant !== "default" ? { variant } : {}),
+  }
+}
+
+function parseRecovery(value: unknown): GoalRecovery | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return
+  const recovery = value as Partial<GoalRecovery>
+  if (recovery.kind !== "interrupted" && recovery.kind !== "worker-error" && recovery.kind !== "autopilot-error") return
+  if (typeof recovery.summary !== "string" || !recovery.summary.trim()) return
+  return {
+    kind: recovery.kind,
+    summary: recovery.summary.trim(),
+    ...(typeof recovery.messageID === "string" && recovery.messageID ? { messageID: recovery.messageID } : {}),
+    ...(typeof recovery.errorName === "string" && recovery.errorName ? { errorName: recovery.errorName } : {}),
+    ...(typeof recovery.detail === "string" && recovery.detail ? { detail: recovery.detail } : {}),
   }
 }
 
@@ -287,7 +315,7 @@ export function formatLimit(value: number | undefined, unit = ""): string {
 }
 
 export function formatModel(model: ModelRef | undefined): string {
-  if (!model) return "current worker model (resolved on the next step)"
+  if (!model) return "current build model (resolved for review on the next step)"
   return `${model.providerID}/${model.modelID}${model.variant ? ` · ${model.variant}` : ""}`
 }
 
@@ -312,11 +340,12 @@ export function goalSummary(goal: Goal): string {
     `State: ${goal.phase}`,
     `Mode: ${goal.mode}`,
     `Questions: ${goal.questionPolicy}`,
-    `Model: ${formatModel(goal.model)}`,
+    `Review model: ${formatModel(goal.reviewModel)}`,
     `Checkpoints: ${goal.round}/${formatLimit(goal.maxCheckpoints)}`,
     `Continuations: ${goal.continuations}`,
     `Duration: ${goal.startedAt ? `${Math.max(0, Math.floor((Date.now() - goal.startedAt) / 60_000))}m` : "0m"}/${formatLimit(goal.maxMinutes, "m")}`,
     `Last verifier: ${goal.verifier ? formatModel(goal.verifier) : "not run yet"}`,
+    ...(goal.recovery ? [`Stopped: ${goal.recovery.summary}`] : []),
     goal.text ? `Goal: ${goal.text}` : "Goal: waiting for your next message",
   ].join("\n")
 }
