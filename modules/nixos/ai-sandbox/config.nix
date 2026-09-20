@@ -198,9 +198,10 @@ let
       "";
 
   # Enables native OpenCode background subagents on the interactive server so
-  # the parallel orchestrator can dispatch task(background:true) lanes. Harmless
-  # to existing flows: no agent uses background tasks unless its prompt does.
+  # the parallel orchestrator can dispatch task(background:true) lanes. The
+  # automation server always enables them for unattended parallel work.
   bgSubagentsEnv = lib.optionalString backgroundSubagents "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true ";
+  automationBgSubagentsEnv = "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true ";
 
 in
 {
@@ -220,7 +221,7 @@ in
     mkdir -p ~/workspace
     cd ~/workspace
     ${proxyPrefix}${bgSubagentsEnv}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
-    ${proxyPrefix}${automationEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
+    ${proxyPrefix}${automationEnv}${automationBgSubagentsEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (
         name: port:
