@@ -1,0 +1,33 @@
+diff --git a/packages/opencode/src/session/prompt.ts b/packages/opencode/src/session/prompt.ts
+index 0f85d44..2d0b52c 100644
+--- a/packages/opencode/src/session/prompt.ts
++++ b/packages/opencode/src/session/prompt.ts
+@@ -1008,6 +1008,27 @@ const layer = Layer.effect(
+         },
+         { message: info, parts: resolvedParts },
+       )
++
++      // A plugin may override the model selected for this message. Mirror the
++      // final model into session metadata so the UI and subsequent model
++      // resolution report the provider request that is actually being made.
++      if (
++        current.agent !== info.agent ||
++        current.model?.providerID !== info.model.providerID ||
++        current.model?.id !== info.model.modelID ||
++        (current.model?.variant === "default" ? undefined : current.model?.variant) !== info.model.variant
++      ) {
++        yield* sessions.setAgentModel({
++          sessionID: input.sessionID,
++          agent: info.agent,
++          model: {
++            id: info.model.modelID,
++            providerID: info.model.providerID,
++            variant: info.model.variant ?? "default",
++          },
++          time: info.time.created,
++        })
++      }
+ 
+       const parts = yield* Effect.forEach(resolvedParts, (part) =>
+         part.type === "file" && part.mime.startsWith("image/")
+           ? image.normalize(part).pipe(

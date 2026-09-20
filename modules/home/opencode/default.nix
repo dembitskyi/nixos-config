@@ -66,11 +66,11 @@ let
   };
 
   # /subagents controls only the active root session and its child sessions.
-  # The TUI writes policy into XDG_RUNTIME_DIR; the server plugin enforces it
-  # at task dispatch and model resolution time. State therefore vanishes on
-  # logout/reboot and is never used as a default for a new session.
-  sessionControlsTui = ./plugins/session-controls/tui.ts;
-  # Keep server plugins behind a directory that the shell wrapper masks.
+  # The TUI writes policy into the shared OpenCode data directory; the server
+  # plugin enforces it at task dispatch and model resolution time. Policy files
+  # are keyed by root session and never become defaults for a new session.
+  sessionControlsPlugin = ./plugins/session-controls;
+  # Keep file-installed server plugins behind a directory that the shell wrapper masks.
   serverPluginDir = "opencode/server-plugin";
   serverPluginPath = "${config.xdg.configHome}/${serverPluginDir}";
 
@@ -552,10 +552,6 @@ in
         source = ./plugins/rtk.ts;
         force = true;
       };
-      "${serverPluginDir}/zz-session-controls.ts" = {
-        source = ./plugins/session-controls/server.ts;
-        force = true;
-      };
       "opencode/tool/session-id.ts" = {
         source = ./tools/session-id.ts;
       };
@@ -609,7 +605,7 @@ in
         # does), so TUI plugin entrypoints are listed here explicitly.
         plugin = [
           "${skillPlugin}"
-          "${sessionControlsTui}"
+          "${sessionControlsPlugin}/tui.ts"
         ]
         ++ lib.optional config.mine.home.opencode.autopilot.enable "${autopilotPlugin}/tui.tsx"
         ++ lib.optional (parallelCfg.enable && parallelCfg.presets != { }) "${presetPlugin}";
@@ -622,7 +618,7 @@ in
         ++ lib.optional parallelCfg.enable "${serverPluginPath}/orchestrator.ts"
         ++ lib.optional config.mine.home.opencode.autopilot.enable "${autopilotPlugin}/server.ts"
         # Session policy must run after plugins that select or observe models.
-        ++ [ "${serverPluginPath}/zz-session-controls.ts" ];
+        ++ [ "${sessionControlsPlugin}/server.ts" ];
         share = "disabled";
         autoupdate = false;
         model = config.mine.home.opencode.defaultModel;

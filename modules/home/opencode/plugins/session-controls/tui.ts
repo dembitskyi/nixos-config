@@ -5,10 +5,12 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui";
+
+import { createLog } from "./log";
 
 interface ModelRef {
 	readonly providerID: string;
@@ -36,9 +38,10 @@ interface ModelChoice {
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 
 function stateDir(): string {
+	const data = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
 	return (
 		process.env.OPENCODE_SESSION_POLICY_DIR ??
-		join(process.env.XDG_RUNTIME_DIR ?? tmpdir(), "opencode-session-policy")
+		join(data, "opencode", "session-policy")
 	);
 }
 
@@ -100,10 +103,18 @@ function defaultPolicy(policy: SessionPolicy): boolean {
 	);
 }
 
-function writePolicy(policy: SessionPolicy): void {
+function writePolicy(
+	policy: SessionPolicy,
+	reason: string,
+	log = createLog("tui"),
+): void {
 	const target = statePath(policy.rootSessionID);
 	if (defaultPolicy(policy)) {
 		rmSync(target, { force: true });
+		log.info("policy.removed", {
+			rootSessionID: policy.rootSessionID,
+			reason,
+		});
 		return;
 	}
 	const dir = stateDir();
@@ -115,6 +126,14 @@ function writePolicy(policy: SessionPolicy): void {
 		{ mode: 0o600 },
 	);
 	renameSync(tmp, target);
+	log.info("policy.updated", {
+		rootSessionID: policy.rootSessionID,
+		reason,
+		path: target,
+		delegation: policy.delegation,
+		agentAccess: policy.agentAccess,
+		modelOverrides: policy.modelOverrides,
+	});
 }
 
 function agentNames(api: TuiPluginApi): string[] {
@@ -212,10 +231,13 @@ function chooseModel(api: TuiPluginApi, root: string, agent: string): void {
 		return;
 	}
 	const save = (model: ModelRef) => {
-		writePolicy({
-			...readPolicy(root),
-			modelOverrides: { ...readPolicy(root).modelOverrides, [agent]: model },
-		});
+		writePolicy(
+			{
+				...readPolicy(root),
+				modelOverrides: { ...readPolicy(root).modelOverrides, [agent]: model },
+			},
+			"model-override",
+		);
 		api.ui.dialog.clear();
 		api.ui.toast({
 			variant: "success",
@@ -330,7 +352,7 @@ function chooseAgentAccess(
 				const agentAccess = { ...policy.agentAccess };
 				if (option.value === "default") delete agentAccess[agent];
 				else agentAccess[agent] = option.value as "allow" | "deny";
-				writePolicy({ ...policy, agentAccess });
+				writePolicy({ ...policy, agentAccess }, "agent-access");
 				api.ui.dialog.clear();
 				api.ui.toast({
 					variant: "success",
@@ -369,10 +391,13 @@ function chooseGlobalAccess(api: TuiPluginApi, root: string): void {
 				},
 			],
 			onSelect(option) {
-				writePolicy({
-					...readPolicy(root),
-					delegation: option.value as SessionPolicy["delegation"],
-				});
+				writePolicy(
+					{
+						...readPolicy(root),
+						delegation: option.value as SessionPolicy["delegation"],
+					},
+					"delegation",
+				);
 				api.ui.dialog.clear();
 				api.ui.toast({
 					variant: "success",
@@ -405,7 +430,7 @@ function clearModelOverride(api: TuiPluginApi, root: string): void {
 				const current = readPolicy(root);
 				const modelOverrides = { ...current.modelOverrides };
 				delete modelOverrides[option.value];
-				writePolicy({ ...current, modelOverrides });
+				writePolicy({ ...current, modelOverrides }, "model-override-cleared");
 				api.ui.dialog.clear();
 				api.ui.toast({
 					variant: "success",
@@ -457,7 +482,7 @@ function showMenu(api: TuiPluginApi, root: string): void {
 				if (option.value === "clear-model")
 					return clearModelOverride(api, root);
 				if (option.value === "reset") {
-					writePolicy(emptyPolicy(root));
+					writePolicy(emptyPolicy(root), "reset");
 					api.ui.dialog.clear();
 					api.ui.toast({
 						variant: "success",
@@ -470,12 +495,22 @@ function showMenu(api: TuiPluginApi, root: string): void {
 }
 
 const tui: TuiPlugin = async (api) => {
+	const log = createLog("tui");
+	log.info("startup.ready", {
+		pid: process.pid,
+		directory: api.state.path.directory,
+		policyDir: stateDir(),
+	});
 	api.event.on("session.deleted", (event) => {
 		if (
 			!event.properties.info.parentID &&
 			SAFE_ID.test(event.properties.info.id)
 		) {
 			rmSync(statePath(event.properties.info.id), { force: true });
+			log.info("policy.removed", {
+				rootSessionID: event.properties.info.id,
+				reason: "session-deleted",
+			});
 		}
 	});
 
@@ -497,6 +532,7 @@ const tui: TuiPlugin = async (api) => {
 						});
 						return;
 					}
+					log.debug("menu.open", { rootSessionID: root });
 					showMenu(api, root);
 				},
 			},

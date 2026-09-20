@@ -31,6 +31,9 @@ let
     # default. Falls back to the launch variant only for legacy sessions with no
     # stored model. Does not change the core prompt-admission path.
     ./opencode/05-task-preserve-model.patch
+    # chat.message plugins may override the selected model. Persist that final
+    # value so child-session metadata and the TUI match the actual provider call.
+    ./opencode/06-chat-hook-session-model.patch
   ];
 in
 if !enablePatches then

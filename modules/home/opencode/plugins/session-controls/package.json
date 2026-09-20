@@ -11,7 +11,8 @@
 	"exports": {
 		".": "./server.ts",
 		"./server": "./server.ts",
-		"./tui": "./tui.ts"
+		"./tui": "./tui.ts",
+		"./log": "./log.ts"
 	},
 	"devDependencies": {
 		"@opencode-ai/plugin": "1.18.31",

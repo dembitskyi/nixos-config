@@ -4,11 +4,13 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { logPath } from "./log";
 import sessionControls from "./server";
 import sessionControlsTui from "./tui";
 
 afterEach(() => {
 	delete process.env.OPENCODE_SESSION_POLICY_DIR;
+	delete process.env.OPENCODE_SESSION_CONTROLS_LOG_DIR;
 });
 
 function policyDir(): string {
@@ -185,6 +187,9 @@ describe("session controls server", () => {
 
 	test("applies a model and variant override to child messages", async () => {
 		const dir = policyDir();
+		process.env.OPENCODE_SESSION_CONTROLS_LOG_DIR = mkdtempSync(
+			join(tmpdir(), "session-controls-log-test-"),
+		);
 		writePolicy(dir, "root", {
 			modelOverrides: {
 				vision: {
@@ -219,6 +224,23 @@ describe("session controls server", () => {
 			modelID: "vision-model",
 			variant: "high",
 		});
+		const entries = readFileSync(logPath(), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(entries).toContainEqual(
+			expect.objectContaining({
+				event: "model.override-applied",
+				sessionID: "child",
+				rootSessionID: "root",
+				agent: "vision",
+				overrideModel: {
+					providerID: "provider",
+					modelID: "vision-model",
+					variant: "high",
+				},
+			}),
+		);
 	});
 
 	test("inherits model overrides through multiple child generations", async () => {
@@ -310,6 +332,7 @@ function tuiApi(rootSessionID: string) {
 			current: { name: "session", params: { sessionID: rootSessionID } },
 		},
 		state: {
+			path: { directory: "/workspace" },
 			config: {
 				agent: {
 					build: { mode: "primary" },
@@ -389,11 +412,28 @@ test("loads session controls after model-routing server plugins", () => {
 	const pluginList = source.indexOf("plugin = [", settings);
 	const end = source.indexOf('share = "disabled";', pluginList);
 	const block = source.slice(pluginList, end);
-	const sessionControls = block.indexOf("zz-session-controls.ts");
+	const sessionControls = block.indexOf("sessionControlsPlugin}/server.ts");
 
 	expect(settings).toBeGreaterThanOrEqual(0);
 	expect(pluginList).toBeGreaterThan(settings);
 	expect(end).toBeGreaterThan(pluginList);
 	expect(sessionControls).toBeGreaterThan(block.indexOf("orchestrator.ts"));
 	expect(sessionControls).toBeGreaterThan(block.indexOf("autopilotPlugin"));
+});
+
+test("persists plugin-selected models after the chat.message hook", () => {
+	const patch = readFileSync(
+		new URL(
+			"../../../../../overlays/custom-packages/opencode/06-chat-hook-session-model.patch",
+			import.meta.url,
+		),
+		"utf8",
+	);
+	const triggerContext = patch.indexOf(
+		"{ message: info, parts: resolvedParts }",
+	);
+	const persistence = patch.indexOf("sessions.setAgentModel", triggerContext);
+
+	expect(triggerContext).toBeGreaterThanOrEqual(0);
+	expect(persistence).toBeGreaterThan(triggerContext);
 });
