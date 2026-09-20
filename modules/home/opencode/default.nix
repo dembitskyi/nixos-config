@@ -65,6 +65,15 @@ let
     presetNamesFile = "${presetNamesFile}";
   };
 
+  # /subagents controls only the active root session and its child sessions.
+  # The TUI writes policy into XDG_RUNTIME_DIR; the server plugin enforces it
+  # at task dispatch and model resolution time. State therefore vanishes on
+  # logout/reboot and is never used as a default for a new session.
+  sessionControlsTui = ./plugins/session-controls/tui.ts;
+  # Keep server plugins behind a directory that the shell wrapper masks.
+  serverPluginDir = "opencode/server-plugin";
+  serverPluginPath = "${config.xdg.configHome}/${serverPluginDir}";
+
   searchProvider = config.mine.home.opencode.searchProvider;
 
   # Same file-path rationale as presetNamesFile above.
@@ -535,11 +544,17 @@ in
     ];
 
     xdg.configFile = {
-      "opencode/plugin/env-protection.js" = {
+      "${serverPluginDir}/env-protection.js" = {
         source = ./plugins/env-protection.js;
+        force = true;
       };
-      "opencode/plugin/rtk.ts" = {
+      "${serverPluginDir}/rtk.ts" = {
         source = ./plugins/rtk.ts;
+        force = true;
+      };
+      "${serverPluginDir}/zz-session-controls.ts" = {
+        source = ./plugins/session-controls/server.ts;
+        force = true;
       };
       "opencode/tool/session-id.ts" = {
         source = ./tools/session-id.ts;
@@ -563,8 +578,9 @@ in
       # worker-session reuse + per-turn scheduler reminder, cross-model failover,
       # and task() fix hints. Logs to ~/.local/share/opencode/log/orchestrator.log.
       # The fallback chain is baked as a comma-separated list (empty = disabled).
-      "opencode/plugin/orchestrator.ts" = {
+      "${serverPluginDir}/orchestrator.ts" = {
         source = orchestratorPlugin;
+        force = true;
       };
     };
 
@@ -593,12 +609,20 @@ in
         # does), so TUI plugin entrypoints are listed here explicitly.
         plugin = [
           "${skillPlugin}"
+          "${sessionControlsTui}"
         ]
         ++ lib.optional config.mine.home.opencode.autopilot.enable "${autopilotPlugin}/tui.tsx"
         ++ lib.optional (parallelCfg.enable && parallelCfg.presets != { }) "${presetPlugin}";
       };
       settings = {
-        plugin = lib.optional config.mine.home.opencode.autopilot.enable "${autopilotPlugin}/server.ts";
+        plugin = [
+          "${serverPluginPath}/env-protection.js"
+        ]
+        ++ [ "${serverPluginPath}/rtk.ts" ]
+        ++ lib.optional parallelCfg.enable "${serverPluginPath}/orchestrator.ts"
+        ++ lib.optional config.mine.home.opencode.autopilot.enable "${autopilotPlugin}/server.ts"
+        # Session policy must run after plugins that select or observe models.
+        ++ [ "${serverPluginPath}/zz-session-controls.ts" ];
         share = "disabled";
         autoupdate = false;
         model = config.mine.home.opencode.defaultModel;
