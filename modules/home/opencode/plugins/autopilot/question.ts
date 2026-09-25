@@ -68,9 +68,13 @@ export function validateAnswers(request: QuestionRequest, value: unknown): strin
   return answers
 }
 
-export function settled(error: unknown): boolean {
+export function notFound(error: unknown): boolean {
   if (!error || typeof error !== "object") return false
-  if ("_tag" in error && error._tag === "QuestionNotFoundError") return true
   if ("name" in error && error.name === "NotFoundError") return true
   return "status" in error && error.status === 404
+}
+
+export function settled(error: unknown): boolean {
+  if (error && typeof error === "object" && "_tag" in error && error._tag === "QuestionNotFoundError") return true
+  return notFound(error)
 }

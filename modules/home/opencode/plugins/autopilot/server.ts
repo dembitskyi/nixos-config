@@ -9,6 +9,7 @@ import {
   errorName,
   errorText,
   interruptedError,
+  notFound,
   recommendedAnswer,
   recommendedAnswers,
   settled,
@@ -65,7 +66,10 @@ type VerifierSubmitArgs = {
 type ChooserOutput = { answers?: unknown; reason?: unknown }
 
 interface SessionClient {
-  get(options: { path: { id: string }; query?: { directory?: string } }): Promise<{ data?: RuntimeSession }>
+  get(options: {
+    path: { id: string }
+    query?: { directory?: string }
+  }): Promise<{ data?: RuntimeSession; error?: unknown }>
   create(options?: {
     query?: { directory?: string }
     body?: { parentID?: string; title?: string }
@@ -175,6 +179,13 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
   const verifierModels = new Map<string, ModelRef>()
   const answeringQuestions = new Set<string>()
   const questionQueues = new Map<string, Promise<void>>()
+  // Worker sessions this server instance has resolved in its own database, and
+  // those a 404 proved belong elsewhere. Several opencode servers (stable on
+  // 4096, automation on 4097) run from the same directory with separate
+  // databases but share ~/.local/share/opencode/autopilot.json, so a goal in
+  // that file is not necessarily ours to supervise.
+  const ownedSessions = new Set<string>()
+  const foreignSessions = new Set<string>()
   let disposed = false
 
   const initial = readState()
@@ -185,24 +196,41 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     pendingTransport: Boolean(client._client),
     runtime: AUTOPILOT_RUNTIME,
   })
-  let recovered = 0
-  for (const goal of Object.values(initial.goals)) {
-    if (goal.directory !== input.directory || !interrupted(goal.phase)) continue
-    patchGoal(goal.workerSessionID, {
-      phase: "paused",
-      lastCheckpoint: "Autopilot restored this goal in paused mode after the server plugin restarted.",
-    })
-    notifyTuiState("goal.recovered-paused", goal.workerSessionID)
-    recovered += 1
-    log.warn("goal.recovered-paused", {
-      workerSessionID: goal.workerSessionID,
-      phase: goal.phase,
-    })
-  }
+  // Goals that were mid-flight when this plugin instance last died. They are
+  // only paused once the deferred bootstrap confirms this server owns the
+  // session: the state file is shared with the sibling opencode instance, and
+  // pausing its live goals from here would kill them. Resolving ownership needs
+  // the transport, which is not guaranteed to be up during plugin construction.
+  const interruptedGoals = Object.values(initial.goals)
+    .filter((goal) => goal.directory === input.directory && interrupted(goal.phase))
+    .map((goal) => goal.workerSessionID)
   log.info("startup.recovery-complete", {
     directory: input.directory,
-    recovered,
+    candidates: interruptedGoals.length,
   })
+
+  async function recoverInterruptedGoals() {
+    let recovered = 0
+    for (const sessionID of interruptedGoals) {
+      const goal = readState().goals[sessionID]
+      if (!goal || !interrupted(goal.phase)) continue
+      if (!(await ownsSession(sessionID, goal.directory))) continue
+      patchGoal(sessionID, {
+        phase: "paused",
+        lastCheckpoint: "Autopilot restored this goal in paused mode after the server plugin restarted.",
+      })
+      notifyTuiState("goal.recovered-paused", sessionID)
+      recovered += 1
+      log.warn("goal.recovered-paused", {
+        workerSessionID: sessionID,
+        phase: goal.phase,
+      })
+    }
+    log.info("goal.recovery-applied", {
+      directory: input.directory,
+      recovered,
+    })
+  }
 
   function compatibleGoal(goal: Goal): boolean {
     if (runtimeMatches(goal.runtime)) return true
@@ -323,9 +351,35 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     }
   }
 
+  // Whether the worker session backing a goal lives in this server's database.
+  // The sweep below cannot tell "session is idle" from "session is not mine"
+  // via session.status alone — both yield no status entry — so ownership has to
+  // be resolved explicitly before a goal is supervised or paused.
+  async function ownsSession(sessionID: string, directory: string): Promise<boolean> {
+    if (ownedSessions.has(sessionID)) return true
+    const { session, missing } = await lookupSession(sessionID, directory)
+    if (session) {
+      ownedSessions.add(sessionID)
+      foreignSessions.delete(sessionID)
+      return true
+    }
+    // Only a genuine 404 proves the session belongs to another instance. A
+    // transport failure means "unknown", so leave the goal untouched and retry
+    // on the next sweep rather than latching it away from its owner.
+    if (missing && !foreignSessions.has(sessionID)) {
+      foreignSessions.add(sessionID)
+      log.info("goal.foreign-instance", {
+        workerSessionID: sessionID,
+        directory,
+      })
+    }
+    return false
+  }
+
   async function onIdle(sessionID: string) {
     const observed = readState().goals[sessionID]
     if (!observed) return
+    if (!(await ownsSession(sessionID, observed.directory))) return
     log.debug("worker.idle", {
       workerSessionID: sessionID,
       phase: observed.phase,
@@ -655,8 +709,19 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       workerSessionID: goal.workerSessionID,
       round: goal.round + 1,
     })
-    const worker = await sessionInfo(goal.workerSessionID, goal.directory)
-    if (!worker) return pause(goal, "blocked", "Worker session no longer exists.")
+    const { session: worker, missing } = await lookupSession(goal.workerSessionID, goal.directory)
+    if (!worker) {
+      // A failed lookup is not proof the session is gone; only a 404 is. Keep
+      // the goal running and let the next sweep retry.
+      if (!missing) {
+        log.warn("verification.session-unavailable", {
+          workerSessionID: goal.workerSessionID,
+        })
+        return
+      }
+      ownedSessions.delete(goal.workerSessionID)
+      return pause(goal, "blocked", "Worker session no longer exists.")
+    }
     if ((agents.get(goal.workerSessionID) ?? goal.workerAgent ?? "build") !== "build") {
       return pause(goal, "blocked", "Autopilot goal completion only drives the build agent.")
     }
@@ -975,11 +1040,17 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     })
   }
 
-  async function sessionInfo(sessionID: string, directory: string) {
-    return client.session
+  // Resolving a session separates "deleted" (404) from "lookup failed", which
+  // the callers below must not conflate: only the former may block a goal.
+  async function lookupSession(sessionID: string, directory: string) {
+    const result = await client.session
       .get({ path: { id: sessionID }, query: { directory } })
-      .then((result) => result.data)
-      .catch(() => undefined)
+      .catch((error: unknown) => ({ data: undefined, error }))
+    return { session: result.data, missing: !result.data && notFound(result.error) }
+  }
+
+  async function sessionInfo(sessionID: string, directory: string) {
+    return (await lookupSession(sessionID, directory)).session
   }
 
   async function sessionMessages(sessionID: string, directory: string) {
@@ -1049,7 +1120,8 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
 
   async function sweepIdleGoals() {
     const goals = Object.values(readState().goals).filter(
-      (goal) => goal.directory === input.directory && active(goal.phase),
+      (goal) =>
+        goal.directory === input.directory && active(goal.phase) && !foreignSessions.has(goal.workerSessionID),
     )
     if (goals.length === 0) return
     const statuses = await client.session.status({ query: { directory: input.directory } }).catch((error) => {
@@ -1075,12 +1147,23 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     )
   }, 2_000)
   const bootstrapTimer = setTimeout(() => {
-    void hydratePendingRequests().catch((error) =>
-      log.error("pending.bootstrap-failed", {
-        directory: input.directory,
-        error: errorText(error),
-      }),
-    )
+    // Recovery runs first so an interrupted goal is paused before the pending
+    // question backlog can drive it further.
+    void recoverInterruptedGoals()
+      .catch((error) =>
+        log.error("goal.recovery-failed", {
+          directory: input.directory,
+          error: errorText(error),
+        }),
+      )
+      .then(() =>
+        hydratePendingRequests().catch((error) =>
+          log.error("pending.bootstrap-failed", {
+            directory: input.directory,
+            error: errorText(error),
+          }),
+        ),
+      )
   }, 0)
   log.info("pending.bootstrap-scheduled", { directory: input.directory })
   log.info("startup.ready", {
@@ -1291,6 +1374,8 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
       }
       if (data.type === "session.deleted") {
         const id = data.properties.info.id
+        ownedSessions.delete(id)
+        foreignSessions.delete(id)
         const goal = readState().goals[id]
         if (goal) {
           removeGoal(id)

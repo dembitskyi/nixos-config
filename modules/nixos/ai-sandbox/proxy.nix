@@ -59,7 +59,7 @@ in
 
     retentionHours = lib.mkOption {
       type = lib.types.ints.positive;
-      default = 48;
+      default = 12;
       description = "Hours to retain complete mitmproxy flows in the host-only SQLite archive.";
     };
 
@@ -67,6 +67,39 @@ in
       type = lib.types.ints.positive;
       default = 300;
       description = "Seconds between removal of expired flows from the SQLite archive.";
+    };
+
+    liveFlowLimit = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 500;
+      description = ''
+        Completed flows kept in mitmweb's in-memory view. mitmweb never evicts
+        flows on its own, so an always-on proxy grows without bound; the flow
+        store addon drops everything past this many newest flows. Only affects
+        the live UI — the SQLite archive still holds `retentionHours` of
+        complete flows.
+      '';
+    };
+
+    liveFlowBytes = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 256 * 1024 * 1024;
+      description = ''
+        Total body bytes kept in mitmweb's in-memory view, enforced alongside
+        `liveFlowLimit`. A byte budget is what actually bounds memory: a few
+        hundred large LLM payloads blow past any sensible flow count.
+      '';
+    };
+
+    writeQueueDepth = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 256;
+      description = ''
+        Flows buffered for the archive writer thread. SQLite writes never run
+        on mitmproxy's event loop, so a slow disk cannot stall proxied traffic;
+        when the queue fills, the oldest pending flow is dropped rather than
+        growing memory.
+      '';
     };
   };
 
@@ -100,6 +133,9 @@ in
             "PROXY_FLOW_DATABASE=${proxyFlowDatabase}"
             "PROXY_FLOW_RETENTION_SECONDS=${toString (cfg.retentionHours * 60 * 60)}"
             "PROXY_FLOW_PRUNE_INTERVAL_SECONDS=${toString cfg.pruneIntervalSeconds}"
+            "PROXY_FLOW_LIVE_LIMIT=${toString cfg.liveFlowLimit}"
+            "PROXY_FLOW_LIVE_BYTES=${toString cfg.liveFlowBytes}"
+            "PROXY_FLOW_QUEUE_DEPTH=${toString cfg.writeQueueDepth}"
           ];
           RuntimeDirectory = "ai-sandbox-proxy";
           StateDirectory = "ai-sandbox-proxy";
@@ -113,6 +149,9 @@ in
           ExecStart = lib.concatStringsSep " " [
             mitmweb
             "--set confdir=${confDir}"
+            # Streamed bodies still reach the client, but are not recorded
+            # unless this is set, so the archive would miss every SSE flow.
+            "--set store_streamed_bodies=true"
             "--mode regular"
             "--listen-port ${proxyPort}"
             "--web-port ${proxyWebPort}"

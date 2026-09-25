@@ -41,6 +41,21 @@ function goal(patch: Partial<Goal> = {}): Goal {
   }
 }
 
+// A server instance whose database does not hold the goal's worker session,
+// i.e. the sibling opencode instance sharing the same autopilot state file.
+function foreignClient(): any {
+  return {
+    _client: { get: async () => ({ data: [] }) },
+    tui: { publish: async () => ({}) },
+    session: {
+      get: async () => ({
+        error: { name: "NotFoundError", data: { message: "Session not found: ses_worker" } },
+      }),
+      status: async () => ({ data: {} }),
+    },
+  }
+}
+
 async function setup(
   verdict: "complete" | "adjust" | ((input: any, hooks: any) => Promise<any>) = "adjust",
   initialize = true,
@@ -692,8 +707,80 @@ describe("autopilot server", () => {
     putGoal(goal({ phase: "verifying" }))
     const harness = await setup("adjust", false)
     const hooks = await harness.start()
+    // Recovery is deferred so ownership can be confirmed over the transport.
+    await Bun.sleep(5)
     expect(readState().goals.ses_worker.phase).toBe("paused")
     expect(readState().goals.ses_worker.lastCheckpoint).toContain("server plugin restarted")
+    await hooks.dispose()
+  })
+
+  test("does not pause another instance's goal during restart recovery", async () => {
+    scratch()
+    putGoal(goal({ phase: "verifying" }))
+    const hooks = await (server.server as any)({
+      client: foreignClient(),
+      directory: "/workspace",
+    })
+    await Bun.sleep(5)
+
+    expect(readState().goals.ses_worker.phase).toBe("verifying")
+    await hooks.dispose()
+  })
+
+  test("ignores goals whose worker session belongs to another opencode instance", async () => {
+    scratch()
+    const prompts: any[] = []
+    const client = foreignClient()
+    client.session.prompt = async (input: any) => {
+      prompts.push(input)
+      return {}
+    }
+    const hooks = await (server.server as any)({ client, directory: "/workspace" })
+    putGoal(goal())
+
+    await hooks.event({
+      event: { type: "session.idle", properties: { sessionID: "ses_worker" } },
+    })
+
+    expect(readState().goals.ses_worker.phase).toBe("working")
+    expect(prompts).toHaveLength(0)
+    await hooks.dispose()
+  })
+
+  test("keeps a goal running when the worker session lookup fails transiently", async () => {
+    scratch()
+    let attempts = 0
+    const client: any = {
+      _client: { get: async () => ({ data: [] }) },
+      tui: { publish: async () => ({}) },
+      session: {
+        // The first lookup establishes ownership; the next one fails hard.
+        get: async () => {
+          attempts += 1
+          if (attempts === 1) {
+            return {
+              data: {
+                id: "ses_worker",
+                directory: "/workspace",
+                title: "Worker",
+                agent: "build",
+              },
+            }
+          }
+          throw new Error("connection reset")
+        },
+        status: async () => ({ data: {} }),
+      },
+    }
+    const hooks = await (server.server as any)({ client, directory: "/workspace" })
+    putGoal(goal())
+
+    await hooks.event({
+      event: { type: "session.idle", properties: { sessionID: "ses_worker" } },
+    })
+
+    expect(attempts).toBeGreaterThan(1)
+    expect(readState().goals.ses_worker.phase).toBe("working")
     await hooks.dispose()
   })
 
