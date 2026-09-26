@@ -28,7 +28,8 @@ function goal(patch: Partial<Goal> = {}): Goal {
     mode: "drive",
     questionPolicy: "hybrid",
     phase: "working",
-    startedAt: Date.now(),
+    // Armed with the fixture's goal message (t=1), before the worker replied (t=2).
+    startedAt: 1,
     updatedAt: Date.now(),
     round: 0,
     continuations: 0,
@@ -38,6 +39,26 @@ function goal(patch: Partial<Goal> = {}): Goal {
     workerAgent: "build",
     runtime: AUTOPILOT_RUNTIME,
     ...patch,
+  }
+}
+
+// The chat.message output as opencode builds it: the created user message and
+// its parts, which already carry their persisted identities.
+function goalMessage(
+  text: string,
+  options: { partID?: string; message?: Record<string, unknown> } = {},
+): { message: any; parts: any[] } {
+  const { partID = "prt_0dfb0338c001AAAAAAAAAAAAAA", message = {} } = options
+  return {
+    message: {
+      id: "msg_goal",
+      sessionID: "ses_worker",
+      role: "user",
+      time: { created: 1 },
+      agent: "build",
+      ...message,
+    },
+    parts: [{ id: partID, sessionID: "ses_worker", messageID: "msg_goal", type: "text", text }],
   }
 }
 
@@ -263,15 +284,7 @@ describe("autopilot server", () => {
       }),
     )
     const { hooks } = await setup()
-    const output = {
-      message: { agent: "build" },
-      parts: [
-        {
-          type: "text",
-          text: "Implement it.\n\nDone when:\n- Tests pass\n- Typecheck passes",
-        },
-      ],
-    }
+    const output = goalMessage("Implement it.\n\nDone when:\n- Tests pass\n- Typecheck passes")
 
     await hooks["chat.message"](
       {
@@ -289,11 +302,21 @@ describe("autopilot server", () => {
       criteria: ["Tests pass", "Typecheck passes"],
       reviewModel: { providerID: "provider", modelID: "model", variant: "high" },
     })
+    expect(output.parts).toHaveLength(2)
     const contract = output.parts.at(-1)
-    expect(contract?.type).toBe("text")
-    if (contract?.type !== "text") throw new Error("Autopilot did not append its goal contract")
+    // opencode persists hook-added parts verbatim and aborts the whole prompt
+    // when one lacks its identity.
+    expect(contract).toMatchObject({
+      id: expect.stringMatching(/^prt_[0-9a-f]{12}[0-9A-Za-z]{14}$/),
+      sessionID: "ses_worker",
+      messageID: "msg_goal",
+      type: "text",
+      synthetic: true,
+      metadata: { autopilot: true },
+    })
     expect(contract.text).toContain("Autopilot checkpoints: Unlimited")
     expect(contract.text).toContain("Review model: provider/model · high")
+    expect(contract.text).toContain("goal message above")
     const visible = { text: "Starting implementation." }
     await hooks["experimental.text.complete"](
       {
@@ -364,13 +387,9 @@ describe("autopilot server", () => {
       }),
     )
     const { hooks, calls } = await setup()
-    const output = {
-      message: {
-        agent: "build",
-        model: { providerID: "provider", modelID: "model", variant: "high" },
-      },
-      parts: [{ type: "text", text: "Implement the selected-model goal" }],
-    }
+    const output = goalMessage("Implement the selected-model goal", {
+      message: { model: { providerID: "provider", modelID: "model", variant: "high" } },
+    })
 
     await hooks["chat.message"](
       {
@@ -392,7 +411,61 @@ describe("autopilot server", () => {
       phase: "working",
       reviewModel: selected,
     })
-    expect(readState().goals.ses_worker.verifier).toBeUndefined()
+    expect(readState().goals.ses_worker.verifierSessionID).toBeUndefined()
+    await hooks.dispose()
+  })
+
+  test("orders the goal contract after the user's parts even within the same millisecond", async () => {
+    scratch()
+    putGoal(goal({ text: undefined, criteria: [], phase: "waiting-goal", startedAt: undefined, revision: 0 }))
+    const { hooks } = await setup()
+    // A part id whose time field is ahead of the clock stands in for opencode
+    // having already used this millisecond's counter values.
+    const output = goalMessage("Implement it.", { partID: "prt_fffffffff000AAAAAAAAAAAAAA" })
+
+    await hooks["chat.message"]({ sessionID: "ses_worker", messageID: "msg_goal", agent: "build" }, output)
+
+    const [goalPart, contract] = output.parts
+    expect(contract.id).toStartWith("prt_fffffffff001")
+    expect(contract.id > goalPart.id).toBe(true)
+    await hooks.dispose()
+  })
+
+  test("arms the goal without appending a part when opencode supplies no message id", async () => {
+    const root = scratch()
+    putGoal(goal({ text: undefined, criteria: [], phase: "waiting-goal", startedAt: undefined, revision: 0 }))
+    const { hooks } = await setup()
+    const output = goalMessage("Implement it.", { message: { id: undefined } })
+
+    await hooks["chat.message"]({ sessionID: "ses_worker", agent: "build" }, output)
+
+    expect(output.parts).toHaveLength(1)
+    expect(readState().goals.ses_worker.phase).toBe("working")
+    const events = readFileSync(join(root, "log", "autopilot.log"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).event)
+    expect(events).toContain("chat.part-skipped")
+    await hooks.dispose()
+  })
+
+  test("attaches a complete notice when a goal is started from a non-build agent", async () => {
+    scratch()
+    putGoal(goal({ text: undefined, criteria: [], phase: "waiting-goal", startedAt: undefined, revision: 0 }))
+    const { hooks } = await setup()
+    const output = goalMessage("Plan it.", { message: { agent: "plan" } })
+
+    await hooks["chat.message"]({ sessionID: "ses_worker", messageID: "msg_goal", agent: "plan" }, output)
+
+    expect(readState().goals.ses_worker.phase).toBe("blocked")
+    expect(output.parts.at(-1)).toMatchObject({
+      id: expect.stringMatching(/^prt_[0-9a-f]{12}[0-9A-Za-z]{14}$/),
+      sessionID: "ses_worker",
+      messageID: "msg_goal",
+      type: "text",
+      synthetic: true,
+      text: expect.stringContaining("requires the build agent"),
+    })
     await hooks.dispose()
   })
 
@@ -678,6 +751,60 @@ describe("autopilot server", () => {
     })
     expect(readState().goals.ses_worker.lastCheckpoint).toContain("APIError: Provider quota exhausted")
     expect(readState().goals.ses_worker.lastCheckpoint).not.toContain("[object Object]")
+    await hooks.dispose()
+  })
+
+  test("waits for the worker to reply to a newly armed goal instead of verifying earlier work", async () => {
+    scratch()
+    const { hooks, calls } = await setup("adjust")
+    // The fixture's latest worker reply (t=2) predates this goal.
+    putGoal(goal({ startedAt: Date.now() }))
+
+    await hooks.event({
+      event: { type: "session.status", properties: { sessionID: "ses_worker", status: { type: "idle" } } },
+    })
+
+    expect(calls.create).toHaveLength(0)
+    expect(calls.prompt).toHaveLength(0)
+    expect(calls.promptAsync).toHaveLength(0)
+    expect(readState().goals.ses_worker).toMatchObject({ phase: "working", round: 0 })
+    await hooks.dispose()
+  })
+
+  test("does not blame an earlier interrupted turn on a newly armed goal", async () => {
+    scratch()
+    const { hooks, calls } = await setup("adjust", true, {}, [["Safe"]], {
+      name: "MessageAbortedError",
+      data: { message: "The operation was aborted." },
+    })
+    putGoal(goal({ startedAt: Date.now() }))
+
+    await hooks.event({
+      event: { type: "session.status", properties: { sessionID: "ses_worker", status: { type: "idle" } } },
+    })
+
+    expect(calls.promptAsync).toHaveLength(0)
+    expect(readState().goals.ses_worker.phase).toBe("working")
+    expect(readState().goals.ses_worker.recovery).toBeUndefined()
+    await hooks.dispose()
+  })
+
+  test("blocks with a clear reason when the worker never replies to the armed goal", async () => {
+    scratch()
+    const { hooks, calls } = await setup("adjust")
+    putGoal(goal({ startedAt: Date.now() - 31_000 }))
+
+    await hooks.event({
+      event: { type: "session.status", properties: { sessionID: "ses_worker", status: { type: "idle" } } },
+    })
+
+    expect(calls.create).toHaveLength(0)
+    expect(calls.prompt).toHaveLength(0)
+    expect(readState().goals.ses_worker).toMatchObject({
+      phase: "blocked",
+      recovery: { kind: "autopilot-error" },
+    })
+    expect(readState().goals.ses_worker.lastCheckpoint).toContain("did not reply within 30s of arming the goal")
     await hooks.dispose()
   })
 

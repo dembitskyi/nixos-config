@@ -57,7 +57,11 @@ def _settle(flow: http.HTTPFlow, message: http.Message | None, complete: bool) -
 
 
 def _recorded_bytes(flow: http.HTTPFlow) -> int:
-    return sum(len(m.raw_content or b"") for m in (flow.request, flow.response) if m is not None)
+    return sum(
+        len(m.raw_content or b"")
+        for m in (flow.request, flow.response)
+        if m is not None
+    )
 
 
 class FlowLimit:
@@ -95,7 +99,9 @@ class FlowLimit:
         self.total += size - self.sizes.get(flow.id, 0)
         self.sizes[flow.id] = size
         view = ctx.master.addons.get("view")
-        while len(self.sizes) > 1 and (self.total > MAX_TOTAL or len(self.sizes) > MAX_FLOWS):
+        while len(self.sizes) > 1 and (
+            self.total > MAX_TOTAL or len(self.sizes) > MAX_FLOWS
+        ):
             old_id, old_size = self.sizes.popitem(last=False)
             self.total -= old_size
             old = view.get_by_id(old_id) if view is not None else None

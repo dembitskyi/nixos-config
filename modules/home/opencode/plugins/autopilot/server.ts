@@ -1,7 +1,7 @@
 // Autopilot server: supervises build goals across normal provider stops.
 
-import { createHash } from "node:crypto"
-import type { Part, Todo } from "@opencode-ai/sdk"
+import { createHash, randomBytes } from "node:crypto"
+import type { Part, TextPart, Todo } from "@opencode-ai/sdk"
 import type { AssistantMessage, Event, QuestionRequest, UserMessage } from "@opencode-ai/sdk/v2"
 import type { Hooks, Plugin } from "@opencode-ai/plugin"
 import { createLog } from "./log"
@@ -64,6 +64,7 @@ type VerifierSubmitArgs = {
   instruction?: unknown
 }
 type ChooserOutput = { answers?: unknown; reason?: unknown }
+type ChatMessageOutput = Parameters<NonNullable<Hooks["chat.message"]>>[1]
 
 interface SessionClient {
   get(options: {
@@ -147,6 +148,12 @@ interface RuntimeClient {
 const active = (phase: Goal["phase"]) => ["working", "continuing"].includes(phase)
 const interrupted = (phase: Goal["phase"]) => ["working", "verifying", "continuing"].includes(phase)
 const automatingQuestions = (phase: Goal["phase"]) => active(phase) || phase === "verifying"
+
+// opencode starts the worker turn within milliseconds of arming the goal, so a
+// worker that still has not replied after this long never received the goal.
+const FIRST_TURN_GRACE_MS = 30_000
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const PART_ID_TIME_MASK = (1n << 48n) - 1n
 
 function addPending(pending: Map<string, Set<string>>, sessionID: string, requestID: string) {
   const requests = pending.get(sessionID) ?? new Set<string>()
@@ -730,9 +737,22 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     const lastAssistant = [...messages]
       .reverse()
       .find((message): message is AssistantWithParts => message.info.role === "assistant")
-    if (!lastAssistant) {
-      log.debug("verification.skip-no-assistant", {
+    // Until the worker replies to the armed goal, the newest assistant message
+    // belongs to earlier work; verifying it, or reporting its error, would judge
+    // the wrong turn. The session is only marked busy after chat.message arms the
+    // goal, so an idle worker is expected briefly and only blocks after a grace.
+    const armedAt = goal.startedAt
+    if (!lastAssistant || (armedAt !== undefined && lastAssistant.info.time.created < armedAt)) {
+      if (armedAt !== undefined && Date.now() - armedAt >= FIRST_TURN_GRACE_MS) {
+        return pause(
+          goal,
+          "blocked",
+          `The worker did not reply within ${FIRST_TURN_GRACE_MS / 1_000}s of arming the goal, so the goal message was likely rejected. Check the opencode server log, then continue or re-arm the goal.`,
+        )
+      }
+      log.debug("verification.waiting-first-turn", {
         workerSessionID: worker.id,
+        lastAssistantID: lastAssistant?.info.id,
       })
       return
     }
@@ -1040,6 +1060,33 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
     })
   }
 
+  // opencode assigns part identities before chat.message runs and then aborts
+  // the whole user prompt if any persisted part lacks one, so parts added from
+  // that hook must be complete. Dropping the part is safer than losing the
+  // user's message.
+  function appendSyntheticText(
+    sessionID: string,
+    output: ChatMessageOutput,
+    text: string,
+    metadata?: Record<string, unknown>,
+  ) {
+    const messageID = output.message.id
+    if (!messageID) {
+      log.error("chat.part-skipped", { sessionID, reason: "chat.message output has no message id" })
+      return
+    }
+    const part: TextPart = {
+      id: nextPartID(output.parts),
+      sessionID,
+      messageID,
+      type: "text",
+      text,
+      synthetic: true,
+      ...(metadata ? { metadata } : {}),
+    }
+    output.parts.push(part)
+  }
+
   // Resolving a session separates "deleted" (404) from "lookup failed", which
   // the callers below must not conflate: only the former may block a goal.
   async function lookupSession(sessionID: string, directory: string) {
@@ -1267,11 +1314,7 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
             phase: "blocked",
             lastCheckpoint: blocked,
           })
-          output.parts.push({
-            type: "text",
-            text: blocked,
-            synthetic: true,
-          } as unknown as Part)
+          appendSyntheticText(message.sessionID, output, blocked)
           log.warn("goal.rejected-agent", {
             workerSessionID: message.sessionID,
             agent: message.agent ?? output.message.agent,
@@ -1316,12 +1359,12 @@ export const AutopilotServer: Plugin = async (input): Promise<Hooks> => {
             : "unresolved",
           reviewVariant: armed.reviewModel?.variant,
         })
-        output.parts.push({
-          type: "text",
-          text: `${initialContract(armed)}\n\nUse the user's complete goal message below as the task specification.`,
-          synthetic: true,
-          metadata: { autopilot: true },
-        } as unknown as Part)
+        appendSyntheticText(
+          message.sessionID,
+          output,
+          `${initialContract(armed)}\n\nUse the user's complete goal message above as the task specification.`,
+          { autopilot: true },
+        )
         return
       }
 
@@ -1720,6 +1763,23 @@ function limitReason(goal: Goal): string | undefined {
   if (goal.maxMinutes !== undefined && goal.startedAt && Date.now() - goal.startedAt >= goal.maxMinutes * 60_000) {
     return `Maximum duration reached (${goal.maxMinutes} minutes).`
   }
+}
+
+// Mirrors opencode's ascending identifier: "prt_", 12 hex digits of
+// (milliseconds * 0x1000 + counter) modulo 2^48, then 14 base62 characters.
+// Parts are ordered by id, so the time field is also pushed past every
+// existing part; otherwise a same-millisecond id could sort before the user's
+// text.
+function nextPartID(parts: readonly Part[]): string {
+  let time = (BigInt(Date.now()) * 0x1000n + 1n) & PART_ID_TIME_MASK
+  for (const part of parts) {
+    const hex = /^prt_([0-9a-f]{12})/.exec(part.id ?? "")?.[1]
+    if (!hex) continue
+    const next = (BigInt(`0x${hex}`) + 1n) & PART_ID_TIME_MASK
+    if (next > time) time = next
+  }
+  const suffix = Array.from(randomBytes(14), (byte) => BASE62[byte % 62]).join("")
+  return `prt_${time.toString(16).padStart(12, "0")}${suffix}`
 }
 
 function short(text: string) {
