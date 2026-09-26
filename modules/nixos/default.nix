@@ -9,7 +9,6 @@
     ./sound
     ./ollama
     ./npm
-    ./open-webui
     ./nix.nix
     ./samba
     ./trilium

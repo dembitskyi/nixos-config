@@ -49,12 +49,6 @@ with lib;
       description = "Ollama service port.";
     };
 
-    open-webui-port = mkOption {
-      type = types.port;
-      default = 8087;
-      description = "Open WebUI port.";
-    };
-
     trilium-port = mkOption {
       type = types.port;
       default = 12783;

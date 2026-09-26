@@ -17,7 +17,6 @@ let
     pretty_name = "Test User";
     editor = "nvim";
     ollama-port = 11434;
-    open-webui-port = 8087;
     trilium-port = 12783;
     filebrowser-port = 10000;
     pinnedTrayApps = [ ];
