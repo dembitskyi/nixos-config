@@ -193,8 +193,9 @@ let
 
   # browser-use 0.13's MCP server needs the mcp 2.x lowlevel API
   # (Server.add_request_handler); nixpkgs only carries 1.29. The 2.x line
-  # lives under new PyPI names (httpx2/httpcore2, mcp-types). Pure-Python
-  # wheels, installed with nixpkgs-provided deps.
+  # depends on mcp-types and httpx2; httpx2 comes from nixpkgs so it does not
+  # clash with the copy anthropic pulls in. Pure-Python wheels, installed with
+  # nixpkgs-provided deps.
   mcp-types = pkgs.python3Packages.buildPythonPackage rec {
     pname = "mcp-types";
     version = "2.1.1";
@@ -207,41 +208,6 @@ let
       pydantic
       typing-extensions
     ];
-    dontCheckRuntimeDeps = true;
-  };
-
-  httpcore2 = pkgs.python3Packages.buildPythonPackage rec {
-    pname = "httpcore2";
-    version = "2.5.0";
-    src = pkgs.fetchurl {
-      url = "https://files.pythonhosted.org/packages/c9/a1/7564199d1a8728fe737b0a72e5b3f8d92dfe085a74ddf7cdd83bce5f206d/httpcore2-2.5.0-py3-none-any.whl";
-      hash = "sha256-XONRiN5GHTHo0AC/uO+L8ixsFlh6IR5Vcd6qXpvfhCo=";
-    };
-    format = "wheel";
-    propagatedBuildInputs = with pkgs.python3Packages; [
-      h11
-      truststore
-    ];
-    dontCheckRuntimeDeps = true;
-  };
-
-  httpx2 = pkgs.python3Packages.buildPythonPackage rec {
-    pname = "httpx2";
-    version = "2.5.0";
-    src = pkgs.fetchurl {
-      url = "https://files.pythonhosted.org/packages/31/22/859d8252dad9bc9adee34b52e62cde621ece07b042ccb2ab4da1be46695f/httpx2-2.5.0-py3-none-any.whl";
-      hash = "sha256-PS1NnPS2HxofRqlZR8/bR+gMtWovkcYlasj1jkiR30E=";
-    };
-    format = "wheel";
-    propagatedBuildInputs =
-      with pkgs.python3Packages;
-      [
-        anyio
-        idna
-        truststore
-        typing-extensions
-      ]
-      ++ [ httpcore2 ]; # from the same let-block
     dontCheckRuntimeDeps = true;
   };
 
@@ -268,11 +234,9 @@ let
         typing-extensions
         typing-inspection
         uvicorn
-      ]
-      ++ [
         httpx2
-        mcp-types
-      ]; # from the same let-block
+      ]
+      ++ [ mcp-types ]; # from the same let-block
     dontCheckRuntimeDeps = true;
   };
 in

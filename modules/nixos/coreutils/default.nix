@@ -92,6 +92,7 @@
       git-remote-codecommit
       gnumake
       home-manager
+      btop
       htop
       inetutils
       lshw

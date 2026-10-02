@@ -1,7 +1,11 @@
 _: {
   nix = {
     settings = {
-      experimental-features = "nix-command flakes pipe-operators";
+      experimental-features = [
+        "nix-command"
+        "flakes"
+        "pipe-operators"
+      ];
 
       substituters = [
         "https://hyprland.cachix.org"

@@ -17,13 +17,13 @@
   };
 
   config = lib.mkIf config.mine.log-rate-limit.enable {
-    services.journald.extraConfig = ''
-      RateLimitIntervalSec=30s
-      RateLimitBurst=2000
-      SystemMaxUse=2G
-      SystemKeepFree=1G
-      MaxRetentionSec=14day
-    '';
+    services.journald.settings.Journal = {
+      RateLimitIntervalSec = "30s";
+      RateLimitBurst = 2000;
+      SystemMaxUse = "2G";
+      SystemKeepFree = "1G";
+      MaxRetentionSec = "14day";
+    };
 
     boot.kernel.sysctl = {
       "kernel.printk_ratelimit" = 5;
