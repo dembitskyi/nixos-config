@@ -63,8 +63,8 @@ def run_search(
     on any connection or scraping failure.
     """
     try:
-        from playwright.sync_api import sync_playwright
         from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import sync_playwright
     except ImportError as e:
         raise SearchError("playwright is not installed in this environment.") from e
 
@@ -140,6 +140,8 @@ def _drive_perplexity(context, page, query, timeout_ms, settle_ms):
 
 def _pplx_copy_markdown(page):
     """Click Perplexity's Copy button and read markdown off the clipboard."""
+    from playwright.sync_api import Error as PlaywrightError
+
     for selector in _PPLX_COPY:
         buttons = page.query_selector_all(selector)
         if not buttons:
@@ -148,7 +150,7 @@ def _pplx_copy_markdown(page):
             buttons[-1].click()
             page.wait_for_timeout(300)
             text = page.evaluate("() => navigator.clipboard.readText()")
-        except Exception:
+        except PlaywrightError:
             continue
         if text and text.strip():
             return text.strip()
@@ -216,9 +218,11 @@ def _google_answer(page, query):
     heuristic is the fallback for before that bar mounts (e.g. while still
     streaming), so quiescence checks have something to read.
     """
+    from playwright.sync_api import Error as PlaywrightError
+
     try:
         text = page.evaluate(_GOOGLE_ANSWER_ANCHOR_JS, query)
-    except Exception:
+    except PlaywrightError:
         text = ""
     if text and text.strip():
         return text.strip()
@@ -289,12 +293,14 @@ def _wait_until_done(page, done_selector, get_text, timeout_ms, settle_ms):
 
 def _longest_text(page, selectors):
     """Longest matching-element text currently on the page."""
+    from playwright.sync_api import Error as PlaywrightError
+
     best = ""
     for selector in selectors:
         for el in page.query_selector_all(selector):
             try:
                 text = (el.inner_text() or "").strip()
-            except Exception:
+            except PlaywrightError:
                 continue
             if len(text) > len(best):
                 best = text

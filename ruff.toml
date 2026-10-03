@@ -1,0 +1,8 @@
+# Lint policy is ruff's built-in default rule set for the pinned series.
+#
+# Ruff changes those defaults between minor releases (0.16 grew them from 59 to
+# 413 rules), so an unpinned nixpkgs bump can silently start failing the
+# pre-push treefmt check on untouched files. Pinning the series turns that into
+# an explicit "wrong ruff version" error: when a bump moves ruff to 0.17, review
+# its default-rule changes, fix or suppress the new findings, then raise this.
+required-version = ">=0.16,<0.17"

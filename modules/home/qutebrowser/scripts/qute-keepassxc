@@ -82,16 +82,16 @@ insert mode if you prefer that).
 [6]: https://keepassxc.org/docs/KeePassXC_GettingStarted.html#_setup_browser_integration
 """
 
-import sys
+import argparse
+import base64
+import json
 import os
 import socket
-import json
-import base64
 import subprocess
-import argparse
+import sys
 
-import nacl.utils
 import nacl.public
+import nacl.utils
 
 
 def parse_args():
@@ -105,9 +105,7 @@ def parse_args():
     parser.add_argument(
         "--socket",
         "-s",
-        default="/run/user/{}/org.keepassxc.KeePassXC.BrowserServer".format(
-            os.getuid()
-        ),
+        default=f"/run/user/{os.getuid()}/org.keepassxc.KeePassXC.BrowserServer",
         help="Path to KeepassXC browser socket",
     )
     parser.add_argument(
@@ -151,16 +149,16 @@ class KeepassXC:
         self.sock.connect(self.socket_path)
 
         self.send_raw_msg(
-            dict(
-                action="change-public-keys",
-                publicKey=base64.b64encode(self.client_key.public_key.encode()).decode(
-                    "utf-8"
-                ),
-                nonce=base64.b64encode(
+            {
+                "action": "change-public-keys",
+                "publicKey": base64.b64encode(
+                    self.client_key.public_key.encode()
+                ).decode("utf-8"),
+                "nonce": base64.b64encode(
                     nacl.utils.random(nacl.public.Box.NONCE_SIZE)
                 ).decode("utf-8"),
-                clientID=self.client_id,
-            )
+                "clientID": self.client_id,
+            }
         )
 
         resp = self.recv_raw_msg()
@@ -172,11 +170,11 @@ class KeepassXC:
         )
 
     def get_databasehash(self):
-        self.send_msg(dict(action="get-databasehash"))
+        self.send_msg({"action": "get-databasehash"})
         return self.recv_msg()["hash"]
 
     def lock_database(self):
-        self.send_msg(dict(action="lock-database"))
+        self.send_msg({"action": "lock-database"})
         try:
             self.recv_msg()
         except KeepassError as e:
@@ -189,34 +187,38 @@ class KeepassXC:
         if not self.id:
             return False
         self.send_msg(
-            dict(
-                action="test-associate",
-                id=self.id,
-                key=base64.b64encode(self.id_key.public_key.encode()).decode("utf-8"),
-            ),
+            {
+                "action": "test-associate",
+                "id": self.id,
+                "key": base64.b64encode(self.id_key.public_key.encode()).decode(
+                    "utf-8"
+                ),
+            },
             triggerUnlock="true",
         )
         return self.recv_msg()["success"] == "true"
 
     def associate(self):
         self.send_msg(
-            dict(
-                action="associate",
-                key=base64.b64encode(self.client_key.public_key.encode()).decode(
+            {
+                "action": "associate",
+                "key": base64.b64encode(self.client_key.public_key.encode()).decode(
                     "utf-8"
                 ),
-                idKey=base64.b64encode(self.id_key.public_key.encode()).decode("utf-8"),
-            )
+                "idKey": base64.b64encode(self.id_key.public_key.encode()).decode(
+                    "utf-8"
+                ),
+            }
         )
         resp = self.recv_msg()
         self.id = resp["id"]
 
     def get_logins(self, url):
         self.send_msg(
-            dict(
-                action="get-logins",
-                url=url,
-                keys=[
+            {
+                "action": "get-logins",
+                "url": url,
+                "keys": [
                     {
                         "id": self.id,
                         "key": base64.b64encode(self.id_key.public_key.encode()).decode(
@@ -224,12 +226,12 @@ class KeepassXC:
                         ),
                     }
                 ],
-            )
+            }
         )
         return self.recv_msg()["entries"]
 
     def get_totp(self, uuid):
-        self.send_msg(dict(action="get-totp", uuid=uuid))
+        self.send_msg({"action": "get-totp", "uuid": uuid})
         response = self.recv_msg()
         if response["success"] != "true" or not response["totp"]:
             return None
@@ -281,7 +283,8 @@ class SecretKeyStore:
     def load(self):
         "Load existing association key from file"
         if self.insecure:
-            jsondata = open(self.path, "r").read()
+            with open(self.path) as f:
+                jsondata = f.read()
         else:
             jsondata = subprocess.check_output(["gpg", "--decrypt", self.path]).decode(
                 "utf-8"
@@ -302,7 +305,8 @@ class SecretKeyStore:
             {"id": self.id, "key": base64.b64encode(self.key).decode("utf-8")}
         )
         if self.insecure:
-            open(self.path, "w").write(jsondata)
+            with open(self.path, "w") as f:
+                f.write(jsondata)
         else:
             subprocess.run(
                 ["gpg", "--encrypt", "-o", self.path, "-r", self.gpgkey],
@@ -320,7 +324,7 @@ def qute(cmd):
 
 def error(msg):
     print(msg, file=sys.stderr)
-    qute('message-error "{}"'.format(msg))
+    qute(f'message-error "{msg}"')
 
 
 def connect_to_keepassxc(args):
@@ -375,7 +379,7 @@ def select_account(creds):
     except FileNotFoundError:
         error("rofi not found. Please install rofi to select from multiple credentials")
         return creds[0]
-    except Exception as e:
+    except (ValueError, IndexError, KeyError, OSError) as e:
         error(f"Error while picking account: {e}")
         return None
 
@@ -493,7 +497,9 @@ def main():
             name, pw = cred["login"], cred["password"]
             if name and pw:
                 qute("jseval -q " + make_js_code(name, pw))
-    except Exception as e:
+    # Process boundary: qutebrowser does not show a userscript's stderr, so every
+    # failure must be routed to message-error or it is silently lost.
+    except Exception as e:  # noqa: BLE001
         error(str(e))
 
 

@@ -22,7 +22,7 @@ MAX_FLOWS = 5000
 class _Tee:
     """Forwards every chunk untouched; keeps a copy while the body fits."""
 
-    __slots__ = ("copy", "size", "settled")
+    __slots__ = ("copy", "settled", "size")
 
     def __init__(self) -> None:
         self.copy: bytearray | None = bytearray()

@@ -6,10 +6,10 @@ import gc
 import json
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from urllib.request import urlopen, Request
 from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 PRICING_PATH = Path(__file__).parent / "pricing.json"
 DEFAULT_HOST = "http://127.0.0.1:4096"
@@ -155,7 +155,7 @@ def determine_billing_mode(pricing: dict, force_mode: str | None = None) -> str:
 
     now = datetime.now(timezone.utc).date()
     ai_credits = pricing["billing_modes"]["ai_credits"]
-    effective_from = datetime.strptime(ai_credits["effective_from"], "%Y-%m-%d").date()
+    effective_from = date.fromisoformat(ai_credits["effective_from"])
 
     if now >= effective_from:
         return "ai_credits"
@@ -250,7 +250,7 @@ def estimate_ai_credits(agg: dict, pricing: dict) -> dict:
     }
 
 
-def fmt_num(n: int | float) -> str:
+def fmt_num(n: float) -> str:
     """Format large numbers with comma separators."""
     if isinstance(n, float):
         return f"{n:,.2f}"

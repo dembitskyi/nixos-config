@@ -69,9 +69,11 @@ async def monitor(hook_script: str | None) -> None:
             signature="asu",
             body=[
                 [
-                    "type='method_call',"
-                    "interface='org.freedesktop.Notifications',"
-                    "member='Notify'"
+                    (
+                        "type='method_call',"
+                        "interface='org.freedesktop.Notifications',"
+                        "member='Notify'"
+                    )
                 ],
                 0,
             ],
