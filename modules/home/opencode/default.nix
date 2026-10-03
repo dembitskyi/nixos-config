@@ -20,17 +20,6 @@ let
     };
   writePrompt = name: path: pkgs.writeText name (builtins.readFile path);
 
-  # CLI tool for monitoring AI token usage and estimating Copilot costs.
-  opencode-usage = pkgs.writeShellApplication {
-    name = "opencode-usage";
-    runtimeInputs = [ pkgs.python3 ];
-    text = ''
-      exec python3 ${./scripts/opencode-usage.py} \
-        --pricing ${./scripts/pricing.json} \
-        "$@"
-    '';
-  };
-
   # AI web search over CDP, driving the persistent ai-browser on port 9222.
   # Shared with the AI sandbox so the /search command resolves there too.
   ai-search = pkgs.callPackage ./ai-search.nix { };
@@ -537,7 +526,6 @@ in
     };
 
     home.packages = [
-      opencode-usage
       ai-search
       skill-picker
       pkgs.rtk
