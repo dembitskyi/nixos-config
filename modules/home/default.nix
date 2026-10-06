@@ -16,6 +16,9 @@
     ./password-manager
     ./notification
     ./opencode
+    ./ai-sessions
+    ./claude-code
+    ./codex
     ./ollama
     ./mpv
     ./anki

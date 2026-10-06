@@ -230,6 +230,80 @@ let
     automationConfig = config.mine.ai-sandbox.automationConfig;
     backgroundSubagents = config.mine.ai-sandbox.backgroundSubagents.enable;
   };
+
+  # Environment, hardening and binds shared by every sandboxed agent unit:
+  # ai-sandbox.service (opencode + MCP servers) and the on-demand agent
+  # sessions (agentSessionSandbox below).
+  sandboxEnvironment = [
+    "HOME=${userHome}"
+    "SSH_AUTH_SOCK=${sandboxSshAgentSocket}"
+    "XDG_CACHE_HOME=${userHome}/.cache"
+    "XDG_DATA_HOME=${userHome}/.local/share"
+    "XDG_STATE_HOME=${userHome}/.local/state"
+    "UV_CACHE_DIR=${userHome}/.cache/uv"
+    "UV_STATE_DIR=${userHome}/.local/state/uv"
+    "UV_DATA_DIR=${userHome}/.local/share/uv"
+    "PATH=${
+      lib.makeBinPath (
+        extraPackages
+        ++ config.mine.ai-sandbox.extraPackages
+        ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
+      )
+    }"
+  ];
+  sandboxHardening = {
+    NoNewPrivileges = true;
+    ProtectClock = true;
+    PrivateDevices = true;
+    PrivateMounts = true;
+    PrivateTmp = false;
+    ProtectHome = "tmpfs";
+    StateDirectory = "ai-sandbox";
+    ProtectHostname = true;
+    ProtectKernelLogs = true;
+    ProtectKernelModules = true;
+    ProtectKernelTunables = true;
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+  };
+  sandboxHomeBind = "%S/ai-sandbox:${userHome}";
+  sandboxSshAgentBind = "${userRuntimeDir}/ai-sandbox-ssh-agent:${userRuntimeDir}/ai-sandbox-ssh-agent";
+  sandboxSshConfigBind = "${sandboxSshConfig}:/etc/ssh/ssh_config";
+  # Make the declarative jf config available to sandboxed `jf`.
+  sandboxJfrogBinds = lib.optional config.mine.jfrog.enable "${config.mine.jfrog.confPath}:${config.mine.jfrog.targetPath}";
+
+  # Sandbox of the agent sessions (modules/home/ai-sessions: Claude Code,
+  # Codex), transient units started on demand. They share the opencode
+  # sandbox's home, and with it ~/workspace, plus its hardening; but none of
+  # opencode's config and data dirs, MCP credentials, skills or the Hyprland
+  # socket (whose IPC can exec commands outside the sandbox).
+  agentSessionSandbox = {
+    Unit = {
+      After = [ "ai-sandbox-ssh-agent.service" ];
+      Wants = [ "ai-sandbox-ssh-agent.service" ];
+    };
+    Service = sandboxHardening // {
+      Environment = sandboxEnvironment;
+      BindPaths = [
+        sandboxHomeBind
+        # The opencode sandbox's ssh-agent (GitHub key), for git pull/push.
+        sandboxSshAgentBind
+        # PrivateDevices backs /dev/ptmx with a bind mount that the kernel
+        # cannot resolve to its devpts instance from a user namespace, so
+        # openpty() fails with ENOENT; mount devpts' own multiplexer instead.
+        "/dev/pts/ptmx:/dev/ptmx"
+      ];
+      BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds;
+      # Supplementary groups survive the user namespace, so docker group
+      # membership still opens the root-equivalent daemon socket. The user's
+      # tmux socket would likewise run commands outside the sandbox.
+      InaccessiblePaths = [
+        "-/run/docker.sock"
+        "-/tmp/tmux-%U"
+      ];
+    };
+  };
 in
 {
   imports = [ ./proxy.nix ];
@@ -318,6 +392,17 @@ in
 
     sops.templates = configData.templates;
 
+    # Mount point for the Codex sessions' enforced policy (modules/home/codex):
+    # Codex reads it only from /etc/codex, which the user manager cannot
+    # create, and only the session units mount the policy over this.
+    environment.etc."codex/README" =
+      lib.mkIf config.home-manager.users.${config.variables.username}.mine.home.codex.enable
+        {
+          text = ''
+            Left empty on purpose: the sandboxed Codex sessions mount their policy here.
+          '';
+        };
+
     services.nginx = {
       enable = true;
       virtualHosts."mcp.vmserver.vnet" = {
@@ -341,6 +426,7 @@ in
 
     home-manager.users.${config.variables.username} = hmArgs: {
       mine.home.opencode.mcpServerUrls = configData.defaultServerUrls;
+      mine.home.ai-sessions.sandbox = agentSessionSandbox;
 
       home.packages = [ sandboxEnter ];
 
@@ -388,34 +474,11 @@ in
         Install = {
           WantedBy = [ "graphical-session.target" ];
         };
-        Service = {
-          Environment = [
-            "HOME=${userHome}"
-            "SSH_AUTH_SOCK=${sandboxSshAgentSocket}"
-            "XDG_CACHE_HOME=${userHome}/.cache"
-            "XDG_DATA_HOME=${userHome}/.local/share"
-            "XDG_STATE_HOME=${userHome}/.local/state"
-            "UV_CACHE_DIR=${userHome}/.cache/uv"
-            "UV_STATE_DIR=${userHome}/.local/state/uv"
-            "UV_DATA_DIR=${userHome}/.local/share/uv"
-            "PATH=${
-              lib.makeBinPath (
-                extraPackages
-                ++ config.mine.ai-sandbox.extraPackages
-                ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
-              )
-            }"
-          ];
-          NoNewPrivileges = true;
-          ProtectClock = true;
-          PrivateDevices = true;
-          PrivateMounts = true;
-          PrivateTmp = false;
-          ProtectHome = "tmpfs";
-          StateDirectory = "ai-sandbox";
+        Service = sandboxHardening // {
+          Environment = sandboxEnvironment;
           BindPaths = [
-            "%S/ai-sandbox:${userHome}"
-            "${userRuntimeDir}/ai-sandbox-ssh-agent:${userRuntimeDir}/ai-sandbox-ssh-agent"
+            sandboxHomeBind
+            sandboxSshAgentBind
             "${userHome}/.local/share/opencode:${userHome}/.local/share/opencode"
             "${userHome}/.config/opencode:${userHome}/.config/opencode"
             "${userRuntimeDir}/hypr:${userRuntimeDir}/hypr"
@@ -429,7 +492,7 @@ in
           ];
           BindReadOnlyPaths = [
             "${userHome}/.config/rtk:${userHome}/.config/rtk"
-            "${sandboxSshConfig}:/etc/ssh/ssh_config"
+            sandboxSshConfigBind
             # Skill pool, so a loaded skill's helper files (scripts/, reference/)
             # resolve at the same path inside the sandbox as on the host.
             "${userHome}/.cache/ai-skills:${userHome}/.cache/ai-skills"
@@ -437,15 +500,7 @@ in
           ++ map (
             skill: "${userHome}/.config/opencode/skills/${skill}:${userHome}/.config/opencode/skills/${skill}"
           ) allowedSkills
-          # Make the declarative jf config available to sandboxed `jf`.
-          ++ lib.optional config.mine.jfrog.enable "${config.mine.jfrog.confPath}:${config.mine.jfrog.targetPath}";
-          ProtectHostname = true;
-          ProtectKernelLogs = true;
-          ProtectKernelModules = true;
-          ProtectKernelTunables = true;
-          RestrictNamespaces = true;
-          RestrictRealtime = true;
-          RestrictSUIDSGID = true;
+          ++ sandboxJfrogBinds;
           LoadCredential = configData.loadConfig ++ [
             "github_ssh_key:${config.sops.secrets."MCP/GITHUB_SSH_KEY".path}"
             "github_known_hosts:${githubKnownHosts}"
