@@ -98,7 +98,12 @@ let
     # Web
     playwright = {
       command = lib.getExe pkgs.playwright-mcp;
-      args = [ "--cdp-endpoint=http://127.0.0.1:9222" ];
+      args = [
+        "--cdp-endpoint=http://127.0.0.1:9222"
+        # Automatically named outputs (action snapshots, console logs,
+        # screenshots) would otherwise land in each session's working tree.
+        "--output-dir=${userHome}/.cache/playwright-mcp"
+      ];
     };
   };
 

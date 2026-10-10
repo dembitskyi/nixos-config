@@ -4,8 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
-    # Pins playwright-mcp to 0.0.76.
-    nixpkgs-playwright-mcp.url = "github:NixOS/nixpkgs/e73de5be04e0eff4190a1432b946d469c794e7b4";
+    # Pins playwright-mcp to 0.0.80.
+    nixpkgs-playwright-mcp.url = "github:NixOS/nixpkgs/20b1ddd1aa5ace70c9468305030aa4f9ef79671b";
 
     # opencode pinned via upstream's flake; bump the tag to update. No nixpkgs
     # follows: its node_modules FOD needs upstream's own pinned bun.

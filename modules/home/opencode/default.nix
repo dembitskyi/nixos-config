@@ -90,6 +90,23 @@ let
 
   renderRule = rule: { inherit (rule) action resource effect; };
 
+  # Playbook skills follow what an agent can start: `crew` and `crew-<id>` for
+  # the subagents it may launch, `lanes` for the lanes tools. /crew narrows
+  # them further per session.
+  playbookRules =
+    agent:
+    map (rules.rule "deny" "skill") [
+      "crew"
+      "crew-*"
+      "lanes"
+    ]
+    ++ lib.optionals (agent.subagents != [ ]) (
+      map (rules.rule "allow" "skill") ([ "crew" ] ++ map (id: "crew-${id}") agent.subagents)
+    )
+    ++ lib.optional (agent.tools != null && lib.elem "lanes_*" agent.tools) (
+      rules.rule "allow" "skill" "lanes"
+    );
+
   # Turns the module's agent shape into a native V2 `agents` entry.
   renderAgent =
     name: agent:
@@ -104,6 +121,7 @@ let
       permissions =
         lib.optionals (agent.tools != null) (rules.allowOnly agent.tools)
         ++ map (rules.rule "allow" "subagent") agent.subagents
+        ++ lib.optionals (!(agent.disabled or false)) (playbookRules agent)
         ++ map renderRule agent.permissions;
     in
     lib.filterAttrs (key: value: value != null && !lib.elem key helpers) agent
@@ -151,6 +169,45 @@ let
     system = builtins.readFile ./prompts/dev-worker.md;
     tools = lib.mkDefault subagentTools;
   };
+
+  # Read-only members inspect code, run checks, and research: no edit tool and
+  # only GitHub's read actions. They keep the shell for git and tests, so their
+  # prompts still govern what it may change.
+  inspectTools = lib.concatLists [
+    tools.read
+    [
+      "shell"
+      "skill"
+    ]
+    tools.research
+    tools.context7
+    tools.githubRead
+  ];
+
+  # Members with a `crew-<id>` playbook skill in ./skills/crew.
+  playbooks = [
+    "explore"
+    "general"
+    "dev-junior"
+    "dev-senior"
+    "dev-master"
+    "reviewer"
+    "critic"
+    "pr"
+    "vision"
+  ];
+
+  # The Nix-provided skills as one directory of real files, added through the
+  # `skills` setting. Symlinked SKILL.md files would make OpenCode watch their
+  # parent, /nix/store, recursively.
+  skillsDir = pkgs.runCommand "opencode-skills" { } ''
+    mkdir -p "$out"
+    ${lib.concatStrings (
+      lib.mapAttrsToList (name: path: ''
+        install -Dm644 ${path} "$out/${name}/SKILL.md"
+      '') cfg.extraSkills
+    )}
+  '';
 in
 {
   options.mine.home.opencode = {
@@ -218,7 +275,7 @@ in
     extraSkills = lib.mkOption {
       type = lib.types.attrsOf lib.types.path;
       default = { };
-      description = "Skills provided from Nix: skill ID to its SKILL.md.";
+      description = "Skills provided from Nix: skill ID to its SKILL.md, served from one store directory.";
     };
     searchProvider = lib.mkOption {
       type = lib.types.enum [
@@ -305,6 +362,9 @@ in
             "explore"
             "dev-junior"
             "dev-senior"
+            "dev-master"
+            "reviewer"
+            "critic"
             "pr"
             "vision"
           ];
@@ -319,19 +379,47 @@ in
           tools = lib.mkDefault subagentTools;
         };
 
-        # The built-in explore agent allows all shell commands and .env reads;
-        # re-apply the shared exceptions after its own rules.
+        # OpenCode applies the built-in explore agent's own rules (a deny-all
+        # that re-allows search, read, and shell) before the global ones, so
+        # the global edit allow would let it change files. Its configured rules
+        # come last: keep it read-only and re-apply the shared exceptions.
         explore = {
           model = lib.mkDefault "${sonnetModel}#xhigh";
-          permissions = rules.shellExceptions ++ rules.envReads ++ [ (rules.deny "webfetch") ];
+          permissions =
+            rules.shellExceptions
+            ++ rules.envReads
+            ++ [
+              (rules.deny "edit")
+              (rules.deny "webfetch")
+            ];
         };
 
         dev-junior = devWorker "Implements small, well-specified code changes: fixes, tests, and mechanical edits." "${sonnetModel}#medium";
         dev-senior = devWorker "Implements complex code changes that need design judgment, deep debugging, or cross-cutting refactors." "${opusModel}#medium";
+        dev-master = lib.mkMerge [
+          (devWorker "Solves very tough problems that resisted other attempts: elusive or intermittent bugs, concurrency, performance, and deep design. Slow and expensive." "${opusModel}#max")
+          { system = builtins.readFile ./prompts/dev-master.md; }
+        ];
+
+        reviewer = {
+          description = "Reviews finished code changes without editing them and returns a verdict with findings by severity: bugs, security, missed requirements, and broken conventions.";
+          mode = "subagent";
+          model = lib.mkDefault "${opusModel}#high";
+          system = builtins.readFile ./prompts/reviewer.md;
+          tools = lib.mkDefault inspectTools;
+        };
+
+        critic = {
+          description = "Critiques ideas, plans, and designs without implementing them: finds alternative options, trade-offs, risks, and wrong assumptions, and recommends one.";
+          mode = "subagent";
+          model = lib.mkDefault "${opusModel}#max";
+          system = builtins.readFile ./prompts/critic.md;
+          tools = lib.mkDefault inspectTools;
+        };
 
         # Started by the lanes plugin for each run, never launched by dev.
         planner = {
-          description = "Plans lanes runs: splits a goal into tasks on disjoint files for dev-junior and dev-senior, then re-plans as results arrive.";
+          description = "Plans lanes runs: splits a goal into tasks on disjoint files for worker subagents, then re-plans as results arrive.";
           mode = "subagent";
           model = lib.mkDefault "${opusModel}#medium";
           system = builtins.readFile ./prompts/planner.md;
@@ -405,7 +493,13 @@ in
         ghidra = ./skills/ghidra.md;
         browser-automation =
           if browserUse then ./skills/browser-automation-browseruse.md else ./skills/browser-automation.md;
-      };
+        # Playbooks: running lanes, the default crew strategy, and briefing each member.
+        lanes = ./skills/lanes.md;
+        crew = ./skills/crew/strategy.md;
+      }
+      // lib.listToAttrs (
+        map (id: lib.nameValuePair "crew-${id}" (./skills/crew + "/${id}.md")) playbooks
+      );
 
       skills = [
         "cpp-pro"
@@ -428,11 +522,9 @@ in
       };
     };
 
-    # Only the curated pool skills are deployed; the Nix-provided ones are kept.
-    mine.home.ai-skills = {
-      include = cfg.skills;
-      keep = lib.attrNames cfg.extraSkills;
-    };
+    # Only the curated pool skills are deployed; pruning also clears stale skill
+    # directories, such as those of skills now served from the store.
+    mine.home.ai-skills.include = cfg.skills;
 
     xdg.desktopEntries.opencode = {
       name = "opencode (unsafe)";
@@ -459,8 +551,13 @@ in
               package = "${crewPlugin}";
               options = {
                 presets = cfg.crewPresets;
-                # Started by the lanes plugin rather than the subagent tool.
-                managed.planner = "lanes planner";
+                # Started by the lanes plugin rather than the subagent tool;
+                # switching it off hides the lanes tools and skill.
+                managed.planner = {
+                  label = "lanes";
+                  tools = "lanes_*";
+                  skill = "lanes";
+                };
               };
             }
             "${lanesPlugin}"
@@ -484,10 +581,7 @@ in
         force = true;
         source = jsonFormat.generate "dcp.jsonc" { autoUpdate = false; };
       };
-    }
-    // lib.mapAttrs' (
-      name: path: lib.nameValuePair "opencode/skills/${name}/SKILL.md" { source = path; }
-    ) cfg.extraSkills;
+    };
 
     programs.opencode = {
       enable = true;
@@ -498,6 +592,7 @@ in
         share = "disabled";
         update = "disable";
         websearch.provider = "ai-search";
+        skills = [ "${skillsDir}" ];
         permissions = rules.global ++ map renderRule cfg.permissions;
         agents = lib.mapAttrs renderAgent cfg.agents;
         mcp.servers =

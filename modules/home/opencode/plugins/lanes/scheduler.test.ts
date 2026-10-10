@@ -9,6 +9,8 @@ interface FakeSession {
 	info: SessionInfo
 	agent?: string
 	prompts: { text: string; delivery?: string }[]
+	// The session's model when each prompt arrived.
+	promptedWith: (SessionInfo["model"] | undefined)[]
 	messages: Message[]
 	waiters: (() => void)[]
 	busy: boolean
@@ -24,9 +26,17 @@ function fake(crew?: Record<string, string>) {
 	const storage = new Map<string, unknown>()
 	const notes: { sessionID: string; text: string; resume: boolean }[] = []
 	const logs: { level: string; event: string; fields?: Fields }[] = []
+	const switches: { sessionID: string; model: string }[] = []
 	let next = 0
 	const add = (id: string, info: Omit<SessionInfo, "id"> = {}) => {
-		const session: FakeSession = { info: { id, ...info }, prompts: [], messages: [], waiters: [], busy: false }
+		const session: FakeSession = {
+			info: { id, ...info },
+			prompts: [],
+			promptedWith: [],
+			messages: [],
+			waiters: [],
+			busy: false,
+		}
 		sessions.set(id, session)
 		return session
 	}
@@ -88,8 +98,14 @@ function fake(crew?: Record<string, string>) {
 			async prompt({ sessionID, text, delivery }) {
 				const target = session(sessionID)
 				target.prompts.push({ text, delivery })
+				target.promptedWith.push(target.info.model)
 				target.messages.push({ type: "user", content: [{ type: "text", text }] })
 				target.busy = true
+			},
+			async switchModel({ sessionID, model }) {
+				const target = session(sessionID)
+				target.info = { ...target.info, model }
+				switches.push({ sessionID, model: `${model.providerID}/${model.id}#${model.variant}` })
 			},
 			async synthetic({ sessionID, text, resume }) {
 				notes.push({ sessionID, text, resume })
@@ -114,7 +130,12 @@ function fake(crew?: Record<string, string>) {
 		for (let index = 0; index < 30; index++) await new Promise((resolve) => setTimeout(resolve, 1))
 	}
 	const view = (id: string) => readView(session(id).info.metadata?.[VIEW_KEY])
-	return { host, session, sessions, storage, notes, logs, finish, shutdown, settle, view }
+	// Changes the root session's /crew models, as the /crew dialog does.
+	const crewModels = (models: Record<string, string>) => {
+		const origin = session("origin")
+		origin.info = { ...origin.info, metadata: { ...origin.info.metadata, crew: { models } } }
+	}
+	return { host, session, sessions, storage, notes, logs, switches, finish, shutdown, settle, view, crewModels }
 }
 
 const statuses = (run: Run) => Object.fromEntries(run.tasks.map((task) => [task.id, task.status]))
@@ -413,6 +434,68 @@ test("models come from the task, then /crew, the agent, and the orchestrator", a
 	const g = fake()
 	const other = await started(g, { goal: "Ship", tasks: [{ id: "x", title: "X", prompt: "x", agent: "dev-senior" }] })
 	expect(g.session(worker(other.run, "x")).info.model).toEqual(opus)
+})
+
+describe("model changes with /crew", () => {
+	const acme = (variant: string) => ({ providerID: "acme", id: "claude", variant })
+
+	test("a planner that hit a limit takes the new /crew model when the orchestrator pings it", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
+		f.finish(planner, "failed", undefined, "rate limited")
+		await f.settle()
+		expect(f.switches).toEqual([])
+		f.crewModels({ planner: "acme/claude#high" })
+		await lanes.tell(run, "Try again.")
+		await f.settle()
+		expect(f.session(planner).prompts.at(-1)?.text).toBe("Message from the orchestrator: Try again.")
+		expect(f.session(planner).promptedWith.at(-1)).toEqual(acme("high"))
+		expect(f.logs.find((entry) => entry.event === "model.switched")?.fields).toMatchObject({
+			agent: "planner",
+			from: "github-copilot/claude-opus-5.5#medium",
+			to: "acme/claude#high",
+		})
+	})
+
+	test("a busy planner is switched before it is steered", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship" })
+		f.crewModels({ planner: "acme/claude#high" })
+		await lanes.tell(run, "Smaller tasks.")
+		expect(f.session(planner).prompts.at(-1)).toEqual({
+			text: "Message from the orchestrator: Smaller tasks.",
+			delivery: "steer",
+		})
+		expect(f.session(planner).info.model).toEqual(acme("high"))
+	})
+
+	test("workers take the new model on retries and follow-ups, unless the task names one", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, {
+			goal: "Ship",
+			tasks: [
+				{ id: "a", title: "A", prompt: "Do A.", files: ["a.ts"] },
+				{ id: "b", title: "B", prompt: "Do B.", files: ["b.ts"], model: "github-copilot/gpt-6-luna#xhigh" },
+			],
+		})
+		f.finish(planner, "succeeded")
+		f.crewModels({ "dev-junior": "acme/claude#low" })
+		f.finish(worker(run, "a"), "failed", undefined, "rate limited")
+		f.finish(worker(run, "b"), "failed", undefined, "rate limited")
+		await f.settle()
+		expect(f.session(worker(run, "a")).promptedWith.at(-1)).toEqual(acme("low"))
+		expect(f.session(worker(run, "b")).promptedWith.at(-1)).toEqual({
+			providerID: "github-copilot",
+			id: "gpt-6-luna",
+			variant: "xhigh",
+		})
+		f.finish(worker(run, "a"), "succeeded", "Done A.")
+		await f.settle()
+		f.crewModels({ "dev-junior": "acme/claude#high" })
+		await lanes.tell(run, "Also add a test.", "a")
+		expect(f.session(worker(run, "a")).promptedWith.at(-1)).toEqual(acme("high"))
+		expect(f.switches.map((entry) => entry.sessionID)).toEqual([worker(run, "a"), worker(run, "a")])
+	})
 })
 
 test("the orchestrator sees a status line and the log records each step", async () => {

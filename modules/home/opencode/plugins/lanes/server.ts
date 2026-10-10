@@ -67,7 +67,7 @@ const tasks = {
 			agent: {
 				type: "string",
 				description:
-					"Worker subagent: dev-junior for small, well-specified work, dev-senior for complex work. Defaults to dev-junior.",
+					"Worker subagent: dev-junior for small, well-specified work, dev-senior for complex work, dev-master for very tough problems, reviewer to review finished tasks (no files). Defaults to dev-junior.",
 			},
 			model: { type: "string", description: "Optional model override as provider/model#variant." },
 			deps: { ...strings, description: "IDs of tasks that must finish first." },
@@ -149,7 +149,7 @@ export function tools(lanes: Lanes, log: Log, now: () => number): ToolInfo[] {
 	return [
 		tool(
 			"lanes_start",
-			"Run a goal as parallel lanes: a planner splits it into tasks for dev-junior and dev-senior workers in their own sessions and keeps up to `lanes` of them busy until the goal is done. Returns at once; a status line in your context tracks the run and milestone notes arrive on their own, so do not poll. Pass `tasks` to queue work yourself.",
+			"Run a goal as parallel lanes: a planner splits it into tasks for worker subagents in their own sessions and keeps up to `lanes` of them busy until the goal is done. Returns at once; a status line in your context tracks the run and milestone notes arrive on their own, so do not poll. Pass `tasks` to queue work yourself.",
 			{ goal: string, lanes: lanesCount, tasks, notes: strings },
 			["goal"],
 			async (input, { sessionID }) => {
@@ -194,7 +194,7 @@ export function tools(lanes: Lanes, log: Log, now: () => number): ToolInfo[] {
 		),
 		tool(
 			"lanes_tell",
-			"Message a lanes run's planner, for example to change priorities or scope. With `task`, message that task's worker instead: running tasks see it at their next step, finished ones take it as a follow-up.",
+			"Message a lanes run's planner, for example to change priorities or scope. With `task`, message that task's worker instead: running tasks see it at their next step, finished ones take it as a follow-up. The messaged session first moves to the model /crew now assigns it.",
 			{ run: string, text: string, task: string },
 			["run", "text"],
 			async (input) => {

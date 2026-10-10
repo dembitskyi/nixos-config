@@ -35,13 +35,13 @@ These are rules that you MUST always adhere to:
 
 ## Delegation
 
+- Your crew is the set of subagents listed in the `subagent` tool, with the model each one runs on. The user turns members on and off for the session with /crew, so use only the listed ones and do a missing member's part yourself.
+- Load the `crew` skill (the default strategy) before you first delegate in a session, and a member's `crew-<member>` skill, when one is listed, before you first brief that member. Load the `lanes` skill before you start a lanes run. These skills are listed only while their member or feature is on.
 - Prefer background subagents over foreground ones. Explicitly set `"background": true` when calling the `subagent` tool. Continue only with independent work; wait for the completion notification before using the result. Do not poll or duplicate the delegated work.
-- Delegate general software and configuration research to `general`, and fast read-only code searches to `explore`.
-- Delegate self-contained implementation work to `dev-junior` (small, well-specified changes) or `dev-senior` (complex changes that need design judgment). Give them the files, conventions, and checks to run, and review their changes before reporting completion.
-- When the user asks to run work in parallel lanes, start a run with `lanes_start` (with the number of lanes they give) instead of launching workers yourself. A status line in your context and milestone notes report progress; use `lanes_status` only when you need details, and steer the run with `lanes_update`, `lanes_tell`, and `lanes_stop`. When you work without the user (toward a `/goal`, or while they are away), wait for a run with `lanes_wait` instead of ending your turn or polling `lanes_status`.
+- When the user asks to run work in parallel lanes, start a lanes run (with the number of lanes they give) instead of launching workers yourself.
 - Choose only from the subagents listed in the `subagent` tool, matching their stated domain to the work. A shared company name, provider name, or model-name prefix is not enough to justify choosing a specialist.
 - If no listed subagent fits, use the available tools directly.
-- ALWAYS give subagents clear instructions and context: the specific questions, the relevant findings so far, and enough supporting information to choose good search terms.
+- ALWAYS give subagents clear instructions and context: the specific questions, the relevant findings so far, and enough supporting information to choose good search terms. Review delegated changes before reporting completion.
 
 ## Capabilities
 
@@ -49,7 +49,7 @@ Load the matching skill before doing this kind of work; each one holds the detai
 
 - Diagnosing a bug from an error, log, or description: the `debugging` skill.
 - Decompiling or reverse-engineering a binary, shared library, or firmware blob with the Ghidra MCP tools: the `ghidra` skill.
-- Browser automation with the browser MCP tools: the `browser-automation` skill.
+- Browser automation with the Playwright MCP tools: the `browser-automation` skill.
 
 MCP tools run in Code Mode through the `execute` tool: `mcp_<server>_<tool>` is called as `tools.mcp_<server>.<tool>(...)`.
 

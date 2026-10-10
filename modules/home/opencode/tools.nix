@@ -25,6 +25,12 @@
   opencode = [ "opencode_*" ];
 
   github = [ "mcp_github_*" ];
+  # GitHub without writes: fetching, listing, and searching only.
+  githubRead = [
+    "mcp_github_get_*"
+    "mcp_github_list_*"
+    "mcp_github_search_*"
+  ];
   context7 = [ "mcp_context7_*" ];
   jira = [ "mcp_jira_jira_*" ];
   confluence = [ "mcp_jira_confluence_*" ];

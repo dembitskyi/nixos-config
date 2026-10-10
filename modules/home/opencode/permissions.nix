@@ -1,7 +1,9 @@
 # OpenCode V2 permission rules: ordered `{ action, resource, effect }` lists in
 # which the last matching rule wins. Global rules apply first and each agent's
 # rules are appended after them, so an agent that starts from a deny-all has to
-# re-apply the safety exceptions after every action it allows again.
+# re-apply the safety exceptions after every action it allows again. Built-in
+# agents (explore, general) also carry rules of their own, which come before the
+# global ones: a global allow overrides their built-in denies.
 { lib }:
 let
   rule = effect: action: resource: { inherit action resource effect; };

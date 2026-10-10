@@ -2,21 +2,24 @@
 // with their access and model, and changes them for this session tree only,
 // along with the Away switch for working without the user. Named presets come
 // from the Nix `crewPresets` option; agents in `managed` are started by another
-// plugin, so they only get a model.
+// plugin, so they get a model and, when they name their tools, an On/Off switch.
 import {
 	type Access,
 	type AgentInfo,
 	access,
 	applyPreset,
 	type Crew,
+	effect,
 	emptyCrew,
 	formatModel,
 	KEY,
+	type Managed,
 	type ModelRef,
 	modelOf,
 	type Presets,
 	type Rule,
 	readCrew,
+	readManaged,
 	readPresets,
 	withCrew,
 	withRules,
@@ -98,8 +101,8 @@ interface State {
 	crew: Crew
 	session: SessionInfo
 	agents: AgentInfo[]
-	// Subagents another plugin starts (not the subagent tool), by ID, with their label.
-	managed: Readonly<Record<string, string>>
+	// Subagents another plugin starts (not the subagent tool), by ID.
+	managed: Managed
 }
 
 interface Change {
@@ -114,13 +117,6 @@ type Choice =
 	| { kind: "away" }
 	| { kind: "reset" }
 
-function readLabels(value: unknown): Record<string, string> {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) return {}
-	return Object.fromEntries(
-		Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
-	)
-}
-
 function members(agents: readonly AgentInfo[]) {
 	return agents
 		.filter((agent) => agent.mode !== "primary" && !agent.hidden)
@@ -129,7 +125,19 @@ function members(agents: readonly AgentInfo[]) {
 
 function isOn(state: State, agent: AgentInfo) {
 	const own = state.agents.find((caller) => caller.id === state.session.agent)?.permissions ?? []
-	return access([...own, ...withRules(state.session.permissions, state.crew)], agent.id) !== "deny"
+	const rules = [...own, ...withRules(state.session.permissions, state.crew, state.managed)]
+	const tools = state.managed[agent.id]?.tools
+	if (tools) return effect(rules, tools, "*") !== "deny"
+	return access(rules, agent.id) !== "deny"
+}
+
+/** A member's line in the main dialog. */
+function memberText(state: State, agent: AgentInfo) {
+	const info = state.managed[agent.id]
+	const on = isOn(state, agent)
+	if (info?.tools) return on ? `on · ${info.label} · ${modelText(state, agent)}` : `off · ${info.label}`
+	if (info) return `${info.label} · ${modelText(state, agent)}`
+	return on ? `on · ${modelText(state, agent)}` : "off"
 }
 
 function modelText(state: State, agent: AgentInfo) {
@@ -172,30 +180,38 @@ async function editAgent(context: TuiContext, location: LocationRef, state: Stat
 	if (!agent) return undefined
 	const { crew } = state
 	const managed = state.managed[id]
+	const switches = managed?.tools
+		? [
+				{ title: "On", value: "on", description: "Available in this session" },
+				{ title: "Off", value: "off", description: "Hidden in this session: its tools and skill" },
+			]
+		: managed
+			? []
+			: [
+					{ title: "On", value: "on", description: "Allow in this session" },
+					{ title: "Off", value: "off", description: "Block in this session" },
+					...(crew.access[id]
+						? [{ title: "Default access", value: "access", description: "Use the configured access" }]
+						: []),
+				]
 	const action = await context.ui.dialog.select({
-		title: managed ? `${id} (${managed})` : id,
-		current: managed ? "model" : isOn(state, agent) ? "on" : "off",
+		title: managed ? `${id} (${managed.label})` : id,
+		current: managed && !managed.tools ? "model" : isOn(state, agent) ? "on" : "off",
 		options: [
-			...(managed
-				? []
-				: [
-						{ title: "On", value: "on", description: "Allow in this session" },
-						{ title: "Off", value: "off", description: "Block in this session" },
-						...(crew.access[id]
-							? [{ title: "Default access", value: "access", description: "Use the configured access" }]
-							: []),
-					]),
+			...switches,
 			{ title: "Model", value: "model", description: modelText(state, agent) },
 			...(crew.models[id] ? [{ title: "Default model", value: "unset", description: "Use the configured model" }] : []),
 		],
 	})
 	switch (action) {
 		case "on":
-		case "off":
-			return {
-				crew: { ...crew, access: { ...crew.access, [id]: action === "on" ? "allow" : "deny" } },
-				summary: `${id} ${action}`,
-			} satisfies Change
+		case "off": {
+			// On for a managed member means its configured access, so the entry is dropped.
+			const { [id]: _, ...rest } = crew.access
+			const value: Access = action === "on" ? "allow" : "deny"
+			const next = managed?.tools && action === "on" ? rest : { ...crew.access, [id]: value }
+			return { crew: { ...crew, access: next }, summary: `${id} ${action}` } satisfies Change
+		}
 		case "access": {
 			const { [id]: _, ...rest } = crew.access
 			return { crew: { ...crew, access: rest }, summary: `${id} access reset` } satisfies Change
@@ -226,11 +242,7 @@ async function edit(context: TuiContext, location: LocationRef, state: State, pr
 			...members(state.agents).map((agent) => ({
 				title: agent.id,
 				value: { kind: "agent", id: agent.id } as Choice,
-				description: state.managed[agent.id]
-					? `${state.managed[agent.id]} · ${modelText(state, agent)}`
-					: isOn(state, agent)
-						? `on · ${modelText(state, agent)}`
-						: "off",
+				description: memberText(state, agent),
 				category: "Subagents",
 			})),
 			{
@@ -270,7 +282,11 @@ async function edit(context: TuiContext, location: LocationRef, state: State, pr
 			return editAgent(context, location, state, choice.id)
 		case "all":
 			return {
-				crew: { ...crew, delegation: choice.delegation, access: {} },
+				crew: {
+					...crew,
+					delegation: choice.delegation,
+					access: Object.fromEntries(Object.entries(crew.access).filter(([agent]) => state.managed[agent])),
+				},
 				summary: choice.delegation === "allow" ? "all on" : "all off",
 			} satisfies Change
 		case "preset": {
@@ -300,7 +316,7 @@ async function edit(context: TuiContext, location: LocationRef, state: State, pr
 	}
 }
 
-async function open(context: TuiContext, presets: Presets, managed: Readonly<Record<string, string>>) {
+async function open(context: TuiContext, presets: Presets, managed: Managed) {
 	const route = context.ui.router.current()
 	if (route.type !== "session" || !route.sessionID) {
 		context.ui.toast.show({ message: "Open a session first.", variant: "warning" })
@@ -319,7 +335,7 @@ async function open(context: TuiContext, presets: Presets, managed: Readonly<Rec
 		await context.client.session.update({
 			sessionID: root,
 			metadata: withCrew(session.metadata, change.crew),
-			permissions: withRules(session.permissions, change.crew),
+			permissions: withRules(session.permissions, change.crew, managed),
 		})
 		context.ui.toast.show({ message: `Crew: ${change.summary}`, variant: "success" })
 	} catch (error) {
@@ -331,7 +347,7 @@ export default {
 	id: "crew",
 	setup(context: TuiContext) {
 		const presets = readPresets(context.options.presets)
-		const managed = readLabels(context.options.managed)
+		const managed = readManaged(context.options.managed)
 		// Keymap layers need the app's keymap provider, so register from an app slot.
 		context.ui.slot({
 			append: "app",

@@ -137,12 +137,14 @@ let
     }
 
     # Whole repo is one skill. Copies SKILL.md plus common adjunct files into
-    # each destination under $2 (the source `name`).
+    # each destination under $2 (the source `name`), replacing the previous
+    # copy: `cp -r` into an existing directory would nest it one level deeper.
     _copy_skills_single() {
       local src="$1" name="$2"
       [ -f "$src/SKILL.md" ] || return 0
       _ai_skills_wanted "$name" || return 0
       while IFS= read -r dest; do
+        $DRY_RUN_CMD rm -rf "$dest/$name"
         $DRY_RUN_CMD mkdir -p "$dest/$name"
         $DRY_RUN_CMD cp "$src/SKILL.md" "$dest/$name/SKILL.md"
         for f in README.md LICENSE LICENSE.md CHANGELOG.md; do

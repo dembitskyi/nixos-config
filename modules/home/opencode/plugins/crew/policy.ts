@@ -2,7 +2,10 @@
 // model each one runs on, and whether the user is away. Settings live in the root
 // session's metadata under `crew`; access is enforced through that session's
 // native permission rules, models are injected by the server plugin when a
-// subagent is launched, and the server plugin applies the away rules.
+// subagent is launched, and the server plugin applies the away rules. The crew's
+// rules also deny the playbook skills (`crew`, `crew-<agent>`) of members that are
+// off, and managed members (started by another plugin) can be switched off, which
+// hides their tools and skill.
 
 export type Access = "allow" | "deny"
 export type Delegation = "default" | Access
@@ -38,11 +41,25 @@ export interface AgentInfo {
 }
 
 export type Presets = Record<string, Record<string, string>>
+
+/** A member another plugin starts: its label, and optionally the tools and skill `/crew` can switch off. */
+export interface ManagedInfo {
+	label: string
+	// Permission action pattern of its tools, e.g. `lanes_*`.
+	tools?: string
+	skill?: string
+}
+
+export type Managed = Record<string, ManagedInfo>
 export type Source = "configured" | "inherited" | "user"
 
 export const KEY = "crew"
 export const TOOL = "subagent"
 export const QUESTION = "question"
+export const SKILL = "skill"
+// The strategy skill for working with the crew, and the prefix of each member's playbook skill.
+export const STRATEGY = "crew"
+export const PLAYBOOK = "crew-"
 
 export const AWAY_NOTE =
 	"The user is away and has authorized you to keep working without them: do not stop to ask or wait for confirmation, and never end a turn on a question. Make reasonable assumptions, state them in your report, and continue. Permission prompts are approved automatically; commands the configuration denies stay blocked, so take another way when one is refused."
@@ -99,17 +116,55 @@ export function isEmpty(crew: Crew) {
 
 const sorted = <T>(record: Record<string, T>) => Object.entries(record).sort(([a], [b]) => a.localeCompare(b))
 
-/** Session permission rules: the overall mode first, then per-agent exceptions. */
-export function crewRules(crew: Crew): Rule[] {
-	return [
-		...(crew.delegation === "default" ? [] : [{ action: TOOL, resource: "*", effect: crew.delegation } satisfies Rule]),
-		...sorted(crew.access).map(([agent, effect]) => ({ action: TOOL, resource: agent, effect }) satisfies Rule),
-	]
+/** Session permission rules: the overall mode first, then per-agent exceptions and their skills. */
+export function crewRules(crew: Crew, managed: Managed = {}): Rule[] {
+	const off = crew.delegation === "deny"
+	const rules: Rule[] =
+		crew.delegation === "default"
+			? []
+			: [
+					{ action: TOOL, resource: "*", effect: crew.delegation },
+					...(off
+						? [
+								{ action: SKILL, resource: STRATEGY, effect: "deny" } satisfies Rule,
+								{ action: SKILL, resource: `${PLAYBOOK}*`, effect: "deny" } satisfies Rule,
+							]
+						: []),
+				]
+	let strategy = false
+	for (const [agent, effect] of sorted(crew.access)) {
+		const info = managed[agent]
+		if (info?.tools) {
+			// On means the configured access: an explicit allow would leak the tools into child sessions.
+			if (effect === "deny") {
+				rules.push({ action: info.tools, resource: "*", effect })
+				if (info.skill) rules.push({ action: SKILL, resource: info.skill, effect })
+			}
+			continue
+		}
+		rules.push({ action: TOOL, resource: agent, effect })
+		// Skills are only allowed back after "All off": child sessions copy these rules.
+		if (effect === "deny" || off) rules.push({ action: SKILL, resource: `${PLAYBOOK}${agent}`, effect })
+		if (effect === "allow" && off) strategy = true
+	}
+	if (strategy) rules.push({ action: SKILL, resource: STRATEGY, effect: "allow" })
+	return rules
 }
 
-/** The session's rules with only the subagent ones replaced by the crew's. */
-export function withRules(rules: readonly Rule[] | undefined, crew: Crew): Rule[] {
-	return [...(rules ?? []).filter((rule) => rule.action !== TOOL), ...crewRules(crew)]
+function isOwned(rule: Rule, managed: Managed) {
+	const infos = Object.values(managed)
+	if (rule.action === TOOL || infos.some((info) => info.tools === rule.action)) return true
+	if (rule.action !== SKILL) return false
+	return (
+		rule.resource === STRATEGY ||
+		rule.resource.startsWith(PLAYBOOK) ||
+		infos.some((info) => info.skill === rule.resource)
+	)
+}
+
+/** The session's rules with only the crew's own ones (subagents, playbooks, managed tools) replaced. */
+export function withRules(rules: readonly Rule[] | undefined, crew: Crew, managed: Managed = {}): Rule[] {
+	return [...(rules ?? []).filter((rule) => !isOwned(rule, managed)), ...crewRules(crew, managed)]
 }
 
 /** Returns the session metadata with the crew stored, or removed when empty. */
@@ -118,6 +173,22 @@ export function withCrew(metadata: unknown, crew: Crew): Record<string, unknown>
 	if (isEmpty(crew)) delete next[KEY]
 	else next[KEY] = crew
 	return next
+}
+
+/** Reads the managed members: a label alone, or an object with a label and optional tools and skill. */
+export function readManaged(value: unknown): Managed {
+	if (!isRecord(value)) return {}
+	const managed: Managed = {}
+	for (const [agent, entry] of Object.entries(value)) {
+		if (typeof entry === "string") managed[agent] = { label: entry }
+		else if (isRecord(entry) && typeof entry.label === "string") {
+			const info: ManagedInfo = { label: entry.label }
+			if (typeof entry.tools === "string" && entry.tools) info.tools = entry.tools
+			if (typeof entry.skill === "string" && entry.skill) info.skill = entry.skill
+			managed[agent] = info
+		}
+	}
+	return managed
 }
 
 export function applyPreset(crew: Crew, name: string, preset: Record<string, string>): Crew {
@@ -153,9 +224,14 @@ function matches(pattern: string, value: string) {
 	return new RegExp(`^${source}$`, "s").test(value)
 }
 
-/** The effect OpenCode applies to launching `agent`: the last matching rule wins. */
+/** The effect OpenCode applies to `action` on `resource`: the last matching rule wins. */
+export function effect(rules: readonly Rule[], action: string, resource: string): Rule["effect"] {
+	return rules.findLast((rule) => matches(rule.action, action) && matches(rule.resource, resource))?.effect ?? "ask"
+}
+
+/** The effect OpenCode applies to launching `agent`. */
 export function access(rules: readonly Rule[], agent: string): Rule["effect"] {
-	return rules.findLast((rule) => matches(rule.action, TOOL) && matches(rule.resource, agent))?.effect ?? "ask"
+	return effect(rules, TOOL, agent)
 }
 
 /** Subagents that `rules` (the caller's, then its session's) let it launch. */

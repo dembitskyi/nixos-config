@@ -82,6 +82,7 @@ export interface Host {
 	readonly session: {
 		create(input: { parentID: string; title: string; agent: string; model?: ModelRef }): Promise<{ id: string }>
 		prompt(input: { sessionID: string; text: string; delivery?: "steer" }): Promise<unknown>
+		switchModel(input: { sessionID: string; model: ModelRef }): Promise<unknown>
 		synthetic(input: {
 			sessionID: string
 			text: string
@@ -263,9 +264,10 @@ export class Lanes {
 			const message = `Message from the orchestrator: ${text}`
 			const steer = Boolean(run.planner && this.planning.has(run.id))
 			this.log.info("tell.planner", { run: run.id, planner: run.planner, steer, chars: text.length })
-			if (run.planner && steer)
+			if (run.planner && steer) {
+				await this.syncModel(run, run.planner, PLANNER)
 				await this.host.session.prompt({ sessionID: run.planner, text: message, delivery: "steer" })
-			else void this.wakePlanner(run, message, "message")
+			} else void this.wakePlanner(run, message, "message")
 			return "Sent to the planner."
 		}
 		const task = this.task(run, taskID)
@@ -276,6 +278,7 @@ export class Lanes {
 			return `Updated ${task.id}'s instructions before it starts.`
 		}
 		if (!task.sessionID) throw new Error(`${task.id} never started; add a new task instead.`)
+		await this.syncModel(run, task.sessionID, task.agent, task.model)
 		if (active(task)) {
 			this.log.info("tell.task", { run: run.id, task: task.id, session: task.sessionID, mode: "steer" })
 			await this.host.session.prompt({
@@ -458,6 +461,29 @@ export class Lanes {
 		return model
 	}
 
+	/**
+	 * Moves a session to the model `modelFor` picks now, before it is prompted again, so a model changed
+	 * with /crew (e.g. after a provider limit) reaches running runs. OpenCode reads the session's model
+	 * on every step and retry, so a running execution switches at its next attempt.
+	 */
+	private async syncModel(run: Run, sessionID: string, agent: string, explicit?: string) {
+		try {
+			const model = await this.modelFor(run, agent, explicit)
+			const current = (await this.host.session.get({ sessionID })).model
+			if (!model || (current && formatModel(current) === formatModel(model))) return
+			await this.host.session.switchModel({ sessionID, model })
+			this.log.info("model.switched", {
+				run: run.id,
+				agent,
+				session: sessionID,
+				from: current && formatModel(current),
+				to: formatModel(model),
+			})
+		} catch (error) {
+			this.log.warn("model.switch-failed", { run: run.id, agent, session: sessionID, error })
+		}
+	}
+
 	private plannerState(run: Run): PlannerState {
 		if (this.planning.has(run.id)) return "thinking"
 		if (run.question) return "asking"
@@ -552,6 +578,7 @@ export class Lanes {
 		const sessionID = task.sessionID
 		if (!sessionID) return
 		try {
+			await this.syncModel(run, sessionID, task.agent, task.model)
 			const idle = await Promise.race([
 				this.host.session.wait({ sessionID }).then(() => true),
 				delay(this.host.settleMs).then(() => false),
@@ -612,6 +639,7 @@ export class Lanes {
 				}
 				task.attempts++
 				this.log.warn("task.retry", { run: run.id, task: task.id, session: sessionID, attempt: task.attempts, error })
+				await this.syncModel(run, sessionID, task.agent, task.model)
 				await this.host.session.prompt({
 					sessionID,
 					text: `The previous attempt ended with an error (${error}). Continue the task from where it stopped.`,
@@ -695,6 +723,7 @@ export class Lanes {
 		this.log.info("planner.wake", { run: run.id, planner, reason: why, fresh: ids(fresh), ...counts(run) })
 		let ending: string | undefined
 		try {
+			await this.syncModel(run, planner, PLANNER)
 			await this.host.session.prompt({ sessionID: planner, text })
 			await this.host.session.wait({ sessionID: planner })
 			const last = (await this.host.session.context({ sessionID: planner })).at(-1)

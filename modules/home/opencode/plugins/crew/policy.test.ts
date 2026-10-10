@@ -6,13 +6,16 @@ import {
 	applyPreset,
 	available,
 	crewRules,
+	effect,
 	emptyCrew,
 	isModelRef,
 	KEY,
+	type Managed,
 	modelOf,
 	note,
 	type Rule,
 	readCrew,
+	readManaged,
 	readPresets,
 	toolDescription,
 	withCrew,
@@ -34,6 +37,8 @@ const agents: AgentInfo[] = [
 ]
 
 const byID = (id: string) => agents.find((agent) => agent.id === id) as AgentInfo
+
+const managed: Managed = { planner: { label: "lanes planner", tools: "lanes_*", skill: "lanes" } }
 
 describe("readCrew", () => {
 	test("returns the empty crew for missing or malformed values", () => {
@@ -66,21 +71,100 @@ describe("rules", () => {
 		expect(crewRules(emptyCrew())).toEqual([])
 		expect(crewRules({ ...emptyCrew(), delegation: "deny", access: { pr: "allow", explore: "deny" } })).toEqual([
 			{ action: "subagent", resource: "*", effect: "deny" },
+			{ action: "skill", resource: "crew", effect: "deny" },
+			{ action: "skill", resource: "crew-*", effect: "deny" },
 			{ action: "subagent", resource: "explore", effect: "deny" },
+			{ action: "skill", resource: "crew-explore", effect: "deny" },
 			{ action: "subagent", resource: "pr", effect: "allow" },
+			{ action: "skill", resource: "crew-pr", effect: "allow" },
+			{ action: "skill", resource: "crew", effect: "allow" },
 		])
 	})
 
-	test("withRules keeps the session's other rules and replaces only subagent ones", () => {
+	test("crewRules denies the playbook of a member that is off", () => {
+		expect(crewRules({ ...emptyCrew(), access: { pr: "deny" } })).toEqual([
+			{ action: "subagent", resource: "pr", effect: "deny" },
+			{ action: "skill", resource: "crew-pr", effect: "deny" },
+		])
+	})
+
+	test("crewRules allows skills back only after all off", () => {
+		expect(crewRules({ ...emptyCrew(), access: { pr: "allow" } })).toEqual([
+			{ action: "subagent", resource: "pr", effect: "allow" },
+		])
+		expect(crewRules({ ...emptyCrew(), delegation: "allow", access: { pr: "allow" } })).toEqual([
+			{ action: "subagent", resource: "*", effect: "allow" },
+			{ action: "subagent", resource: "pr", effect: "allow" },
+		])
+		expect(crewRules({ ...emptyCrew(), delegation: "deny", access: { explore: "allow", pr: "allow" } })).toEqual([
+			{ action: "subagent", resource: "*", effect: "deny" },
+			{ action: "skill", resource: "crew", effect: "deny" },
+			{ action: "skill", resource: "crew-*", effect: "deny" },
+			{ action: "subagent", resource: "explore", effect: "allow" },
+			{ action: "skill", resource: "crew-explore", effect: "allow" },
+			{ action: "subagent", resource: "pr", effect: "allow" },
+			{ action: "skill", resource: "crew-pr", effect: "allow" },
+			{ action: "skill", resource: "crew", effect: "allow" },
+		])
+	})
+
+	test("crewRules switches a managed member's tools and skill off, and leaves On to the configuration", () => {
+		expect(crewRules({ ...emptyCrew(), access: { planner: "deny" } }, managed)).toEqual([
+			{ action: "lanes_*", resource: "*", effect: "deny" },
+			{ action: "skill", resource: "lanes", effect: "deny" },
+		])
+		expect(crewRules({ ...emptyCrew(), delegation: "deny", access: { planner: "allow" } }, managed)).toEqual([
+			{ action: "subagent", resource: "*", effect: "deny" },
+			{ action: "skill", resource: "crew", effect: "deny" },
+			{ action: "skill", resource: "crew-*", effect: "deny" },
+		])
+		const bare = { planner: { label: "x", tools: "x_*" } }
+		expect(crewRules({ ...emptyCrew(), access: { planner: "deny" } }, bare)).toEqual([
+			{ action: "x_*", resource: "*", effect: "deny" },
+		])
+	})
+
+	test("withRules keeps the session's other rules and replaces only the crew's", () => {
 		const session: Rule[] = [
 			{ action: "shell", resource: "git *", effect: "allow" },
 			{ action: "subagent", resource: "pr", effect: "deny" },
+			{ action: "skill", resource: "debugging", effect: "deny" },
+			{ action: "skill", resource: "crew", effect: "deny" },
+			{ action: "skill", resource: "crew-pr", effect: "deny" },
+			{ action: "lanes_*", resource: "*", effect: "deny" },
+			{ action: "skill", resource: "lanes", effect: "deny" },
+			{ action: "read", resource: "*", effect: "allow" },
 		]
-		expect(withRules(session, { ...emptyCrew(), access: { explore: "deny" } })).toEqual([
+		expect(withRules(session, { ...emptyCrew(), access: { explore: "deny" } }, managed)).toEqual([
 			{ action: "shell", resource: "git *", effect: "allow" },
+			{ action: "skill", resource: "debugging", effect: "deny" },
+			{ action: "read", resource: "*", effect: "allow" },
 			{ action: "subagent", resource: "explore", effect: "deny" },
+			{ action: "skill", resource: "crew-explore", effect: "deny" },
+		])
+		expect(withRules(session, emptyCrew()).map((rule) => rule.action)).toEqual([
+			"shell",
+			"skill",
+			"lanes_*",
+			"skill",
+			"read",
 		])
 		expect(withRules(undefined, emptyCrew())).toEqual([])
+	})
+})
+
+describe("readManaged", () => {
+	test("accepts a label alone or an object with tools and a skill", () => {
+		expect(readManaged({ planner: "lanes planner" })).toEqual({ planner: { label: "lanes planner" } })
+		expect(readManaged({ planner: { label: "lanes planner", tools: "lanes_*", skill: "lanes" } })).toEqual(managed)
+	})
+
+	test("drops malformed entries and fields", () => {
+		expect(readManaged(undefined)).toEqual({})
+		expect(readManaged(["x"])).toEqual({})
+		expect(readManaged({ a: 1, b: { tools: "x_*" }, c: { label: "c", tools: 2, skill: "" } })).toEqual({
+			c: { label: "c" },
+		})
 	})
 })
 
@@ -118,6 +202,17 @@ describe("access", () => {
 		expect(access([], "pr")).toBe("ask")
 		expect(access([...dev, ...crewRules({ ...emptyCrew(), access: { general: "deny" } })], "general")).toBe("deny")
 		expect(access([...dev, { action: "subagent", resource: "*", effect: "allow" }], "pr")).toBe("allow")
+	})
+
+	test("effect evaluates a managed member's tools pattern", () => {
+		const planner: Rule[] = [
+			{ action: "*", resource: "*", effect: "deny" },
+			{ action: "lanes_*", resource: "*", effect: "allow" },
+		]
+		const session = (planner: "allow" | "deny") => crewRules({ ...emptyCrew(), access: { planner } }, managed)
+		expect(effect(planner, "lanes_*", "*")).toBe("allow")
+		expect(effect([...planner, ...session("deny")], "lanes_*", "*")).toBe("deny")
+		expect(effect([...planner, ...session("allow")], "lanes_*", "*")).toBe("allow")
 	})
 })
 

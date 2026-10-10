@@ -132,6 +132,50 @@ let
       exec opencode "$@"
     '';
   };
+  # Terminal clients of the sandboxed servers: two on the interactive server
+  # and one on the automation server.
+  clients = {
+    s1 = {
+      name = "opencode S1";
+      session = "ocode_s1";
+      url = "http://127.0.0.1:4096";
+    };
+    s2 = {
+      name = "opencode S2";
+      session = "ocode_s2";
+      url = "http://127.0.0.1:4096";
+    };
+    a1 = {
+      name = "opencode (automation)";
+      session = "ocode_a1";
+      url = "http://127.0.0.1:4097";
+    };
+  };
+  # `opencode-dev <client>` attaches the current terminal to that client's server.
+  opencodeDev = pkgs.writeShellApplication {
+    name = "opencode-dev";
+    runtimeInputs = [ opencodeSandbox ];
+    text = ''
+      case "''${1:-}" in
+      ${lib.concatStrings (lib.mapAttrsToList (id: client: "  ${id}) url=${client.url} ;;\n") clients)}
+        *)
+          echo "usage: opencode-dev <${lib.concatStringsSep "|" (lib.attrNames clients)}> [opencode options]" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      # The TUI sends its working directory as the session location, which the
+      # sandbox can only see inside the workspace.
+      case "$PWD/" in
+        ${userHome}/workspace/*) ;;
+        *)
+          echo "opencode-dev: starting in ${userHome}/workspace, the only directory the sandbox sees" >&2
+          cd ${userHome}/workspace || exit 1
+          ;;
+      esac
+      exec opencode-sandbox --server "$url" "$@"
+    '';
+  };
   extraPackages = with pkgs; [
     bash
     bat
@@ -419,39 +463,24 @@ in
       home.packages = [
         sandboxEnter
         opencodeSandbox
+        opencodeDev
       ];
 
       # Terminal clients for the sandboxed servers (:4096 interactive,
       # :4097 automation), started in ~/workspace so sessions open there.
-      xdg.desktopEntries =
-        lib.mapAttrs
-          (_: entry: {
-            inherit (entry) name;
-            genericName = "OpenCode - AI coding agent";
-            comment = "OpenCode client for the sandboxed server";
-            exec = "tmux new-session -A -D -s ${entry.session} -c ${userHome}/workspace bash -lc \"opencode-sandbox --server ${entry.url}\"";
-            terminal = true;
-            icon = "utilities-terminal";
-            type = "Application";
-            categories = [ "Utility" ];
-          })
-          {
-            opencode-s1 = {
-              name = "opencode S1";
-              session = "ocode_s1";
-              url = "http://127.0.0.1:4096";
-            };
-            opencode-s2 = {
-              name = "opencode S2";
-              session = "ocode_s2";
-              url = "http://127.0.0.1:4096";
-            };
-            opencode-a1 = {
-              name = "opencode (automation)";
-              session = "ocode_a1";
-              url = "http://127.0.0.1:4097";
-            };
-          };
+      xdg.desktopEntries = lib.mapAttrs' (
+        id: client:
+        lib.nameValuePair "opencode-${id}" {
+          inherit (client) name;
+          genericName = "OpenCode - AI coding agent";
+          comment = "OpenCode client for the sandboxed server";
+          exec = "tmux new-session -A -D -s ${client.session} -c ${userHome}/workspace bash -lc \"opencode-sandbox --server ${client.url}\"";
+          terminal = true;
+          icon = "utilities-terminal";
+          type = "Application";
+          categories = [ "Utility" ];
+        }
+      ) clients;
 
       systemd.user.tmpfiles.rules = [
         "d ${userHome}/.config/opencode 0700 - - -"
