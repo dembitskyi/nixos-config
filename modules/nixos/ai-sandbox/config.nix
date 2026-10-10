@@ -18,8 +18,9 @@ let
     else
       "";
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
-  # Shared by both opencode servers and their clients (see opencode-sandbox).
-  passwordFile = "${userHome}/.local/share/opencode/sandbox-server.password";
+  # `opencode serve` always requires a password (HTTP Basic, user `opencode`).
+  # Both servers and their clients (see opencode-sandbox) share this secret.
+  passwordFile = config.sops.secrets."OPENCODE/SERVER_PASSWORD".path;
   helpers = import ./helpers.nix {
     inherit lib pkgs;
   };
@@ -211,10 +212,7 @@ in
   execStartScript = pkgs.writeShellScript "ai-sandbox-server" ''
     mkdir -p ~/workspace
     cd ~/workspace
-    if [ ! -s ${passwordFile} ]; then
-      (umask 077 && head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' >${passwordFile})
-    fi
-    OPENCODE_PASSWORD="$(cat ${passwordFile})"
+    OPENCODE_PASSWORD="$(cat "$CREDENTIALS_DIRECTORY/opencode_password")"
     export OPENCODE_PASSWORD
     ${proxyPrefix}${nativeLibs}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
     ${proxyPrefix}${automationEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs

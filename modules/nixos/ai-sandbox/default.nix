@@ -119,7 +119,7 @@ let
     '';
   };
   # `opencode serve` always requires a password. Both sandboxed servers share
-  # one generated on first start (see config.nix); this client wrapper reads it.
+  # one sops secret (see config.nix); this client wrapper reads it.
   opencodeSandbox = pkgs.writeShellApplication {
     name = "opencode-sandbox";
     runtimeInputs = [
@@ -351,10 +351,14 @@ let
       TemporaryFileSystem = [ "${userHome}/workspace:ro" ];
       # Supplementary groups survive the user namespace, so docker group
       # membership still opens the root-equivalent daemon socket. The user's
-      # tmux socket would likewise run commands outside the sandbox.
+      # tmux socket would likewise run commands outside the sandbox. The
+      # sessions use no sops secret, yet the user-owned ones (the opencode
+      # servers' password, the GitHub token, the phone's keys) are readable
+      # by path.
       InaccessiblePaths = [
         "-/run/docker.sock"
         "-/tmp/tmux-%U"
+        "-/run/secrets.d"
       ];
     };
   };
@@ -441,6 +445,10 @@ in
       "MCP/CONFLUENCE_USERNAME" = { };
       "MCP/CONFLUENCE_API_TOKEN" = { };
       "MCP/KAGI_API_TOKEN" = { };
+      "OPENCODE/SERVER_PASSWORD" = {
+        owner = config.variables.username;
+        mode = "0400";
+      };
     };
 
     sops.templates = configData.templates;
@@ -534,6 +542,7 @@ in
           ];
           BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds;
           LoadCredential = configData.loadConfig ++ [
+            "opencode_password:${configData.passwordFile}"
             "github_ssh_key:${config.sops.secrets."MCP/GITHUB_SSH_KEY".path}"
             "github_known_hosts:${githubKnownHosts}"
           ];

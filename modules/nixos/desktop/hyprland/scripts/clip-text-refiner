@@ -2,7 +2,8 @@
 set -euo pipefail
 
 readonly OPENCODE_URL="http://127.0.0.1:4097"
-readonly PASSWORD_FILE="$HOME/.local/share/opencode/sandbox-server.password"
+# The sandboxed servers' password (sops secret, see modules/nixos/ai-sandbox).
+readonly PASSWORD_FILE="/run/secrets/OPENCODE/SERVER_PASSWORD"
 readonly MAX_TIME=120
 
 clip=$(wl-paste -p 2>/dev/null) || true
