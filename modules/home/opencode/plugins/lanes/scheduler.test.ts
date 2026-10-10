@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { Fields, Log } from "./log"
 import { type AgentInfo, type Host, Lanes, type SessionInfo } from "./scheduler"
-import { type Message, RESUME, type Run } from "./state"
+import { line, type Message, RESUME, type Run } from "./state"
 import { readView, VIEW_KEY } from "./view"
 
 interface FakeSession {
@@ -353,11 +353,67 @@ describe("the planner", () => {
 		await f.settle()
 		f.finish(planner, "succeeded")
 		await f.settle()
-		expect(f.session(planner).prompts[2]?.text).toContain("Nothing is running or queued")
+		expect(f.session(planner).prompts[2]?.text).toContain("Nothing is running, and nothing queued can start")
 		f.finish(planner, "succeeded")
 		await f.settle()
 		expect(run.stalled).toBe(true)
 		expect(f.notes[0]?.text).toContain('state="stalled"')
+	})
+
+	test("is woken when the rest of the queue waits on a failed task, also through a chain", async () => {
+		const f = fake()
+		const { run, planner } = await started(f, {
+			goal: "Ship",
+			tasks: [
+				{ id: "a", title: "A", prompt: "Do A.", files: ["a.ts"] },
+				{ id: "b", title: "B", prompt: "Build on A.", files: ["b.ts"], deps: ["a"] },
+				{ id: "c", title: "C", prompt: "Review B.", deps: ["b"] },
+				{ id: "d", title: "D", prompt: "Do D.", files: ["d.ts"] },
+			],
+		})
+		f.finish(planner, "succeeded")
+		f.finish(worker(run, "a"), "failed", undefined, "quota")
+		await f.settle()
+		f.finish(worker(run, "a"), "failed", undefined, "quota again")
+		await f.settle()
+		expect(statuses(run)).toEqual({ a: "failed", b: "queued", c: "queued", d: "running" })
+		expect(f.session(planner).prompts).toHaveLength(2)
+		const text = f.session(planner).prompts[1]?.text ?? ""
+		expect(text).toContain("a A [failed]: quota again")
+		expect(text).toContain("can never start: b (after a [failed]), c (after b [stuck])")
+		expect(line(run)).toContain("2 stuck")
+	})
+
+	test("a restart wakes the planner of a run whose queued tasks can never start", async () => {
+		const f = fake()
+		const { id: planner } = await f.host.session.create({ parentID: "origin", title: "Lanes", agent: "planner" })
+		const task = { prompt: "Go.", agent: "dev-junior", files: [], deps: [], status: "queued" as const, attempts: 0 }
+		// The state the logs show after each restart: nothing runs, a review that a builder waits on
+		// failed, and a second review waits on that builder.
+		const hung: Run = {
+			id: "rhung",
+			goal: "Ship",
+			origin: "origin",
+			directory: "/repo",
+			planner,
+			lanes: 8,
+			notes: [],
+			status: "running",
+			tasks: [
+				{ ...task, id: "review", title: "Review", status: "failed", attempts: 2, error: "quota", seen: true },
+				{ ...task, id: "builder", title: "Builder", deps: ["review"] },
+				{ ...task, id: "builder-review", title: "Review the builder", deps: ["builder"] },
+			],
+			created: 0,
+			updated: 0,
+		}
+		await f.host.storage.set("run:rhung", hung)
+		await new Lanes(f.host).load()
+		await f.settle()
+		expect(f.session(planner).prompts).toHaveLength(1)
+		expect(f.session(planner).prompts[0]?.text).toContain(
+			"can never start: builder (after review [failed]), builder-review (after builder [stuck])",
+		)
 	})
 
 	test("asks the orchestrator and is woken with the answer", async () => {

@@ -180,17 +180,45 @@ export function startable(run: Run) {
 	return picked
 }
 
-/** Queued tasks that can never start because a dependency failed or was cancelled. */
+/**
+ * Queued tasks that can never start: a dependency failed or was cancelled, is stuck itself, or the
+ * dependencies form a cycle. Every other queued task starts once its dependencies are done.
+ */
 export function stuck(run: Run) {
 	const byID = new Map(run.tasks.map((task) => [task.id, task]))
-	return run.tasks.filter(
-		(task) =>
-			task.status === "queued" &&
-			task.deps.some((dep) => {
-				const status = byID.get(dep)?.status
-				return status === "failed" || status === "cancelled"
-			}),
-	)
+	const queued = run.tasks.filter((task) => task.status === "queued")
+	// Grow the set of queued tasks that can still start until it stops changing; a cycle never joins it.
+	const viable = new Set<string>()
+	let grew: boolean
+	do {
+		grew = false
+		for (const task of queued) {
+			if (viable.has(task.id)) continue
+			const ready = task.deps.every((dep) => {
+				const other = byID.get(dep)
+				return other !== undefined && (other.status === "done" || active(other) || viable.has(dep))
+			})
+			if (!ready) continue
+			viable.add(task.id)
+			grew = true
+		}
+	} while (grew)
+	return queued.filter((task) => !viable.has(task.id))
+}
+
+/** The stuck tasks, each with the dependencies that hold it. */
+function stuckText(run: Run, held: readonly Task[]) {
+	const byID = new Map(run.tasks.map((task) => [task.id, task]))
+	const ids = new Set(held.map((task) => task.id))
+	return held
+		.map((task) => {
+			const holds = task.deps.flatMap((dep) => {
+				const status = ids.has(dep) ? "stuck" : (byID.get(dep)?.status ?? "missing")
+				return status === "done" || status === "running" || status === "blocked" ? [] : [`${dep} [${status}]`]
+			})
+			return `${task.id} (after ${holds.join(", ")})`
+		})
+		.join(", ")
 }
 
 export function counts(run: Run) {
@@ -241,10 +269,12 @@ export function finalError(messages: readonly Message[]) {
 /** One line per run for the orchestrator's context. */
 export function line(run: Run) {
 	const c = counts(run)
+	const hung = stuck(run).length
 	const parts = [`${c.done}/${c.total} done`]
 	if (c.running) parts.push(`${c.running} running`)
 	if (c.blocked) parts.push(`${c.blocked} blocked`)
-	if (c.queued) parts.push(`${c.queued} queued`)
+	if (c.queued > hung) parts.push(`${c.queued - hung} queued`)
+	if (hung) parts.push(`${hung} stuck`)
 	if (c.failed) parts.push(`${c.failed} failed`)
 	const question = run.question ? ` Planner asks: ${cap(run.question, 160)} (answer with lanes_tell).` : ""
 	return `Lanes run ${run.id} (${cap(run.goal, 60)}): ${parts.join(" · ")}.${question}`
@@ -256,13 +286,10 @@ const minutes = (from: number | undefined, to: number) =>
 /** The compact board `lanes_status` returns. */
 export function board(run: Run, now: number) {
 	const c = counts(run)
-	const ids = (status: TaskStatus) =>
-		run.tasks
-			.filter((task) => task.status === status)
-			.map((task) => task.id)
-			.join(", ")
+	const held = stuck(run)
+	const queued = run.tasks.filter((task) => task.status === "queued" && !held.includes(task))
 	const lines = [
-		`Run ${run.id} · ${run.status} · ${run.lanes} lanes · ${c.total} tasks: ${c.done} done, ${c.running} running, ${c.blocked} blocked, ${c.queued} queued, ${c.failed} failed`,
+		`Run ${run.id} · ${run.status} · ${run.lanes} lanes · ${c.total} tasks: ${c.done} done, ${c.running} running, ${c.blocked} blocked, ${queued.length} queued${held.length ? `, ${held.length} stuck` : ""}, ${c.failed} failed`,
 		`Goal: ${cap(run.goal, 200)}`,
 	]
 	const running = run.tasks.filter((task) => task.status === "running")
@@ -278,7 +305,8 @@ export function board(run: Run, now: number) {
 		lines.push(`Failed: ${task.id} ${cap(task.title, 40)}: ${cap(task.error ?? "unknown error", 120)}`)
 	const done = run.tasks.filter((task) => task.status === "done")
 	if (done.length) lines.push(`Done: ${done.map((task) => `${task.id} ${cap(task.title, 40)}`).join(" · ")}`)
-	if (c.queued) lines.push(`Queued: ${ids("queued")}`)
+	if (queued.length) lines.push(`Queued: ${queued.map((task) => task.id).join(", ")}`)
+	if (held.length) lines.push(`Stuck, can never start: ${stuckText(run, held)}`)
 	if (run.question) lines.push(`Planner asks: ${run.question}`)
 	if (run.summary) lines.push(`Summary: ${run.summary}`)
 	lines.push("Use lanes_status with a task ID for its report.")
@@ -334,7 +362,7 @@ export function kickoff(run: Run) {
 }
 
 export const NUDGE =
-	"Nothing is running or queued. Add tasks with plan_add, call plan_finish if the goal is met, or plan_ask if you need a decision."
+	"Nothing is running, and nothing queued can start. Add tasks with plan_add, cancel stuck ones with plan_cancel, call plan_finish if the goal is met, or plan_ask if you need a decision."
 
 /** The planner's wake-up after a batch: new results, stuck tasks, and what to do next. */
 export function wake(run: Run) {
@@ -351,9 +379,11 @@ export function wake(run: Run) {
 				)
 				.join("\n")}`,
 		)
-	const blocked = stuck(run)
-	if (blocked.length)
-		sections.push(`Stuck behind a failed or cancelled dependency: ${blocked.map((task) => task.id).join(", ")}.`)
+	const held = stuck(run)
+	if (held.length)
+		sections.push(
+			`These queued tasks can never start: ${stuckText(run, held)}. Cancel them with plan_cancel, and queue replacements with plan_add when they are still needed.`,
+		)
 	sections.push(
 		"Check the results against the goal. Add follow-up or fix tasks with plan_add, cancel obsolete or stuck ones with plan_cancel, or call plan_finish when the goal is met.",
 	)

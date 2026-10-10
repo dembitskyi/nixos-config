@@ -118,6 +118,29 @@ describe("startable", () => {
 		expect(stuck(r).map((task) => task.id)).toEqual(["t2", "t4"])
 		expect(startable(r)).toEqual([])
 	})
+
+	test("stuck follows chains and cycles, but keeps tasks that wait on running work", () => {
+		const r = run([
+			{ status: "failed" },
+			{ deps: ["t1"] },
+			{ deps: ["t2"] },
+			{ deps: ["t5"] },
+			{ deps: ["t4"] },
+			{ deps: ["t6"] },
+			{ status: "running" },
+			{ deps: ["t7"] },
+			{ deps: ["t8"] },
+		])
+		expect(stuck(r).map((task) => task.id)).toEqual(["t2", "t3", "t4", "t5", "t6"])
+		expect(line(r)).toBe("Lanes run r1 (Ship the feature): 0/9 done · 1 running · 2 queued · 5 stuck · 1 failed.")
+		const text = board(r, 0)
+		expect(text).toContain("9 tasks: 0 done, 1 running, 0 blocked, 2 queued, 5 stuck, 1 failed")
+		expect(text).toContain("Queued: t8, t9")
+		expect(text).toContain(
+			"Stuck, can never start: t2 (after t1 [failed]), t3 (after t2 [stuck]), t4 (after t5 [stuck]), t5 (after t4 [stuck]), t6 (after t6 [stuck])",
+		)
+		expect(wake(r)).toContain("These queued tasks can never start: t2 (after t1 [failed]), t3 (after t2 [stuck])")
+	})
 })
 
 test("parseModel and clampLanes", () => {
