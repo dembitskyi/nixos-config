@@ -11,29 +11,22 @@ let
   cfg = config.mine.home.claude-code;
   vcfg = cfg.vllm;
 
-  # Sessions never ask (bypassPermissions): the sandbox is the boundary. The
-  # denies of the shared shell policy (../opencode/curated-bash.nix) still
-  # block; its "ask" rules are left out, since Claude Code would still prompt
-  # for them.
-  curatedBash = import ../opencode/curated-bash.nix;
+  # Sessions never ask and nothing is denied (bypassPermissions, no deny
+  # rules): the sandbox is the boundary (its own home, one workspace folder,
+  # a private /tmp, no privileges), so everything inside it is allowed, rm
+  # included. The shared shell policy of opencode (../opencode/curated-bash.nix)
+  # does not apply here.
   settings = {
     # Skips the confirmation before entering bypassPermissions mode.
     skipDangerousModePermissionPrompt = true;
-    permissions.deny =
-      lib.mapAttrsToList (pattern: _: "Bash(${pattern})") (
-        lib.filterAttrs (_: rule: rule == "deny") curatedBash
-      )
-      ++ [
-        "Edit(//nix/**)"
-        "WebFetch"
-      ];
+    permissions.defaultMode = "bypassPermissions";
   };
   settingsFile = pkgs.writeText "claude-code-settings.json" (builtins.toJSON settings);
 
   # Claude Code is updated by Nix, not by itself, and sends no telemetry, error
   # reports, or other non-essential traffic. Agent view is off: its background
-  # supervisor is reached through /tmp, which every session (and any host-side
-  # Claude Code) shares.
+  # supervisor is reached through /tmp (each session now has its own, see
+  # `sandbox` below, so it could be turned back on).
   commonEnv = {
     DISABLE_UPDATES = 1;
     DISABLE_TELEMETRY = 1;
@@ -138,6 +131,9 @@ in
         "--permission-mode=bypassPermissions"
       ];
       defaultBackend = "anthropic";
+      # Each session gets its own empty /tmp (the shared sandbox keeps the
+      # host's): its scratch files, task outputs and sockets are its own.
+      sandbox.Service.PrivateTmp = true;
       backends = {
         anthropic.args = [ "--model=${cfg.model}" ];
       }
@@ -156,9 +152,12 @@ in
           backend = "anthropic";
           comment = "Sandboxed Claude Code (${cfg.model})";
         };
+        # S2 works in S1's folder (~/workspace/claude-s1): two sessions, one
+        # set of checkouts.
         s2 = {
           backend = "anthropic";
-          comment = "Sandboxed Claude Code (${cfg.model})";
+          folder = "s1";
+          comment = "Sandboxed Claude Code (${cfg.model}), in S1's folder";
         };
       }
       // lib.optionalAttrs vcfg.enable {

@@ -2,8 +2,9 @@
 # session runs in a transient systemd user unit that its `<name>-sandbox`
 # launcher starts on demand, inside a tmux session for re-attaching. The
 # sandbox comes from the AI sandbox NixOS module (`sandbox`) and is applied
-# through a unit-name-prefix drop-in. Each slot works in its own
-# ~/workspace/<name>-<slot>, the only part of the workspace it can see.
+# through a unit-name-prefix drop-in. Each slot works in a folder
+# ~/workspace/<name>-<folder> (by default its own, folder = slot; slots may
+# share one), the only part of the workspace it can see.
 {
   lib,
   config,
@@ -106,23 +107,24 @@ let
       ];
       text = ''
         usage() {
-          echo "Usage: ${launcher} [--backend ${lib.concatStringsSep "|" backends}] [--slot NAME] [ARGS...]" >&2
+          echo "Usage: ${launcher} [--backend ${lib.concatStringsSep "|" backends}] [--slot NAME] [--folder NAME] [ARGS...]" >&2
         }
 
         backend=${session.defaultBackend}
         slot=s1
+        folder=""
         while [ "$#" -gt 0 ]; do
           case "$1" in
-            --backend | --slot)
+            --backend | --slot | --folder)
               if [ "$#" -lt 2 ]; then
                 usage
                 exit 2
               fi
-              if [ "$1" = --backend ]; then
-                backend="$2"
-              else
-                slot="$2"
-              fi
+              case "$1" in
+                --backend) backend="$2" ;;
+                --slot) slot="$2" ;;
+                --folder) folder="$2" ;;
+              esac
               shift 2
               ;;
             -h | --help)
@@ -147,17 +149,21 @@ let
             exit 2
             ;;
         esac
-        case "$slot" in
-          "" | *[!A-Za-z0-9_]*)
-            echo "${launcher}: slot names may only contain letters, digits and underscores." >&2
-            exit 2
-            ;;
-        esac
+        folder="''${folder:-$slot}"
+        for value in "$slot" "$folder"; do
+          case "$value" in
+            "" | *[!A-Za-z0-9_]*)
+              echo "${launcher}: slot and folder names may only contain letters, digits and underscores." >&2
+              exit 2
+              ;;
+          esac
+        done
         unit="${launcher}-$slot.service"
 
         # The slot's folder is bound into the sandbox at the same path, so
-        # paths below it are valid on both sides of the sandbox.
-        workspace="$HOME/workspace/${name}-$slot"
+        # paths below it are valid on both sides of the sandbox. Slots that
+        # share a folder see (and write) the same files.
+        workspace="$HOME/workspace/${name}-$folder"
         mkdir -p "$workspace"
         case "$PWD" in
           "$workspace" | "$workspace"/*) dir="$PWD" ;;
@@ -198,7 +204,9 @@ let
         name = "${session.title} ${lib.toUpper slot}";
         genericName = "${session.title} - AI coding agent";
         inherit (slotCfg) comment;
-        exec = "tmux new-session -A -D -s ${name}_${slot} ${unitPrefix name} --backend ${slotCfg.backend} --slot ${slot}";
+        exec = "tmux new-session -A -D -s ${name}_${slot} ${unitPrefix name} --backend ${slotCfg.backend} --slot ${slot} --folder ${
+          if slotCfg.folder == null then slot else slotCfg.folder
+        }";
         terminal = true;
         icon = "utilities-terminal";
         type = "Application";
@@ -232,6 +240,12 @@ let
       comment = lib.mkOption {
         type = lib.types.str;
         description = "Comment of the slot's desktop entry.";
+      };
+      folder = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "[A-Za-z0-9_]+");
+        default = null;
+        example = "s1";
+        description = "Workspace folder ~/workspace/<name>-<folder> of the slot (default: its own, the slot's name). Slots may share one.";
       };
     };
   };
