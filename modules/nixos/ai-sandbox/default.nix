@@ -84,7 +84,7 @@ let
   );
   # Host-side debug helper: drops into the running AI sandbox's
   # namespaces so we can inspect exactly what the service sees (bind mounts,
-  # the ProtectHome tmpfs, the skills overlay, the stripped ssh_config).
+  # the ProtectHome tmpfs, the stripped ssh_config).
   # nsenter joins the user namespace first; --preserve-credentials keeps our
   # euid at 1000, which owns the namespace and therefore grants the privileges
   # needed to also join the mount namespace. The service env is replayed so
@@ -118,17 +118,20 @@ let
         -- env "''${service_env[@]}" "$@"
     '';
   };
-  # Skills exposed to the opencode service. All other skills in
-  # ~/.config/opencode/skills/ are hidden via a tmpfs overlay to avoid
-  # inflating the permission ruleset (each skill adds a rule that gets
-  # logged on every evaluate() call).
-  allowedSkills = [
-    "cpp-pro"
-    "python-pro"
-    "hyprland"
-    "nixos"
-  ]
-  ++ lib.optionals config.mine.jfrog.enable config.mine.jfrog.skills;
+  # `opencode serve` always requires a password. Both sandboxed servers share
+  # one generated on first start (see config.nix); this client wrapper reads it.
+  opencodeSandbox = pkgs.writeShellApplication {
+    name = "opencode-sandbox";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.opencode
+    ];
+    text = ''
+      OPENCODE_PASSWORD="$(cat ${configData.passwordFile})"
+      export OPENCODE_PASSWORD
+      exec opencode "$@"
+    '';
+  };
   extraPackages = with pkgs; [
     bash
     bat
@@ -154,9 +157,8 @@ let
     opencode
     procps
     ripgrep
-    rtk
     shellcheck
-    # Backs the opencode /search command when it runs inside the sandbox.
+    # ai-search CLI, also used by the opencode websearch provider.
     (callPackage ../../home/opencode/ai-search.nix { })
     systemd
     tree
@@ -219,16 +221,17 @@ let
     iproute2
     util-linux
   ];
+  telemetryOptOut = import ./telemetry.nix;
   configData = import ./config.nix {
     inherit
       lib
       pkgs
       config
+      telemetryOptOut
       ;
     placeholder = config.sops.placeholder;
     proxyEnv = config.mine.ai-sandbox.proxy.enable;
     automationConfig = config.mine.ai-sandbox.automationConfig;
-    backgroundSubagents = config.mine.ai-sandbox.backgroundSubagents.enable;
   };
 
   # Environment, hardening and binds shared by every sandboxed agent unit:
@@ -250,7 +253,9 @@ let
         ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
       )
     }"
-  ];
+  ]
+  ++ lib.mapAttrsToList (name: value: "${name}=${value}") telemetryOptOut
+  ++ lib.optional config.mine.ai-sandbox.offlineModelCatalog.enable "OPENCODE_DISABLE_MODELS_FETCH=1";
   sandboxHardening = {
     NoNewPrivileges = true;
     ProtectClock = true;
@@ -275,9 +280,10 @@ let
 
   # Sandbox of the agent sessions (modules/home/ai-sessions: Claude Code,
   # Codex), transient units started on demand. They share the opencode
-  # sandbox's home, and with it ~/workspace, plus its hardening; but none of
-  # opencode's config and data dirs, MCP credentials, skills or the Hyprland
-  # socket (whose IPC can exec commands outside the sandbox).
+  # sandbox's home and hardening, but none of its workspace (each session's
+  # launcher binds just the slot's own folder of it), opencode's config and
+  # data dirs, MCP credentials, skills or the Hyprland socket (whose IPC can
+  # exec commands outside the sandbox).
   agentSessionSandbox = {
     Unit = {
       After = [ "ai-sandbox-ssh-agent.service" ];
@@ -295,6 +301,9 @@ let
         "/dev/pts/ptmx:/dev/ptmx"
       ];
       BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds;
+      # An empty ~/workspace that the launcher binds the slot's folder into;
+      # read-only, so writes outside that folder fail instead of vanishing.
+      TemporaryFileSystem = [ "${userHome}/workspace:ro" ];
       # Supplementary groups survive the user namespace, so docker group
       # membership still opens the root-equivalent daemon socket. The user's
       # tmux socket would likewise run commands outside the sandbox.
@@ -314,7 +323,7 @@ in
 
       ghidra.enable = lib.mkEnableOption "the headless pyghidra-mcp reverse-engineering server (pulls ghidra + a JDK into the closure)";
 
-      backgroundSubagents.enable = lib.mkEnableOption "OpenCode experimental background subagents on the interactive (:4096) server, enabling task(background:true) for parallel multi-agent orchestration";
+      offlineModelCatalog.enable = lib.mkEnableOption "the bundled OpenCode model catalog instead of fetching it from models.opencode.ai";
 
       serverUrls = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;
@@ -342,6 +351,7 @@ in
       };
 
       browseruse = {
+        enable = lib.mkEnableOption "the browser-use MCP server; the Playwright one covers browser automation without it";
         provider = lib.mkOption {
           type = lib.types.str;
           default = "opencode";
@@ -363,14 +373,12 @@ in
 
   config = lib.mkIf config.mine.ai-sandbox.enable {
     mine.ai-sandbox.serverUrls = configData.serverUrls;
-    mine.ai-sandbox.automationConfig = lib.mkDefault (
-      let
-        hmCfg = config.home-manager.users.${config.variables.username}.mine.home.opencode;
-      in
-      lib.optionalAttrs (hmCfg.automationAgents != { }) {
-        agent = hmCfg.automationAgents;
-      }
-    );
+    mine.ai-sandbox.automationConfig =
+      lib.mkDefault
+        config.home-manager.users.${config.variables.username}.mine.home.opencode.automationConfig;
+
+    # The host side (the terminal client and anything started from the desktop) opts out too.
+    environment.sessionVariables = telemetryOptOut;
 
     sops.secrets = {
       "MCP/GITHUB_TOKEN" = {
@@ -403,46 +411,53 @@ in
           '';
         };
 
-    services.nginx = {
-      enable = true;
-      virtualHosts."mcp.vmserver.vnet" = {
-        locations."/" = {
-          proxyPass = "http://127.0.0.1:8000";
-          extraConfig = ''
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_set_header Host $host;
-            proxy_cache_bypass $http_upgrade;
-          '';
-        };
-        locations."= /" = {
-          extraConfig = ''
-            return 301 $scheme://$host/docs;
-          '';
-        };
-      };
-    };
-
-    home-manager.users.${config.variables.username} = hmArgs: {
+    home-manager.users.${config.variables.username} = {
       mine.home.opencode.mcpServerUrls = configData.defaultServerUrls;
       mine.home.ai-sessions.sandbox = agentSessionSandbox;
 
-      home.packages = [ sandboxEnter ];
+      home.packages = [
+        sandboxEnter
+        opencodeSandbox
+      ];
+
+      # Terminal clients for the sandboxed servers (:4096 interactive,
+      # :4097 automation), started in ~/workspace so sessions open there.
+      xdg.desktopEntries =
+        lib.mapAttrs
+          (_: entry: {
+            inherit (entry) name;
+            genericName = "OpenCode - AI coding agent";
+            comment = "OpenCode client for the sandboxed server";
+            exec = "tmux new-session -A -D -s ${entry.session} -c ${userHome}/workspace bash -lc \"opencode-sandbox --server ${entry.url}\"";
+            terminal = true;
+            icon = "utilities-terminal";
+            type = "Application";
+            categories = [ "Utility" ];
+          })
+          {
+            opencode-s1 = {
+              name = "opencode S1";
+              session = "ocode_s1";
+              url = "http://127.0.0.1:4096";
+            };
+            opencode-s2 = {
+              name = "opencode S2";
+              session = "ocode_s2";
+              url = "http://127.0.0.1:4096";
+            };
+            opencode-a1 = {
+              name = "opencode (automation)";
+              session = "ocode_a1";
+              url = "http://127.0.0.1:4097";
+            };
+          };
 
       systemd.user.tmpfiles.rules = [
         "d ${userHome}/.config/opencode 0700 - - -"
         "d ${userHome}/.config/opencode/skills 0700 - - -"
-        "d ${userHome}/.config/rtk 0700 - - -"
         "d ${userHome}/.local/share/opencode 0700 - - -"
-        "d ${userHome}/.local/state/ai-sandbox/workspace 0755 - - -"
-        # Ensure the skill pool exists so the read-only bind below never fails,
-        # even before the ai-skills module has populated it.
-        "d ${userHome}/.cache/ai-skills 0755 - - -"
+        "d ${userHome}/workspace 0755 - - -"
       ];
-
-      home.file."workspace".source =
-        hmArgs.config.lib.file.mkOutOfStoreSymlink "${userHome}/.local/state/ai-sandbox/workspace";
 
       systemd.user.services.ai-sandbox-ssh-agent = {
         Unit = {
@@ -482,25 +497,12 @@ in
             "${userHome}/.local/share/opencode:${userHome}/.local/share/opencode"
             "${userHome}/.config/opencode:${userHome}/.config/opencode"
             "${userRuntimeDir}/hypr:${userRuntimeDir}/hypr"
+            # The TUI runs on the host and sends its physical working
+            # directory as the session location, so the workspace has to be
+            # a real directory at the same path on both sides.
+            "${userHome}/workspace:${userHome}/workspace"
           ];
-          # Mount the full opencode config, then overlay an empty tmpfs on
-          # skills/ to hide all 1,720 community skills, then punch through
-          # only the allowed ones. systemd sorts mounts by path length, so
-          # the ordering is: config dir → tmpfs overlay → individual skills.
-          TemporaryFileSystem = [
-            "${userHome}/.config/opencode/skills:ro"
-          ];
-          BindReadOnlyPaths = [
-            "${userHome}/.config/rtk:${userHome}/.config/rtk"
-            sandboxSshConfigBind
-            # Skill pool, so a loaded skill's helper files (scripts/, reference/)
-            # resolve at the same path inside the sandbox as on the host.
-            "${userHome}/.cache/ai-skills:${userHome}/.cache/ai-skills"
-          ]
-          ++ map (
-            skill: "${userHome}/.config/opencode/skills/${skill}:${userHome}/.config/opencode/skills/${skill}"
-          ) allowedSkills
-          ++ sandboxJfrogBinds;
+          BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds;
           LoadCredential = configData.loadConfig ++ [
             "github_ssh_key:${config.sops.secrets."MCP/GITHUB_SSH_KEY".path}"
             "github_known_hosts:${githubKnownHosts}"

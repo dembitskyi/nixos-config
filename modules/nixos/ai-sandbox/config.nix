@@ -5,7 +5,7 @@
   placeholder,
   proxyEnv ? false,
   automationConfig ? { },
-  backgroundSubagents ? false,
+  telemetryOptOut ? { },
 }:
 let
   fastmcpCli = lib.getExe' (pkgs.python313.withPackages (ps: [ ps.fastmcp ])) "fastmcp";
@@ -18,15 +18,14 @@ let
     else
       "";
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
-  homeDir = "${userHome}/.local/state/ai-sandbox";
+  # Shared by both opencode servers and their clients (see opencode-sandbox).
+  passwordFile = "${userHome}/.local/share/opencode/sandbox-server.password";
   helpers = import ./helpers.nix {
     inherit lib pkgs;
   };
   inherit (helpers)
     npxServer
     npxServerWithEnv
-    uvxServer
-    uvxServerWithArgs
     uvxServerWithEnv
     ;
 
@@ -69,23 +68,41 @@ let
   '';
 
   defaultServerOrder = [
-    "git"
-    "nixos"
     "github"
     "jira"
-    "pdf"
     "context7"
-    "memory"
-    "wikipedia"
-    "fetch"
     "playwright"
-    "time"
-    "browseruse"
   ]
+  ++ lib.optional config.mine.ai-sandbox.browseruse.enable "browseruse"
   ++ lib.optional config.mine.ai-sandbox.ghidra.enable "ghidra";
 
   builtInServers = {
-    time = uvxServerWithArgs "mcp-server-time" [ "--local-timezone=America/Chicago" ];
+    # Developer Tools
+    github = npxServerWithEnv "@modelcontextprotocol/server-github" {
+      GITHUB_PERSONAL_ACCESS_TOKEN = placeholder."MCP/GITHUB_TOKEN";
+    };
+    jira = uvxServerWithEnv "mcp-atlassian" {
+      JIRA_URL = placeholder."MCP/JIRA_URL";
+      JIRA_USERNAME = placeholder."MCP/JIRA_USERNAME";
+      JIRA_API_TOKEN = placeholder."MCP/JIRA_API_TOKEN";
+      CONFLUENCE_URL = placeholder."MCP/CONFLUENCE_URL";
+      CONFLUENCE_USERNAME = placeholder."MCP/CONFLUENCE_USERNAME";
+      CONFLUENCE_API_TOKEN = placeholder."MCP/CONFLUENCE_API_TOKEN";
+    };
+    #kagi = uvxServerWithEnv "kagimcp" {
+    #  KAGI_API_KEY = placeholder."MCP/KAGI_API_TOKEN";
+    #  KAGI_SUMMARIZER_ENGINE = "cecil";
+    #};
+    # Information & Knowledge
+    context7 = npxServer "@upstash/context7-mcp";
+    # Web
+    playwright = {
+      command = lib.getExe pkgs.playwright-mcp;
+      args = [ "--cdp-endpoint=http://127.0.0.1:9222" ];
+    };
+  };
+
+  browseruseServer = {
     browseruse = {
       command = lib.getExe pkgs.browser-use;
       args = [
@@ -103,45 +120,6 @@ let
         PLAYWRIGHT_BROWSERS_PATH = "${pkgs.playwright-driver.browsers}";
         PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS = "true";
       };
-    };
-
-    # Developer Tools
-    git = uvxServer "mcp-server-git";
-    nixos = uvxServer "mcp-nixos";
-    github = npxServerWithEnv "@modelcontextprotocol/server-github" {
-      GITHUB_PERSONAL_ACCESS_TOKEN = placeholder."MCP/GITHUB_TOKEN";
-    };
-    jira = uvxServerWithEnv "mcp-atlassian" {
-      JIRA_URL = placeholder."MCP/JIRA_URL";
-      JIRA_USERNAME = placeholder."MCP/JIRA_USERNAME";
-      JIRA_API_TOKEN = placeholder."MCP/JIRA_API_TOKEN";
-      CONFLUENCE_URL = placeholder."MCP/CONFLUENCE_URL";
-      CONFLUENCE_USERNAME = placeholder."MCP/CONFLUENCE_USERNAME";
-      CONFLUENCE_API_TOKEN = placeholder."MCP/CONFLUENCE_API_TOKEN";
-    };
-    #kagi = uvxServerWithEnv "kagimcp" {
-    #  KAGI_API_KEY = placeholder."MCP/KAGI_API_TOKEN";
-    #  KAGI_SUMMARIZER_ENGINE = "cecil";
-    #};
-    # Information & Knowledge
-    pdf = npxServer "@sylphx/pdf-reader-mcp";
-    context7 = npxServer "@upstash/context7-mcp";
-    memory = {
-      command = lib.getExe' pkgs.nodejs "npx";
-      args = [
-        "-y"
-        "@modelcontextprotocol/server-memory"
-      ];
-      env = {
-        MEMORY_FILE_PATH = "${homeDir}/memory.jsonl";
-      };
-    };
-    wikipedia = uvxServerWithArgs "wikipedia-mcp" [ "--enable-cache" ];
-    # Search, Web
-    fetch = uvxServerWithArgs "mcp-server-fetch" [ "--ignore-robots-txt" ];
-    playwright = {
-      command = lib.getExe pkgs.playwright-mcp;
-      args = [ "--cdp-endpoint=http://127.0.0.1:9222" ];
     };
   };
 
@@ -165,16 +143,25 @@ let
 
   servers =
     builtInServers
+    // lib.optionalAttrs config.mine.ai-sandbox.browseruse.enable browseruseServer
     // lib.optionalAttrs config.mine.ai-sandbox.ghidra.enable ghidraServer
     // config.mine.ai-sandbox.extraServers;
 
   extraServerNames = lib.subtractLists defaultServerOrder (builtins.attrNames servers);
   serverOrder = defaultServerOrder ++ extraServerNames;
 
+  # Process servers also get the telemetry opt-outs: the MCP launcher does not
+  # pass the service environment on. A server's own variables win.
   mkTemplate = name: serverConfig: {
     name = "mcp-${name}";
     value = {
-      content = builtins.toJSON { mcpServers.${name} = serverConfig; };
+      content = builtins.toJSON {
+        mcpServers.${name} =
+          if serverConfig ? command then
+            serverConfig // { env = telemetryOptOut // (serverConfig.env or { }); }
+          else
+            serverConfig;
+      };
       owner = config.variables.username;
     };
   };
@@ -197,12 +184,11 @@ let
     else
       "";
 
-  # Enables native OpenCode background subagents on the interactive server so
-  # the parallel orchestrator can dispatch task(background:true) lanes. The
-  # automation server always enables them for unattended parallel work.
-  bgSubagentsEnv = lib.optionalString backgroundSubagents "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true ";
-  automationBgSubagentsEnv = "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true ";
-
+  # Prebuilt native modules of npm plugins (opencode-mem's ONNX runtime and
+  # libSQL bindings) need the C++ runtime, which NixOS has no default path for.
+  nativeLibs = "LD_LIBRARY_PATH=${
+    lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ]
+  }\${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} ";
 in
 {
   templates = builtins.listToAttrs (lib.mapAttrsToList mkTemplate servers);
@@ -215,13 +201,18 @@ in
   serverUrls = lib.mapAttrs (name: port: "http://127.0.0.1:${toString port}/${name}") serverPorts;
 
   # Only built-in server URLs, passed to the home-manager opencode module.
-  inherit defaultServerUrls;
+  inherit defaultServerUrls passwordFile;
 
   execStartScript = pkgs.writeShellScript "ai-sandbox-server" ''
     mkdir -p ~/workspace
     cd ~/workspace
-    ${proxyPrefix}${bgSubagentsEnv}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
-    ${proxyPrefix}${automationEnv}${automationBgSubagentsEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
+    if [ ! -s ${passwordFile} ]; then
+      (umask 077 && head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' >${passwordFile})
+    fi
+    OPENCODE_PASSWORD="$(cat ${passwordFile})"
+    export OPENCODE_PASSWORD
+    ${proxyPrefix}${nativeLibs}OPENCODE_DB=opencode-stable.db ${opencode} serve --hostname 127.0.0.1 --port 4096 & # --print-logs
+    ${proxyPrefix}${automationEnv}OPENCODE_DB=opencode-automation.db ${opencode} serve --hostname 127.0.0.1 --port 4097 & # --print-logs
     ${lib.concatStringsSep "\n" (
       lib.mapAttrsToList (
         name: port:

@@ -12,13 +12,10 @@ let
   vcfg = cfg.vllm;
 
   # Sessions never ask (bypassPermissions): the sandbox is the boundary. The
-  # denies of opencode's policy (../opencode/curated-bash.nix) still block;
-  # its "ask" rules are left out, since Claude Code would still prompt for
-  # them. The "rtk "-prefixed duplicates only exist for opencode's command
-  # rewriting.
-  curatedBash = lib.filterAttrs (pattern: _: !lib.hasPrefix "rtk " pattern) (
-    import ../opencode/curated-bash.nix
-  );
+  # denies of the shared shell policy (../opencode/curated-bash.nix) still
+  # block; its "ask" rules are left out, since Claude Code would still prompt
+  # for them.
+  curatedBash = import ../opencode/curated-bash.nix;
   settings = {
     # Skips the confirmation before entering bypassPermissions mode.
     skipDangerousModePermissionPrompt = true;
@@ -33,13 +30,15 @@ let
   };
   settingsFile = pkgs.writeText "claude-code-settings.json" (builtins.toJSON settings);
 
-  # Claude Code is updated by Nix, not by itself, and sends no telemetry or
-  # error reports. Agent view is off: its background supervisor is reached
-  # through /tmp, which every session (and any host-side Claude Code) shares.
+  # Claude Code is updated by Nix, not by itself, and sends no telemetry, error
+  # reports, or other non-essential traffic. Agent view is off: its background
+  # supervisor is reached through /tmp, which every session (and any host-side
+  # Claude Code) shares.
   commonEnv = {
     DISABLE_UPDATES = 1;
     DISABLE_TELEMETRY = 1;
     DISABLE_ERROR_REPORTING = 1;
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = 1;
     CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = 1;
     # The nixpkgs wrapper defaults this to 1, forcing plugin updates.
     FORCE_AUTOUPDATE_PLUGINS = 0;
@@ -65,7 +64,6 @@ let
     # header that defeats vLLM's prefix cache.
     CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = 1;
     CLAUDE_CODE_ATTRIBUTION_HEADER = 0;
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = 1;
     CLAUDE_CODE_DISABLE_TERMINAL_TITLE = 1;
     # A cold model start can take up to llama-swap's health-check timeout
     # (45 minutes), and vLLM streams nothing while it prefills.

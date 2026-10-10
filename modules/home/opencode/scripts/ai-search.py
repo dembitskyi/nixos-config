@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""AI web search via Playwright over CDP, for opencode context enrichment.
+"""AI web search via Playwright over CDP, for opencode's websearch tool.
 
 Drives an already-running Chrome (started with ``--remote-debugging-port``)
 so searches run inside the user's real, logged-in session — Playwright never
 launches or manages a browser. Submits a query to the chosen provider, waits
 for the answer's Copy button to appear (the provider's completion signal), and
-prints it as markdown on stdout so an opencode ``/search`` command can inject it
-into the conversation.
+prints it as markdown on stdout, or as JSON with ``--json`` for the opencode
+websearch provider (modules/home/opencode/plugins/host).
 
 Providers:
   perplexity  Types the query into perplexity.ai and copies the answer.
@@ -14,6 +14,7 @@ Providers:
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -342,7 +343,7 @@ def _domain(url):
 
 
 def _render(result):
-    """Format the result as markdown for injection into opencode context."""
+    """Format the result as markdown for reading in a terminal."""
     lines = [f"# {result['provider'].title()} search: {result['query']}", ""]
     lines.append(result["answer_md"])
     if result["citations"]:
@@ -374,6 +375,11 @@ def main(argv=None):
         default=0.8,
         help="Grace seconds after the completion signal, to let the last token render.",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the result (or {'error': ...}) as JSON instead of markdown.",
+    )
     args = parser.parse_args(argv)
 
     query = " ".join(args.query)
@@ -386,14 +392,15 @@ def main(argv=None):
             settle_ms=int(args.settle * 1000),
         )
     except SearchError as e:
-        # Print to stdout (not just stderr): opencode's command shell injection
-        # captures stdout only and ignores exit codes, so a stderr-only error
-        # would be swallowed and the /search command would silently inject
-        # nothing. Emitting here keeps failures visible in the conversation.
-        print(f"**Search failed ({args.provider}):** {e}")
+        # Report on stdout (not just stderr) so callers that only capture
+        # stdout still see why the search failed.
+        if args.json:
+            print(json.dumps({"error": str(e)}))
+        else:
+            print(f"**Search failed ({args.provider}):** {e}")
         return 1
 
-    print(_render(result))
+    print(json.dumps(result) if args.json else _render(result))
     return 0
 
 

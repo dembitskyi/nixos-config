@@ -71,6 +71,8 @@ let
   ) allSources;
 
   destinationsArrayLines = lib.concatMapStringsSep "\n" (d: "  ${shQuote d}") cfg.destinations;
+  includeArrayLines = lib.concatMapStringsSep "\n" (s: "  ${shQuote s}") cfg.include;
+  keepArrayLines = lib.concatMapStringsSep "\n" (s: "  ${shQuote s}") cfg.keep;
 
   # Cache root as a shell expression. The literal `$HOME` is intentional —
   # it must be expanded by bash at activation time, not by Nix.
@@ -85,6 +87,21 @@ let
       done
     }
 
+    # Whether $1 is in the bash array named $2.
+    _ai_skills_listed() {
+      local -n list="$2"
+      local item
+      for item in "''${list[@]}"; do
+        [ "$item" = "$1" ] && return 0
+      done
+      return 1
+    }
+
+    # With an include list, only those skills are deployed.
+    _ai_skills_wanted() {
+      [ "''${#include[@]}" -eq 0 ] || _ai_skills_listed "$1" include
+    }
+
     # Copy each immediate subdir of $1 into every destination, named after the subdir.
     _copy_skills_subdir() {
       local src="$1"
@@ -95,6 +112,7 @@ let
           [ -d "$skill_dir" ] || continue
           local name
           name=$(${pkgs.coreutils}/bin/basename "$skill_dir")
+          _ai_skills_wanted "$name" || continue
           $DRY_RUN_CMD rm -rf "$dest/$name"
           $DRY_RUN_CMD cp -r "$skill_dir" "$dest/$name"
         done
@@ -111,6 +129,7 @@ let
           [ -f "$skill_dir/SKILL.md" ] || continue
           local name
           name=$(${pkgs.coreutils}/bin/basename "$skill_dir")
+          _ai_skills_wanted "$name" || continue
           $DRY_RUN_CMD rm -rf "$dest/$name"
           $DRY_RUN_CMD cp -r "$skill_dir" "$dest/$name"
         done
@@ -122,6 +141,7 @@ let
     _copy_skills_single() {
       local src="$1" name="$2"
       [ -f "$src/SKILL.md" ] || return 0
+      _ai_skills_wanted "$name" || return 0
       while IFS= read -r dest; do
         $DRY_RUN_CMD mkdir -p "$dest/$name"
         $DRY_RUN_CMD cp "$src/SKILL.md" "$dest/$name/SKILL.md"
@@ -147,12 +167,30 @@ let
           local skill_dir name
           skill_dir=$(${pkgs.coreutils}/bin/dirname "$marker")
           name=$(${pkgs.coreutils}/bin/basename "$skill_dir")
+          _ai_skills_wanted "$name" || continue
           while IFS= read -r dest; do
             $DRY_RUN_CMD mkdir -p "$dest"
             $DRY_RUN_CMD rm -rf "$dest/$name"
             $DRY_RUN_CMD cp -r "$skill_dir" "$dest/$name"
           done < <(_all_dests)
         done
+    }
+
+    # With an include list, remove every skill that is neither included nor
+    # managed elsewhere (`keep`), including copies left by earlier activations.
+    _prune_skills() {
+      [ "''${#include[@]}" -gt 0 ] || return 0
+      while IFS= read -r dest; do
+        [ -d "$dest" ] || continue
+        for skill_dir in "$dest"/*/; do
+          [ -d "$skill_dir" ] || continue
+          local name
+          name=$(${pkgs.coreutils}/bin/basename "$skill_dir")
+          _ai_skills_listed "$name" include && continue
+          _ai_skills_listed "$name" keep && continue
+          $DRY_RUN_CMD rm -rf "$dest/$name"
+        done
+      done < <(_all_dests)
     }
   '';
 
@@ -401,9 +439,27 @@ in
         full SKILL.md text (including YAML frontmatter).
       '';
     };
+
+    include = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = ''
+        Skill names to deploy. When non-empty, every other cached skill stays
+        in the cache only, and destination entries that are neither included
+        nor listed in `keep` are removed on activation.
+      '';
+    };
+
+    keep = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      description = "Destination entries managed elsewhere (e.g. by home.file) that pruning must not touch.";
+    };
   };
 
   config = lib.mkIf cfg.enable {
+    mine.home.ai-skills.keep = lib.attrNames cfg.inlineSkills;
+
     home.packages = [ updateSkills ];
 
     home.file = inlineFiles;
@@ -411,6 +467,12 @@ in
     home.activation.installAiSkills = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       destinations=(
       ${destinationsArrayLines}
+      )
+      include=(
+      ${includeArrayLines}
+      )
+      keep=(
+      ${keepArrayLines}
       )
 
       cache_root=${cacheRootShell}
@@ -474,6 +536,8 @@ in
           fi
         ''
       ) allSources}
+
+      _prune_skills
 
       for dest_rel in "''${destinations[@]}"; do
         _ai_skills_log "deployed:     $(_ai_skills_count "$HOME/$dest_rel") skill(s) in $HOME/$dest_rel"

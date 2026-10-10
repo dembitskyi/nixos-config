@@ -12,14 +12,17 @@
         inputs.nixpkgs-playwright-mcp.legacyPackages.${prev.stdenv.hostPlatform.system}.playwright-mcp;
     };
 
-    # opencode from the pinned upstream flake (see the `opencode` input).
+    # opencode from the pinned upstream flake (see the `opencode` input), with a
+    # TUI patch that lets plugins add tabs to the session composer.
     opencode-pin = _final: prev: {
-      opencode = inputs.opencode.packages.${prev.stdenv.hostPlatform.system}.opencode;
+      opencode =
+        inputs.opencode.packages.${prev.stdenv.hostPlatform.system}.opencode.overrideAttrs
+          (old: {
+            patches = (old.patches or [ ]) ++ [ ../patches/opencode-composer-plugin-tabs.diff ];
+          });
     };
 
     default = inputs.nixpkgs.lib.composeManyExtensions [
-      # opencode-pin MUST precede custom-packages: custom-packages appends a TUI
-      # postPatch
       inputs.self.overlays.opencode-pin
       inputs.self.overlays.custom-packages
       inputs.self.overlays.playwright-mcp-pin

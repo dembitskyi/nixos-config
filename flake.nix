@@ -9,7 +9,7 @@
 
     # opencode pinned via upstream's flake; bump the tag to update. No nixpkgs
     # follows: its node_modules FOD needs upstream's own pinned bun.
-    opencode.url = "github:anomalyco/opencode/v1.18.31";
+    opencode.url = "github:anomalyco/opencode/v2.0.26";
 
     flake-parts.url = "github:hercules-ci/flake-parts";
     flake-root.url = "github:srid/flake-root";
@@ -167,8 +167,12 @@
                       shfmt.includes = [ "**/clip-text-refiner" ];
                       ruff-check.includes = [ "**/qute-keepassxc" ];
                       ruff-format.includes = [ "**/qute-keepassxc" ];
-                      # Prompt files are model inputs; keep them verbatim.
-                      mdformat.excludes = [ "**/prompts/**" ];
+                      # Prompt and skill files are model inputs; keep them verbatim
+                      # (mdformat also turns a skill's YAML front matter into a heading).
+                      mdformat.excludes = [
+                        "**/prompts/**"
+                        "**/skills/**"
+                      ];
                     };
                   };
                   formatter = config.treefmt.build.wrapper;
@@ -228,8 +232,12 @@
                 shfmt.includes = [ "**/clip-text-refiner" ];
                 ruff-check.includes = [ "**/qute-keepassxc" ];
                 ruff-format.includes = [ "**/qute-keepassxc" ];
-                # Prompt files are model inputs; keep them verbatim.
-                mdformat.excludes = [ "**/prompts/**" ];
+                # Prompt and skill files are model inputs; keep them verbatim
+                # (mdformat also turns a skill's YAML front matter into a heading).
+                mdformat.excludes = [
+                  "**/prompts/**"
+                  "**/skills/**"
+                ];
               };
             };
 

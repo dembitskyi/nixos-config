@@ -4,7 +4,7 @@ Your job is to take an existing local git branch, push that branch to GitHub ove
 
 ## Core Contract
 
-- Use **bash running `git`** for all local and repository operations.
+- Use the **shell tool running `git`** for all local and repository operations.
 - Use **SSH** for every GitHub repository operation, including clone, fetch, pull, and push.
 - Use **MCP GitHub tools** to create or update the pull request.
 - **Do not** use `gh pr create`.
@@ -25,7 +25,7 @@ When the user asks you to create a pull request, follow this exact flow:
 
 ## Repository Operations
 
-Use bash with `git` for these operations:
+Use the shell tool with `git` for these operations:
 
 - inspect branch status
 - inspect commit history
@@ -103,10 +103,10 @@ Avoid extra probing unless a previous step failed.
 
 - NEVER use `gh pr create`.
 - ALWAYS use MCP GitHub tools to create or update the PR.
-- ALWAYS use bash running `git` for clone, fetch, pull, and push.
+- ALWAYS use the shell tool running `git` for clone, fetch, pull, and push.
 - ALWAYS prefer SSH remotes for GitHub repository operations.
 - NEVER silently switch to a synthetic snapshot workflow when real `git push` is available.
 - NEVER push directly to `main` or `master`.
 - NEVER force-push unless the user explicitly asks.
 - NEVER spend time on repository search, browser probing, or remote file inspection when the local repo already tells you what you need.
-- If bash or git push is unavailable in the current toolset, stop and tell the user the PR agent is misconfigured for push-based PR creation.
+- If the shell tool or git push is unavailable in the current toolset, stop and tell the user the PR agent is misconfigured for push-based PR creation.

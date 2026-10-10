@@ -2,7 +2,8 @@
 # session runs in a transient systemd user unit that its `<name>-sandbox`
 # launcher starts on demand, inside a tmux session for re-attaching. The
 # sandbox comes from the AI sandbox NixOS module (`sandbox`) and is applied
-# through a unit-name-prefix drop-in.
+# through a unit-name-prefix drop-in. Each slot works in its own
+# ~/workspace/<name>-<slot>, the only part of the workspace it can see.
 {
   lib,
   config,
@@ -99,7 +100,10 @@ let
     in
     pkgs.writeShellApplication {
       name = launcher;
-      runtimeInputs = [ pkgs.systemd ];
+      runtimeInputs = [
+        pkgs.coreutils
+        pkgs.systemd
+      ];
       text = ''
         usage() {
           echo "Usage: ${launcher} [--backend ${lib.concatStringsSep "|" backends}] [--slot NAME] [ARGS...]" >&2
@@ -151,13 +155,12 @@ let
         esac
         unit="${launcher}-$slot.service"
 
-        # ~/workspace is the sandbox home's workspace (a symlink to it on the
-        # host), so paths below it are valid on both sides of the sandbox.
-        workspace="$HOME/workspace"
-        sandbox_workspace="''${XDG_STATE_HOME:-$HOME/.local/state}/ai-sandbox/workspace"
+        # The slot's folder is bound into the sandbox at the same path, so
+        # paths below it are valid on both sides of the sandbox.
+        workspace="$HOME/workspace/${name}-$slot"
+        mkdir -p "$workspace"
         case "$PWD" in
           "$workspace" | "$workspace"/*) dir="$PWD" ;;
-          "$sandbox_workspace" | "$sandbox_workspace"/*) dir="$workspace''${PWD#"$sandbox_workspace"}" ;;
           *) dir="$workspace" ;;
         esac
 
@@ -181,6 +184,7 @@ let
         SYSTEMD_ADJUST_TERMINAL_TITLE=0 systemd-run --user --pty --quiet --collect \
           --service-type=exec --expand-environment=no \
           --unit="$unit" --description="${session.title} ($slot, $backend)" \
+          --property=BindPaths="$workspace:$workspace" \
           --working-directory="$dir" "''${setenv[@]}" \
           -- ${lib.getExe (mkEntry name session)} "$backend" "$@"
       '';

@@ -6,8 +6,6 @@
 }:
 let
   cfg = config.mine.parallels-guest;
-  userHome = "/${config.variables.homePrefix}/${config.variables.username}";
-  workspacePath = "${userHome}/.local/state/ai-sandbox/workspace";
 in
 {
   options.mine.parallels-guest = {
@@ -43,8 +41,7 @@ in
         home-manager.users.${config.variables.username} = hmArgs: {
           home.file = {
             "Shared".source = hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
-            ".local/state/ai-sandbox/workspace/Shared".source =
-              hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
+            "workspace/Shared".source = hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.sharedPath;
           };
         };
       }
@@ -71,10 +68,6 @@ in
 
       (lib.mkIf cfg.aiSandboxBind.enable {
         home-manager.users.${config.variables.username} = {
-          systemd.user.tmpfiles.rules = [
-            "d ${workspacePath} 0755 - - -"
-          ];
-
           systemd.user.services.ai-sandbox.Service.BindPaths = [
             "-${cfg.sharedPath}:${cfg.sharedPath}"
           ];

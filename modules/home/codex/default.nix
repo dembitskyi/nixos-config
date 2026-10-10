@@ -26,15 +26,12 @@ let
   configArgs = settings: lib.mapAttrsToList (key: value: "--config=${key}=${toToml value}") settings;
 
   # Sessions never ask (approval_policy "never"): the sandbox is the boundary.
-  # The denies of opencode's policy (../opencode/curated-bash.nix) still block,
-  # as requirements that Codex enforces over any rules a session writes; its
-  # "ask" rules are left out, since "never" would reject them instead. Codex
-  # matches whole leading tokens instead of globs, so each pattern keeps its
-  # literal prefix ("gh*" stops `gh ...`). The "rtk "-prefixed duplicates only
-  # exist for opencode's command rewriting.
-  curatedBash = lib.filterAttrs (pattern: _: !lib.hasPrefix "rtk " pattern) (
-    import ../opencode/curated-bash.nix
-  );
+  # The denies of the shared shell policy (../opencode/curated-bash.nix) still
+  # block, as requirements that Codex enforces over any rules a session writes;
+  # its "ask" rules are left out, since "never" would reject them instead.
+  # Codex matches whole leading tokens instead of globs, so each pattern keeps
+  # its literal prefix ("gh*" stops `gh ...`).
+  curatedBash = import ../opencode/curated-bash.nix;
   toTokens =
     pattern:
     let

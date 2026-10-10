@@ -39,8 +39,8 @@ in
         "jfrog-package-safety-and-download"
       ];
       description = ''
-        JFrog agent skills (from jfrog/jfrog-skills) to allow for opencode and
-        expose inside the AI sandbox. Set to [ ] to deploy none.
+        JFrog agent skills (from jfrog/jfrog-skills) to deploy for opencode.
+        Set to [ ] to deploy none.
       '';
     };
 
@@ -108,7 +108,7 @@ in
       home.file.".jfrog/jfrog-cli.conf.v6".source =
         hmArgs.config.lib.file.mkOutOfStoreSymlink cfg.confPath;
 
-      # Provide the official JFrog agent skills and allow them in opencode.
+      # Provide the official JFrog agent skills and deploy them for opencode.
       mine.home.ai-skills.extraSources = lib.mkIf (cfg.skills != [ ]) [
         {
           name = "jfrog";
@@ -116,7 +116,7 @@ in
           layout = "skills-subdir";
         }
       ];
-      mine.home.opencode.extraPermissions.skill = lib.genAttrs cfg.skills (_: "allow");
+      mine.home.opencode.skills = cfg.skills;
     };
   };
 }
