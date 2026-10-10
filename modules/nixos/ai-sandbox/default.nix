@@ -158,6 +158,7 @@ let
     procps
     ripgrep
     shellcheck
+    sqlite
     # ai-search CLI, also used by the opencode websearch provider.
     (callPackage ../../home/opencode/ai-search.nix { })
     systemd

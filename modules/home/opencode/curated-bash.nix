@@ -13,7 +13,6 @@
   # Privilege escalation and system/store mutation.
   "sudo *" = "deny";
   "nixos-rebuild*" = "deny";
-  "nix build*" = "deny";
   "nix profile*" = "deny";
   "nix-collect-garbage*" = "deny";
   "nix-env*" = "deny";

@@ -104,6 +104,7 @@
       python314
       ripgrep
       sops
+      sqlite-interactive
       tmux
       tree
       unzip
