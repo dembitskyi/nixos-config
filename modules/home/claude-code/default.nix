@@ -159,10 +159,12 @@ in
   config = lib.mkIf cfg.enable {
     # Ctrl+P opens the command menu, as in opencode: Claude Code has no
     # keybinding action for it, so tmux types the "/" that opens it, in the
-    # panes the session launcher (claude-sandbox) started. Other panes keep
-    # their Ctrl+P.
+    # panes the session launcher (claude-sandbox) started. "/" opens the menu
+    # only on an empty prompt, so Ctrl+S stashes the draft first; Claude Code
+    # restores it once the command runs (after Esc, Backspace and Ctrl+S bring
+    # it back). Other panes keep their Ctrl+P.
     programs.tmux.extraConfig = ''
-      bind-key -n C-p if-shell -F '#{m:*claude-sandbox*,#{pane_start_command}}' 'send-keys /' 'send-keys C-p'
+      bind-key -n C-p if-shell -F '#{m:*claude-sandbox*,#{pane_start_command}}' 'send-keys C-s /' 'send-keys C-p'
     '';
 
     mine.home.ai-sessions.sessions.claude = {
