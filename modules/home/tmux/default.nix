@@ -62,6 +62,13 @@
         tmuxPlugins.weather
         tmuxPlugins.fuzzback
       ];
+      # Pass modified keys (Shift+Enter, ...) to programs that ask for them
+      # with xterm's modifyOtherKeys, such as Claude Code and Codex; panes
+      # whose program does not ask keep getting plain keys.
+      extraConfig = ''
+        set -s extended-keys on
+        set -as terminal-features 'xterm*:extkeys'
+      '';
     };
   };
 }

@@ -33,6 +33,16 @@
         font = {
           size = 12;
         };
+        # Alacritty ignores tmux's modifyOtherKeys request and sends
+        # Shift+Enter as a plain Enter. The CSI u form lets tmux pass it on
+        # (as Enter to programs that did not ask for modified keys).
+        keyboard.bindings = [
+          {
+            key = "Return";
+            mods = "Shift";
+            chars = builtins.fromJSON ''"\u001b[13;2u"'';
+          }
+        ];
       };
     };
   };
