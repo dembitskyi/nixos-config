@@ -16,7 +16,6 @@ let
     email = "test@example.com";
     pretty_name = "Test User";
     editor = "nvim";
-    ollama-port = 11434;
     trilium-port = 12783;
     filebrowser-port = 10000;
     pinnedTrayApps = [ ];

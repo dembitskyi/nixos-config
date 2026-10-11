@@ -7,7 +7,6 @@
     ./coreutils
     ./fonts
     ./sound
-    ./ollama
     ./npm
     ./nix.nix
     ./samba

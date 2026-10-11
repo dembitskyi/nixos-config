@@ -29,7 +29,6 @@
     fzf.enable = true;
     fonts.enable = true;
     sound.enable = true;
-    ollama.enable = true;
     npm.enable = true;
   };
 

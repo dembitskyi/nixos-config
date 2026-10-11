@@ -391,8 +391,12 @@ in
             Type = "simple";
             User = "vllm";
             Group = "vllm";
-            Restart = "on-failure";
-            RestartSec = "10s";
+            # Never restart on our own: llama-swap owns the lifecycle. Its
+            # `systemctl start --wait` returns at the first crash and it marks
+            # the model stopped without running cmdStop, so Restart= would
+            # relaunch a failing model (e.g. one short of free VRAM) forever,
+            # outside llama-swap's view. The next request starts it again.
+            Restart = "no";
             LimitNOFILE = "65536";
             Environment = [ "HOME=${cfg._stateDir}" ];
           };

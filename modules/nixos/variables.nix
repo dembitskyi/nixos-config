@@ -43,12 +43,6 @@ with lib;
       description = "Default text editor.";
     };
 
-    ollama-port = mkOption {
-      type = types.port;
-      default = 11434;
-      description = "Ollama service port.";
-    };
-
     trilium-port = mkOption {
       type = types.port;
       default = 12783;

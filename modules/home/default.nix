@@ -19,7 +19,6 @@
     ./ai-sessions
     ./claude-code
     ./codex
-    ./ollama
     ./mpv
     ./anki
     ./sioyek

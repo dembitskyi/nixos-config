@@ -65,7 +65,6 @@ let
           fzf.enable = true;
           fonts.enable = true;
           sound.enable = true;
-          ollama.enable = true;
           npm.enable = true;
           trilium.enable = true;
           steam.enable = true;
@@ -84,12 +83,10 @@ let
     (assertEnabled "fzf" cfg.mine.fzf.enable)
     (assertEnabled "fonts" cfg.mine.fonts.enable)
     (assertEnabled "sound" cfg.mine.sound.enable)
-    (assertEnabled "ollama" cfg.mine.ollama.enable)
     (assertEnabled "npm" cfg.mine.npm.enable)
     (assertEnabled "trilium" cfg.mine.trilium.enable)
     (assertEnabled "steam" cfg.mine.steam.enable)
     "username=${cfg.variables.username}"
-    "ollama-port=${toString cfg.variables.ollama-port}"
   ];
 in
 "All module tests passed: ${results}"
