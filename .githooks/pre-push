@@ -3,7 +3,6 @@
 set -euo pipefail
 
 system=$(nix eval --raw --impure --expr 'builtins.currentSystem')
-echo "pre-push: checking formatting + git-hooks (${system})…"
-nix build --no-link \
-  ".#checks.${system}.formatting" \
-  ".#checks.${system}.git-hooks"
+echo "pre-push: checking formatting (${system})…"
+# checks.<system>.treefmt comes from the treefmt-nix flake module.
+nix build --no-link ".#checks.${system}.treefmt"

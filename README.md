@@ -12,13 +12,9 @@ modules/home/     Home-manager modules (all behind mkEnableOption)
 overlays/         Custom overlays and packages
 extra/            Flake-parts helpers (nixos-hosts builder)
 patches/          Nixpkgs patches
-example/          Minimal working example
-tests/            Evaluation tests
 ```
 
 ## Usage
-
-See [example/](example/) for a complete working configuration.
 
 ```nix
 inputs.nixos-config = {

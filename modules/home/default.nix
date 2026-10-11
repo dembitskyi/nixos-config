@@ -5,7 +5,6 @@
     ./chromium
     ./ai-browser
     ./home-manager
-    ./nixvim
     ./tmux
     ./bash
     ./alacritty

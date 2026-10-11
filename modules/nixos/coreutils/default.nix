@@ -63,6 +63,7 @@
       picocom
       gnupg
       jq
+      lsof
       atuin
       meson
       cmake

@@ -55,8 +55,6 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
-    pre-commit-hooks.url = "github:cachix/pre-commit-hooks.nix";
-
     nixvim-custom = {
       url = "github:dembitskyi/nvim.nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -71,7 +69,6 @@
         imports = [
           inputs.flake-root.flakeModule
           inputs.treefmt-nix.flakeModule
-          inputs.pre-commit-hooks.flakeModule
           ./overlays/flake-module.nix
         ];
 
@@ -81,7 +78,6 @@
         ];
 
         flake = {
-          # NixOS module set that can be imported wholesale.
           # NixOS module set that can be imported wholesale. Injects the public
           # flake's own inputs as `ncInputs` so consumers don't pass them.
           nixosModules.default = {
@@ -103,82 +99,10 @@
             _module.args.ncInputs = inputs;
           };
 
-          # Flake-parts module that provides the nixos-hosts builder and
-          # shared scaffolding (overlays, treefmt).
-          flakeModules.default =
-            { inputs, ... }:
-            {
-              imports = [
-                inputs.self.flakeModules.nixos-hosts
-                inputs.self.flakeModules.overlays
-                inputs.self.flakeModules.treefmt
-              ];
-            };
-
+          # Flake-parts module that builds nixosConfigurations from a host list.
           flakeModules.nixos-hosts = import ./extra/flake-parts/nixos-hosts.nix {
             inherit (inputs) nixpkgs-patcher;
           };
-
-          flakeModules.overlays = ./overlays/flake-module.nix;
-
-          flakeModules.treefmt =
-            { ... }:
-            {
-              imports = [
-                inputs.flake-root.flakeModule
-                inputs.treefmt-nix.flakeModule
-              ];
-              perSystem =
-                { config, pkgs, ... }:
-                {
-                  treefmt.config = {
-                    inherit (config.flake-root) projectRootFile;
-                    package = pkgs.treefmt;
-
-                    # Patterns are matched against paths relative to the repo root.
-                    settings.global.excludes = [
-                      # Dummy TLS material for nginx test configs.
-                      "*.crt"
-                      "*.key"
-                      "*.patch"
-                      "*.diff"
-                      # Vendored vLLM image overlays are bind-mounted byte-exact
-                      # over the digest-pinned container; never reformat them.
-                      "modules/nixos/vllm/overlays/**"
-                    ];
-
-                    programs = {
-                      nixfmt.enable = true;
-                      nixfmt.package = pkgs.nixfmt;
-                      deadnix.enable = true;
-                      statix.enable = true;
-                      shfmt.enable = true;
-                      shellcheck.enable = true;
-                      ruff-format.enable = true;
-                      ruff-check.enable = true;
-                      mdformat.enable = true;
-                      yamlfmt.enable = true;
-                    };
-
-                    # Shebang scripts with no extension; list includes merge with
-                    # each formatter's defaults rather than replacing them.
-                    settings.formatter = {
-                      shellcheck.includes = [ "**/clip-text-refiner" ];
-                      shfmt.includes = [ "**/clip-text-refiner" ];
-                      ruff-check.includes = [ "**/qute-keepassxc" ];
-                      ruff-format.includes = [ "**/qute-keepassxc" ];
-                      # Prompt and skill files are model inputs; keep them verbatim
-                      # (mdformat also turns a skill's YAML front matter into a heading).
-                      mdformat.excludes = [
-                        "**/prompts/**"
-                        "**/skills/**"
-                      ];
-                    };
-                  };
-                  formatter = config.treefmt.build.wrapper;
-                };
-            };
-
         };
 
         perSystem =
@@ -200,9 +124,6 @@
 
               # Patterns are matched against paths relative to the repo root.
               settings.global.excludes = [
-                # Dummy TLS material for nginx test configs.
-                "*.crt"
-                "*.key"
                 "*.patch"
                 "*.diff"
                 # Vendored vLLM image overlays are bind-mounted byte-exact over
@@ -243,23 +164,10 @@
 
             formatter = config.treefmt.build.wrapper;
 
-            pre-commit.settings.hooks = {
-              treefmt = {
-                enable = true;
-                package = config.treefmt.build.wrapper;
-              };
-            };
-
             devShells.default = pkgs.mkShell {
-              inputsFrom = [ config.pre-commit.devShell ];
               packages = [ config.treefmt.build.wrapper ];
               # Share the pre-push gate with every clone via tracked hooks.
               shellHook = "git config core.hooksPath .githooks";
-            };
-
-            checks = {
-              formatting = config.treefmt.build.check inputs.self;
-              git-hooks = config.pre-commit.settings.run;
             };
           };
       }
