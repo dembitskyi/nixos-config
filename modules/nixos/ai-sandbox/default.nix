@@ -323,6 +323,32 @@ let
   # Make the declarative jf config available to sandboxed `jf`.
   sandboxJfrogBinds = lib.optional config.mine.jfrog.enable "${config.mine.jfrog.confPath}:${config.mine.jfrog.targetPath}";
 
+  # With the tracing proxy on (proxy.nix), the agent sessions reach the
+  # network through it, like the opencode servers. Its CA bundle (the system
+  # CAs plus the mitmproxy CA) replaces the system one, so every TLS client in
+  # a session trusts the proxy: git, gh, uv and nix read /etc/ssl/certs, while
+  # Claude Code (Bun) and Codex are pointed at the bundle explicitly.
+  proxyCfg = config.mine.ai-sandbox.proxy;
+  sessionProxyUnits = lib.optional proxyCfg.enable "ai-sandbox-proxy.service";
+  sessionProxyEnvironment = lib.optionals proxyCfg.enable (
+    let
+      url = "http://127.0.0.1:${toString proxyCfg.port}";
+      bundle = "/etc/ssl/certs/ca-bundle.crt";
+    in
+    [
+      "HTTP_PROXY=${url}"
+      "HTTPS_PROXY=${url}"
+      # Local backends (llama-swap, the opencode servers) stay direct.
+      "NO_PROXY=127.0.0.1,localhost"
+      "NODE_EXTRA_CA_CERTS=${bundle}"
+      "CODEX_CA_CERTIFICATE=${bundle}"
+    ]
+  );
+  sessionProxyBinds = lib.optionals proxyCfg.enable [
+    "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt"
+    "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt"
+  ];
+
   # Sandbox of the agent sessions (modules/home/ai-sessions: Claude Code,
   # Codex), transient units started on demand. They share the opencode
   # sandbox's home and hardening, but none of its workspace (each session's
@@ -331,11 +357,11 @@ let
   # exec commands outside the sandbox).
   agentSessionSandbox = {
     Unit = {
-      After = [ "ai-sandbox-ssh-agent.service" ];
-      Wants = [ "ai-sandbox-ssh-agent.service" ];
+      After = [ "ai-sandbox-ssh-agent.service" ] ++ sessionProxyUnits;
+      Wants = [ "ai-sandbox-ssh-agent.service" ] ++ sessionProxyUnits;
     };
     Service = sandboxHardening // {
-      Environment = sandboxEnvironment;
+      Environment = sandboxEnvironment ++ sessionProxyEnvironment;
       BindPaths = [
         sandboxHomeBind
         # The opencode sandbox's ssh-agent (GitHub key), for git pull/push.
@@ -345,7 +371,7 @@ let
         # openpty() fails with ENOENT; mount devpts' own multiplexer instead.
         "/dev/pts/ptmx:/dev/ptmx"
       ];
-      BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds;
+      BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds ++ sessionProxyBinds;
       # An empty ~/workspace that the launcher binds the slot's folder into;
       # read-only, so writes outside that folder fail instead of vanishing.
       TemporaryFileSystem = [ "${userHome}/workspace:ro" ];

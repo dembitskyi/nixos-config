@@ -40,7 +40,7 @@ let
 in
 {
   options.mine.ai-sandbox.proxy = {
-    enable = lib.mkEnableOption "mitmproxy for tracing opencode LLM provider traffic";
+    enable = lib.mkEnableOption "mitmproxy for tracing the AI sandbox's traffic (opencode servers and agent sessions)";
 
     port = lib.mkOption {
       type = lib.types.port;
@@ -80,7 +80,16 @@ in
         };
 
         Service = {
-          Environment = [ "HOME=${userHome}" ];
+          Environment = [
+            "HOME=${userHome}"
+            # glibc keeps freed body buffers in per-thread arenas and grows its
+            # mmap threshold up to 32 MiB, so freed memory rarely went back to
+            # the system. Buffers of 1 MiB and more now get their own mapping,
+            # returned on free, and two arenas bound the fragmentation
+            # (flow-limit.py also trims the heap after shedding flows).
+            "MALLOC_ARENA_MAX=2"
+            "MALLOC_MMAP_THRESHOLD_=1048576"
+          ];
           RuntimeDirectory = "ai-sandbox-proxy";
           UMask = "0077";
           LoadCredential = [
@@ -102,7 +111,9 @@ in
           ];
           Restart = "on-failure";
           RestartSec = 3;
-          # Without the swap cap, hitting MemoryMax thrashes instead of restarting.
+          # flow-limit.py sheds flows from 5 GiB resident and stops recording
+          # at 6.5 GiB, well before this limit. Without the swap cap, hitting
+          # MemoryMax thrashes instead of restarting.
           MemoryMax = "8G";
           MemorySwapMax = "0";
         };
