@@ -117,6 +117,12 @@ in
     # exits 6/NOTCONFIGURED. xdg.portal doesn't pull fuse in, so enable it here.
     programs.fuse.enable = true;
 
+    # GLib can't find Alacritty for Terminal=true apps (nvim.desktop) on its own.
+    xdg.terminal-exec = {
+      enable = true;
+      settings.default = [ "Alacritty.desktop" ];
+    };
+
     # udisks2 hardcodes the automount base to /run/media/$USER; it cannot mount
     # into an arbitrary path. Symlink ~/mnt to that base so removable media
     # auto-mounted by udiskie shows up under the home directory as ~/mnt/<label>.
