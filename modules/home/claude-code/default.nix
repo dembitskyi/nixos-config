@@ -23,6 +23,35 @@ let
   };
   settingsFile = pkgs.writeText "claude-code-settings.json" (builtins.toJSON settings);
 
+  # The AI sandbox's MCP servers (streamable HTTP), shared with opencode.
+  mcpConfigFile = pkgs.writeText "claude-code-mcp.json" (
+    builtins.toJSON {
+      mcpServers = lib.mapAttrs (_: url: {
+        type = "http";
+        inherit url;
+      }) cfg.mcpServerUrls;
+    }
+  );
+
+  # Appended to the default system prompt when the Playwright MCP server is
+  # there, so sessions test web apps in the browser it drives.
+  systemPromptAppend = pkgs.writeText "claude-code-system-prompt-append.md" ''
+    # Browser for testing web apps
+
+    The Playwright MCP tools (`mcp__playwright__*`) drive a real Chromium (the
+    persistent ai-browser, Chrome DevTools Protocol at http://127.0.0.1:9222).
+    Servers you start on 127.0.0.1 in this sandbox are reachable from it. Use it
+    whenever you need to test or look at a web app.
+
+    - Open your own tab and close it when done. Leave the other tabs alone (they
+      hold logged-in sessions other tools drive) and never close the browser.
+    - The browser is headed: what you open shows on the user's screen.
+    - Other agents use the same browser, so check which tab is selected before
+      acting.
+    - Automatically named outputs (snapshots, screenshots, console and network
+      logs) go to ~/.cache/playwright-mcp/.
+  '';
+
   # Claude Code is updated by Nix, not by itself, and sends no telemetry, error
   # reports, or other non-essential traffic. Agent view is off: its background
   # supervisor is reached through /tmp (each session now has its own, see
@@ -76,6 +105,12 @@ in
       description = "Model of the default sessions, served by the Anthropic API (log in once with /login).";
     };
 
+    mcpServerUrls = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      description = "MCP server name to URL (streamable HTTP). Populated by the AI sandbox NixOS module.";
+    };
+
     vllm = {
       enable = lib.mkEnableOption "an optional Claude Code session backed by a local vLLM model behind llama-swap";
 
@@ -122,6 +157,14 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # Ctrl+P opens the command menu, as in opencode: Claude Code has no
+    # keybinding action for it, so tmux types the "/" that opens it, in the
+    # panes the session launcher (claude-sandbox) started. Other panes keep
+    # their Ctrl+P.
+    programs.tmux.extraConfig = ''
+      bind-key -n C-p if-shell -F '#{m:*claude-sandbox*,#{pane_start_command}}' 'send-keys /' 'send-keys C-p'
+    '';
+
     mine.home.ai-sessions.sessions.claude = {
       title = "Claude Code";
       command = lib.getExe pkgs.claude-code;
@@ -129,7 +172,11 @@ in
       args = [
         "--settings=${settingsFile}"
         "--permission-mode=bypassPermissions"
-      ];
+      ]
+      ++ lib.optional (cfg.mcpServerUrls != { }) "--mcp-config=${mcpConfigFile}"
+      ++ lib.optional (
+        cfg.mcpServerUrls ? playwright
+      ) "--append-system-prompt-file=${systemPromptAppend}";
       defaultBackend = "anthropic";
       # Each session gets its own empty /tmp (the shared sandbox keeps the
       # host's): its scratch files, task outputs and sockets are its own.

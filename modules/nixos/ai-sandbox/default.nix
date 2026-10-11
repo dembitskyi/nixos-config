@@ -492,6 +492,7 @@ in
 
     home-manager.users.${config.variables.username} = {
       mine.home.opencode.mcpServerUrls = configData.defaultServerUrls;
+      mine.home.claude-code.mcpServerUrls = { inherit (configData.defaultServerUrls) playwright; };
       mine.home.ai-sessions.sandbox = agentSessionSandbox;
 
       home.packages = [
