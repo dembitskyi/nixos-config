@@ -109,6 +109,8 @@ function LanesTab(props: TabProps) {
 		),
 	)
 	const selected = createMemo<Row | undefined>(() => list()[store.selected])
+	// Rows come and go as tasks start and finish, so the selection follows its row by key, not its index.
+	let selectedKey: string | undefined
 
 	function scrollToIndex(index: number, center: boolean) {
 		if (!scroll) return
@@ -120,8 +122,13 @@ function LanesTab(props: TabProps) {
 		if (index < scroll.scrollTop) scroll.scrollTo(index)
 	}
 
-	function moveTo(index: number, center = false) {
+	function select(index: number) {
+		selectedKey = list()[index]?.key
 		setStore("selected", index)
+	}
+
+	function moveTo(index: number, center = false) {
+		select(index)
 		scrollToIndex(index, center)
 	}
 
@@ -133,6 +140,7 @@ function LanesTab(props: TabProps) {
 			if (wasShown) {
 				selectedFor = ""
 				setStore("selected", 0)
+				selectedKey = undefined
 			}
 			wasShown = false
 			return
@@ -144,12 +152,15 @@ function LanesTab(props: TabProps) {
 				current.findIndex((row) => row.current),
 			)
 			selectedFor = props.input.sessionID
-			setStore("selected", index)
+			select(index)
 			scrollToIndex(index, true)
 			nextFrame(() => scrollToIndex(index, true))
 		}
 		wasShown = true
-		if (store.selected >= current.length) moveTo(Math.max(0, current.length - 1))
+		const kept = current.findIndex((row) => row.key === selectedKey)
+		if (kept >= 0 && kept !== store.selected) moveTo(kept)
+		else if (store.selected >= current.length) moveTo(Math.max(0, current.length - 1))
+		else selectedKey = current[store.selected]?.key
 	})
 
 	function open(row: Row | undefined) {
@@ -209,7 +220,7 @@ function LanesTab(props: TabProps) {
 				bind: "ctrl+a",
 				run() {
 					setActive((value) => !value)
-					setStore("selected", 0)
+					select(0)
 					scroll?.scrollTo(0)
 				},
 			},
@@ -240,9 +251,9 @@ function LanesTab(props: TabProps) {
 									paddingLeft={1}
 									paddingRight={1}
 									backgroundColor={color(theme().background.action.primary)}
-									onMouseMove={() => setStore("selected", index())}
+									onMouseMove={() => select(index())}
 									onMouseUp={() => {
-										setStore("selected", index())
+										select(index())
 										open(row)
 									}}
 								>

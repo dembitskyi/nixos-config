@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import type { Run } from "./state"
+import type { Run, TaskStatus } from "./state"
 import { readView, rows, runStatus, toView, type View } from "./view"
 
 const run: Run = {
@@ -86,7 +86,7 @@ test("runStatus prefers the run's end, then the planner, then progress", () => {
 })
 
 describe("rows", () => {
-	test("lists each run's planner, then its tasks as a tree", () => {
+	test("active lists each running run's planner, then its unfinished tasks as a tree", () => {
 		expect(rows([{ planner: "p1", view: view({ planner: "thinking" }) }], true, "w2")).toEqual([
 			{
 				key: "p1",
@@ -95,15 +95,6 @@ describe("rows", () => {
 				label: "Lanes r1: Ship the feature",
 				status: "Planning",
 				running: true,
-				current: false,
-			},
-			{
-				key: "p1:a",
-				sessionID: "w1",
-				prefix: "├─ ",
-				label: "Dev-junior: a · Alpha",
-				status: "Done",
-				running: false,
 				current: false,
 			},
 			{
@@ -119,17 +110,48 @@ describe("rows", () => {
 		])
 	})
 
-	test("shows running runs or finished ones, newest first", () => {
+	test("finished lists a running run's finished tasks under its planner", () => {
+		expect(rows([{ planner: "p1", view: view() }], false, "w1")).toEqual([
+			{
+				key: "p1",
+				sessionID: "p1",
+				prefix: "",
+				label: "Lanes r1: Ship the feature",
+				status: "1/3 done",
+				running: false,
+				current: false,
+			},
+			{
+				key: "p1:a",
+				sessionID: "w1",
+				prefix: "└─ ",
+				label: "Dev-junior: a · Alpha",
+				status: "Done",
+				running: false,
+				current: true,
+			},
+		])
+	})
+
+	test("active keeps queued, running and blocked tasks; finished keeps done, failed and cancelled ones; newest first", () => {
+		const task = (id: string, status: TaskStatus) => ({ id, title: id, agent: "dev-junior", status })
 		const entries = [
 			{ planner: "p1", view: view({ run: "r1", created: 1 }) },
-			{ planner: "p2", view: view({ run: "r2", created: 2 }) },
-			{ planner: "p3", view: view({ run: "r3", created: 3, status: "done" }) },
+			{ planner: "p2", view: view({ run: "r2", created: 2, tasks: [task("d", "blocked")] }) },
+			{
+				planner: "p3",
+				view: view({
+					run: "r3",
+					created: 3,
+					status: "stopped",
+					tasks: [task("e", "done"), task("f", "failed"), task("g", "cancelled")],
+				}),
+			},
+			{ planner: "p4", view: view({ run: "r4", created: 4, tasks: [] }) },
+			{ planner: "p5", view: view({ run: "r5", created: 5, status: "done", tasks: [] }) },
 		]
-		const heads = (active: boolean) =>
-			rows(entries, active)
-				.filter((row) => row.prefix === "")
-				.map((row) => row.key)
-		expect(heads(true)).toEqual(["p2", "p1"])
-		expect(heads(false)).toEqual(["p3"])
+		const keys = (active: boolean) => rows(entries, active).map((row) => row.key)
+		expect(keys(true)).toEqual(["p4", "p2", "p2:d", "p1", "p1:b", "p1:c"])
+		expect(keys(false)).toEqual(["p5", "p3", "p3:e", "p3:f", "p3:g", "p1", "p1:a"])
 	})
 })

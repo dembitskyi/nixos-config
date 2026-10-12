@@ -66,7 +66,7 @@ const MODEL_REF = /^[^/#\s]+\/[^#\s]+(#[^#\s]+)?$/
 const TASK_ID = /^[a-z0-9][a-z0-9-]{0,31}$/
 
 export const active = (task: Task) => task.status === "running" || task.status === "blocked"
-export const finished = (task: Task) =>
+export const finished = (task: Pick<Task, "status">) =>
 	task.status === "done" || task.status === "failed" || task.status === "cancelled"
 
 export function isModelRef(value: unknown): value is string {

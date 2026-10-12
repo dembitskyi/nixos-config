@@ -1,7 +1,7 @@
 // The run summary the lanes plugin keeps on each planner session (metadata
 // key `lanes`), and the rows of the composer's Lanes tab built from it. The
 // server writes summaries; the terminal plugin only reads them.
-import { cap, isRecord, type Run, type RunStatus, type TaskStatus } from "./state"
+import { cap, finished, isRecord, type Run, type RunStatus, type TaskStatus } from "./state"
 
 export const VIEW_KEY = "lanes"
 
@@ -84,29 +84,36 @@ export function runStatus(view: View) {
 	return `${done}/${view.tasks.length} done`
 }
 
-/** One row per run (its planner) followed by its tasks, newest run first; `active` keeps running runs, else finished ones. */
+/**
+ * One row per run (its planner) followed by its tasks, newest run first. `active` shows queued, running and
+ * blocked tasks, else done, failed and cancelled ones; a run is listed when it has such tasks or when it is
+ * still running (`active`) or has ended (not `active`).
+ */
 export function rows(entries: readonly { planner: string; view: View }[], active: boolean, current?: string): Row[] {
 	return entries
-		.filter(({ view }) => (view.status === "running") === active)
 		.toSorted((a, b) => b.view.created - a.view.created)
-		.flatMap(({ planner, view }) => [
-			{
-				key: planner,
-				sessionID: planner,
-				prefix: "",
-				label: `Lanes ${view.run}: ${view.goal}`,
-				status: runStatus(view),
-				running: view.status === "running" && view.planner === "thinking",
-				current: planner === current,
-			},
-			...view.tasks.map((task, index) => ({
-				key: `${planner}:${task.id}`,
-				...(task.session ? { sessionID: task.session } : {}),
-				prefix: index === view.tasks.length - 1 ? "└─ " : "├─ ",
-				label: `${titlecase(task.agent)}: ${task.id} · ${task.title}`,
-				status: TASK_STATUS[task.status],
-				running: task.status === "running" || task.status === "blocked",
-				current: task.session !== undefined && task.session === current,
-			})),
-		])
+		.flatMap(({ planner, view }) => {
+			const tasks = view.tasks.filter((task) => finished(task) !== active)
+			if (tasks.length === 0 && (view.status === "running") !== active) return []
+			return [
+				{
+					key: planner,
+					sessionID: planner,
+					prefix: "",
+					label: `Lanes ${view.run}: ${view.goal}`,
+					status: runStatus(view),
+					running: view.status === "running" && view.planner === "thinking",
+					current: planner === current,
+				},
+				...tasks.map((task, index) => ({
+					key: `${planner}:${task.id}`,
+					...(task.session ? { sessionID: task.session } : {}),
+					prefix: index === tasks.length - 1 ? "└─ " : "├─ ",
+					label: `${titlecase(task.agent)}: ${task.id} · ${task.title}`,
+					status: TASK_STATUS[task.status],
+					running: task.status === "running" || task.status === "blocked",
+					current: task.session !== undefined && task.session === current,
+				})),
+			]
+		})
 }
