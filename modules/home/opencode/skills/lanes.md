@@ -31,8 +31,8 @@ Lanes never run two tasks with overlapping `files` at the same time; tasks witho
 
 ## While it runs
 
-- A status line in your context shows progress, and notes arrive on their own: `done` (with the planner's summary), `failed`, `blocked`, `question`, `stalled`, and `paused`. Do not poll.
-- In a normal conversation, tell the user what is running and end your turn.
+- A status line in your context shows progress. Notes that need you wake you with a new turn: `done` (with the planner's summary), `question`, `blocked`, `stalled`, and `paused`. `failed` notes wait for your next turn, since the planner re-plans failures. Do not poll.
+- In a normal conversation, tell the user what is running and end your turn; the run wakes you when it needs you.
 - Working without the user (a /goal, or Away in /crew): call `lanes_wait` instead of ending your turn. It returns when the run finishes or needs you (a question, a blocked lane, a stalled or paused planner), or after `minutes`.
 - `lanes_status`: the board, or one task's report with `task`.
 - `lanes_tell`: answer the planner's question or change priorities and scope. With `task`, message one worker: a queued task gets its prompt amended, a running one sees it at its next step, a finished one takes it as a follow-up.

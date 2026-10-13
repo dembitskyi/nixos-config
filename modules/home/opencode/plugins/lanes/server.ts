@@ -1,10 +1,10 @@
 // `lanes` server side (OpenCode V2): runs a goal as tasks in parallel worker
 // sessions under a planner session while the orchestrator's own conversation
-// stays quiet. See scheduler.ts for the loop, state.ts for the data model, and
-// log.ts for the troubleshooting log.
+// stays quiet until a note needs it. See scheduler.ts for the loop, state.ts
+// for the data model, and log.ts for the troubleshooting log.
 import { defaultPath, fileLog, isLevel, type Log } from "./log"
 import { type AgentInfo, type Host, Lanes, type Permission } from "./scheduler"
-import { board, isRecord, taskReport } from "./state"
+import { board, isRecord, newID, taskReport } from "./state"
 
 type Input = Record<string, unknown>
 
@@ -100,6 +100,8 @@ export function host(ctx: ServerContext, log: Log): Host {
 		log,
 		settleMs: 1000,
 		publishDelayMs: 300,
+		// OpenCode evicts a directory after 60 minutes without session events.
+		keepAliveMs: 10 * 60_000,
 		now: () => Date.now(),
 		storage: {
 			get: (key) => ctx.storage.get(key),
@@ -149,7 +151,7 @@ export function tools(lanes: Lanes, log: Log, now: () => number): ToolInfo[] {
 	return [
 		tool(
 			"lanes_start",
-			"Run a goal as parallel lanes: a planner splits it into tasks for worker subagents in their own sessions and keeps up to `lanes` of them busy until the goal is done. Returns at once; a status line in your context tracks the run and milestone notes arrive on their own, so do not poll. Pass `tasks` to queue work yourself.",
+			"Run a goal as parallel lanes: a planner splits it into tasks for worker subagents in their own sessions and keeps up to `lanes` of them busy until the goal is done. Returns at once; a status line in your context tracks the run, and notes that need you (done, question, blocked, stalled, paused) wake you up, so do not poll. Pass `tasks` to queue work yourself.",
 			{ goal: string, lanes: lanesCount, tasks, notes: strings },
 			["goal"],
 			async (input, { sessionID }) => {
@@ -211,7 +213,7 @@ export function tools(lanes: Lanes, log: Log, now: () => number): ToolInfo[] {
 		),
 		tool(
 			"lanes_wait",
-			"Wait until a lanes run finishes or needs you (a planner question, a blocked lane, or a stalled or paused planner), for at most `minutes` (default 60). Use it when you work without the user, for example toward a /goal or while they are away, instead of polling lanes_status; in a normal conversation end your turn instead, and the run's notes arrive on their own.",
+			"Wait until a lanes run finishes or needs you (a planner question, a blocked lane, or a stalled or paused planner), for at most `minutes` (default 60). Use it when you work without the user, for example toward a /goal or while they are away, instead of polling lanes_status; in a normal conversation end your turn instead, and the notes that need you wake you up.",
 			{ run: string, minutes: { type: "integer", minimum: 1, maximum: 240 } },
 			["run"],
 			async (input, { signal }) => {
@@ -270,7 +272,8 @@ export default {
 	async setup(ctx: ServerContext) {
 		const path = text(ctx.options.logFile) || defaultPath("lanes")
 		const level = isLevel(ctx.options.logLevel) ? ctx.options.logLevel : "info"
-		const log = fileLog(path, level)
+		// Several servers, and a reloaded plugin next to its closed predecessor, can share the file.
+		const log = fileLog(path, level, "server", { pid: process.pid, instance: newID("i") })
 		const lanes = new Lanes(host(ctx, log))
 		log.info("plugin.setup", {
 			directory: ctx.location.directory,
@@ -298,13 +301,12 @@ export default {
 		void (async () => {
 			log.info("events.subscribed", { directory: ctx.location.directory })
 			for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
+				const data = isRecord(event.data) ? event.data : undefined
+				const sessionID = typeof data?.sessionID === "string" ? data.sessionID : undefined
 				if (event.type === "permission.asked" && isPermission(event.data)) lanes.asked(event.data)
-				else if (
-					event.type === "permission.replied" &&
-					isRecord(event.data) &&
-					typeof event.data.sessionID === "string"
-				)
-					lanes.replied(event.data.sessionID)
+				else if (event.type === "permission.replied" && sessionID) lanes.replied(sessionID)
+				else if (event.type === "session.execution.interrupted" && sessionID)
+					lanes.interrupted(sessionID, typeof data?.reason === "string" ? data.reason : "unknown")
 			}
 			if (!abort.signal.aborted) log.warn("events.ended", { directory: ctx.location.directory })
 		})().catch((error) => {
@@ -316,6 +318,7 @@ export default {
 		return () => {
 			log.info("plugin.cleanup", { directory: ctx.location.directory })
 			abort.abort()
+			lanes.close()
 			return log.flush()
 		}
 	},

@@ -28,3 +28,18 @@ test("fileLog appends JSON lines at or above its level, with errors as message a
 		await rm(dir, { recursive: true, force: true })
 	}
 })
+
+test("fileLog opens every line with its base fields", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "lanes-log-"))
+	try {
+		const path = join(dir, "lanes.log")
+		const log = fileLog(path, "info", "server", { pid: 42, instance: "i1" })
+		log.info("plugin.setup", { directory: "/repo" })
+		await log.flush()
+		const line = JSON.parse(await readFile(path, "utf8"))
+		expect(Object.keys(line)).toEqual(["time", "level", "component", "pid", "instance", "event", "directory"])
+		expect(line).toMatchObject({ pid: 42, instance: "i1", event: "plugin.setup", directory: "/repo" })
+	} finally {
+		await rm(dir, { recursive: true, force: true })
+	}
+})

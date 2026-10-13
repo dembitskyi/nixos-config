@@ -34,7 +34,13 @@ function plain(value: unknown): unknown {
 	return value
 }
 
-export function fileLog(path: string, minimum: Level = "info", component = "server"): Log & { flush(): Promise<void> } {
+/** `base` fields open every line, e.g. the process and plugin instance, so several writers stay apart. */
+export function fileLog(
+	path: string,
+	minimum: Level = "info",
+	component = "server",
+	base: Fields = {},
+): Log & { flush(): Promise<void> } {
 	let size: number | undefined
 	let queue: Promise<void> = mkdir(dirname(path), { recursive: true }).then(
 		() => undefined,
@@ -42,13 +48,14 @@ export function fileLog(path: string, minimum: Level = "info", component = "serv
 	)
 	const write = (level: Level, event: string, fields: Fields = {}) => {
 		if (RANK[level] < RANK[minimum]) return
-		const entry: Fields = { time: new Date().toISOString(), level, component, event }
+		const entry: Fields = { time: new Date().toISOString(), level, component, ...base, event }
 		for (const [key, value] of Object.entries(fields)) if (value !== undefined) entry[key] = plain(value)
 		let line: string
 		try {
 			line = `${JSON.stringify(entry)}\n`
 		} catch {
-			line = `${JSON.stringify({ time: entry.time, level, component, event, note: "fields could not be serialized" })}\n`
+			const note = "fields could not be serialized"
+			line = `${JSON.stringify({ time: entry.time, level, component, ...base, event, note })}\n`
 		}
 		const bytes = Buffer.byteLength(line)
 		queue = queue.then(async () => {

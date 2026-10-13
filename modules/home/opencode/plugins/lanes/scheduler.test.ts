@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { Fields, Log } from "./log"
 import { type AgentInfo, type Host, Lanes, type SessionInfo } from "./scheduler"
-import { line, type Message, RESUME, type Run } from "./state"
+import { line, type Message, NUDGE, RESUME, type Run } from "./state"
 import { readView, VIEW_KEY } from "./view"
 
 interface FakeSession {
@@ -27,6 +27,8 @@ function fake(crew?: Record<string, string>) {
 	const notes: { sessionID: string; text: string; resume: boolean }[] = []
 	const logs: { level: string; event: string; fields?: Fields }[] = []
 	const switches: { sessionID: string; model: string }[] = []
+	// The session of each metadata write, e.g. the run summary on the planner.
+	const updates: string[] = []
 	let next = 0
 	const add = (id: string, info: Omit<SessionInfo, "id"> = {}) => {
 		const session: FakeSession = {
@@ -80,6 +82,7 @@ function fake(crew?: Record<string, string>) {
 		log,
 		settleMs: 5,
 		publishDelayMs: 0,
+		keepAliveMs: 60_000,
 		now: () => 1000,
 		storage: {
 			get: async (key) => storage.get(key),
@@ -121,6 +124,7 @@ function fake(crew?: Record<string, string>) {
 			async update({ sessionID, metadata }) {
 				const target = session(sessionID)
 				target.info = { ...target.info, metadata }
+				updates.push(sessionID)
 			},
 			context: async ({ sessionID }) => session(sessionID).messages,
 		},
@@ -135,10 +139,26 @@ function fake(crew?: Record<string, string>) {
 		const origin = session("origin")
 		origin.info = { ...origin.info, metadata: { ...origin.info.metadata, crew: { models } } }
 	}
-	return { host, session, sessions, storage, notes, logs, switches, finish, shutdown, settle, view, crewModels }
+	return {
+		host,
+		session,
+		sessions,
+		storage,
+		notes,
+		logs,
+		switches,
+		updates,
+		finish,
+		shutdown,
+		settle,
+		view,
+		crewModels,
+	}
 }
 
 const statuses = (run: Run) => Object.fromEntries(run.tasks.map((task) => [task.id, task.status]))
+const states = (notes: { text: string }[]) => notes.map((note) => note.text.match(/state="(\w+)"/)?.[1])
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const task = (run: Run, id: string) => {
 	const found = run.tasks.find((task) => task.id === id)
 	if (!found) throw new Error(`no task ${id}`)
@@ -187,7 +207,7 @@ describe("running tasks", () => {
 		expect(statuses(run)).toEqual({ a: "done", b: "running", c: "running", d: "done" })
 	})
 
-	test("wakes the planner with results and reports the finished run", async () => {
+	test("wakes the planner with results, then the orchestrator with the finished run", async () => {
 		const f = fake()
 		const { lanes, run, planner } = await started(f, { goal: "Ship", lanes: 4, tasks: four.slice(0, 1) })
 		f.finish(planner, "succeeded")
@@ -200,12 +220,13 @@ describe("running tasks", () => {
 		expect(run.status).toBe("done")
 		expect(f.notes).toHaveLength(1)
 		expect(f.notes[0]?.sessionID).toBe("origin")
-		expect(f.notes[0]?.resume).toBe(false)
+		expect(f.notes[0]?.resume).toBe(true)
 		expect(f.notes[0]?.text).toContain('state="done"')
 		expect(f.notes[0]?.text).toContain("All done; tests pass.")
+		expect(f.logs.find((entry) => entry.event === "note.sent")?.fields).toMatchObject({ kind: "done", wake: true })
 	})
 
-	test("retries a failure once, then fails it and tells the orchestrator", async () => {
+	test("retries a failure once, then fails it and tells the orchestrator without waking it", async () => {
 		const f = fake()
 		const { run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
 		f.finish(planner, "succeeded")
@@ -219,6 +240,8 @@ describe("running tasks", () => {
 		expect(task(run, "a").status).toBe("failed")
 		expect(task(run, "a").error).toBe("rate limited again")
 		expect(f.notes[0]?.text).toContain('state="failed"')
+		// The planner re-plans failures, so the note waits for the orchestrator's next turn.
+		expect(f.notes[0]?.resume).toBe(false)
 		expect(f.session(planner).prompts[1]?.text).toContain("[failed]: rate limited again")
 	})
 
@@ -287,12 +310,181 @@ describe("interrupts and restarts", () => {
 		await f.settle()
 		expect(run.stalled).toBe(true)
 		expect(f.notes[0]?.text).toContain('state="paused"')
+		expect(f.notes[0]?.resume).toBe(true)
 		expect(f.view(planner)?.planner).toBe("paused")
 		expect(f.session(planner).prompts).toHaveLength(1)
 		await lanes.tell(run, "Carry on.")
 		await f.settle()
 		expect(run.stalled).toBeUndefined()
 		expect(f.session(planner).prompts.at(-1)?.text).toBe("Message from the orchestrator: Carry on.")
+	})
+
+	test("OpenCode stopping an idle directory retries the task instead of cancelling it", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
+		f.finish(planner, "succeeded")
+		const session = worker(run, "a")
+		f.finish(session, "interrupted")
+		// The interrupt's event can land just after the idle record.
+		await pause(1)
+		lanes.interrupted(session, "inactivity")
+		await f.settle()
+		expect(task(run, "a").status).toBe("running")
+		expect(f.session(session).prompts.at(-1)?.text).toContain("OpenCode stopped the session after an hour")
+		expect(f.logs.find((entry) => entry.event === "session.interrupted")?.fields).toMatchObject({
+			run: run.id,
+			role: "task",
+			task: "a",
+			reason: "inactivity",
+		})
+		f.finish(session, "succeeded", "Done A.")
+		await f.settle()
+		expect(task(run, "a").status).toBe("done")
+		expect(task(run, "a").interrupt).toBeUndefined()
+	})
+
+	test("a task cancelled while its interrupt is explained is not retried", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
+		f.finish(planner, "succeeded")
+		const session = worker(run, "a")
+		lanes.interrupted(session, "inactivity")
+		f.finish(session, "interrupted")
+		await pause(0)
+		await lanes.stop(run, "a")
+		await f.settle()
+		expect(task(run, "a").status).toBe("cancelled")
+		expect(f.session(session).prompts).toHaveLength(1)
+	})
+
+	test("a reload hands the run to the new plugin, and the closed one stops acting on its stale copy", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
+		f.finish(planner, "succeeded")
+		f.finish(worker(run, "a"), "succeeded", "Done A.")
+		await f.settle()
+		// OpenCode reloads the plugin while the planner reads the results.
+		expect(f.session(planner).prompts).toHaveLength(2)
+		lanes.close()
+		const reloaded = new Lanes(f.host)
+		await reloaded.load()
+		await f.settle()
+		const nudges = () => f.session(planner).prompts.filter((prompt) => prompt.text === NUDGE)
+		f.finish(planner, "succeeded")
+		await f.settle()
+		expect(nudges()).toHaveLength(1)
+		await reloaded.finish(await reloaded.find(run.id), "All done.")
+		f.finish(planner, "succeeded")
+		await f.settle()
+		// The closed instance neither reports a stall after the summary nor overwrites the finished run.
+		expect(states(f.notes)).toEqual(["done"])
+		expect((f.storage.get(`run:${run.id}`) as Run).status).toBe("done")
+		expect(nudges()).toHaveLength(1)
+		expect(f.logs.filter((entry) => entry.event === "lanes.stale").map((entry) => entry.fields?.step)).toEqual([
+			"planner",
+		])
+	})
+
+	test("a reload before the planner is prompted leaves the results to the new plugin", async () => {
+		const f = fake()
+		let hold: Promise<void> | undefined
+		const host: Host = {
+			...f.host,
+			session: {
+				...f.host.session,
+				get: async (input) => {
+					await hold
+					return f.host.session.get(input)
+				},
+			},
+		}
+		const lanes = new Lanes(host)
+		const run = await lanes.start("origin", { goal: "Ship", tasks: four.slice(0, 1) })
+		await f.settle()
+		const planner = run.planner as string
+		f.finish(planner, "succeeded")
+		await f.settle()
+		let release!: () => void
+		hold = new Promise((resolve) => {
+			release = resolve
+		})
+		// The results wake waits on the planner's model when OpenCode reloads the plugin.
+		f.finish(worker(run, "a"), "succeeded", "Done A.")
+		await f.settle()
+		lanes.close()
+		release()
+		const reloaded = new Lanes(f.host)
+		await reloaded.load()
+		await f.settle()
+		expect(f.session(planner).prompts).toHaveLength(2)
+		expect(f.session(planner).prompts[1]?.text).toContain("a A [done]: Done A.")
+	})
+
+	test("a reload during plan_finish still tells the orchestrator", async () => {
+		const f = fake()
+		let hold: Promise<void> | undefined
+		const host: Host = {
+			...f.host,
+			storage: {
+				...f.host.storage,
+				set: async (key, value) => {
+					await hold
+					return f.host.storage.set(key, value)
+				},
+			},
+		}
+		const lanes = new Lanes(host)
+		const run = await lanes.start("origin", { goal: "Ship", tasks: four.slice(0, 1) })
+		await f.settle()
+		f.finish(run.planner as string, "succeeded")
+		f.finish(worker(run, "a"), "succeeded", "Done A.")
+		await f.settle()
+		let release!: () => void
+		hold = new Promise((resolve) => {
+			release = resolve
+		})
+		const finishing = lanes.finish(run, "All done.")
+		lanes.close()
+		release()
+		await finishing
+		expect(states(f.notes)).toEqual(["done"])
+		expect(f.notes[0]?.resume).toBe(true)
+	})
+
+	test("after a reload, the new plugin retries a task OpenCode stopped for inactivity", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
+		f.finish(planner, "succeeded")
+		await f.settle()
+		const session = worker(run, "a")
+		// OpenCode interrupts the worker, then evicts the directory, which unloads the plugin.
+		lanes.interrupted(session, "inactivity")
+		f.finish(session, "interrupted")
+		await pause(0)
+		lanes.close()
+		const reloaded = new Lanes(f.host)
+		await reloaded.load()
+		await f.settle()
+		const resumed = await reloaded.find(run.id)
+		expect(task(resumed, "a").status).toBe("running")
+		expect(f.session(session).prompts).toHaveLength(2)
+		expect(f.session(session).prompts[1]?.text).toContain("OpenCode stopped the session after an hour")
+		f.finish(session, "succeeded", "Done A.")
+		await f.settle()
+		expect(task(resumed, "a").status).toBe("done")
+		expect(task(run, "a").status).toBe("running")
+	})
+
+	test("logs why OpenCode interrupted the sessions of a run", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship" })
+		lanes.interrupted(planner, "user")
+		lanes.interrupted("origin", "inactivity")
+		lanes.interrupted("someone-else", "user")
+		expect(f.logs.filter((entry) => entry.event === "session.interrupted").map((entry) => entry.fields)).toEqual([
+			{ run: run.id, role: "planner", task: undefined, session: planner, reason: "user" },
+			{ run: run.id, role: "orchestrator", task: undefined, session: "origin", reason: "inactivity" },
+		])
 	})
 })
 
@@ -335,6 +527,7 @@ describe("permissions", () => {
 		expect(task(run, "a").status).toBe("blocked")
 		expect(f.notes).toHaveLength(1)
 		expect(f.notes[0]?.text).toContain("waits for approval: shell rm -rf build")
+		expect(f.notes[0]?.resume).toBe(true)
 		lanes.replied(sessionID)
 		expect(task(run, "a").status).toBe("running")
 	})
@@ -614,4 +807,34 @@ describe("lanes_wait", () => {
 		await lanes.stop(run)
 		expect(await stopping).toStartWith(`Run ${run.id} was stopped.`)
 	})
+
+	test("is told to wait again when the plugin reloads", async () => {
+		const f = fake()
+		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
+		f.finish(planner, "succeeded")
+		const waiting = lanes.wait(run, 60_000)
+		lanes.close()
+		expect(await waiting).toStartWith("Stopped waiting: the lanes plugin reloaded.")
+		expect(await waiting).toEndWith("Call lanes_wait again to keep waiting.")
+	})
+})
+
+test("a busy run republishes its summary, which keeps OpenCode from evicting the directory", async () => {
+	const f = fake()
+	const lanes = new Lanes({ ...f.host, keepAliveMs: 5 })
+	const run = await lanes.start("origin", { goal: "Ship", tasks: four.slice(0, 1) })
+	const planner = run.planner as string
+	f.finish(planner, "succeeded")
+	await f.settle()
+	const writes = () => f.updates.filter((sessionID) => sessionID === planner).length
+	const before = writes()
+	await f.settle()
+	expect(writes()).toBeGreaterThan(before + 1)
+	expect(f.logs.some((entry) => entry.event === "run.keepalive")).toBe(true)
+	// Nothing runs once the run stops, so the writes stop too.
+	await lanes.stop(run)
+	await f.settle()
+	const stopped = writes()
+	await f.settle()
+	expect(writes()).toBe(stopped)
 })
