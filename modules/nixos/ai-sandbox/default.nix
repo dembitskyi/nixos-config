@@ -370,7 +370,21 @@ let
         # cannot resolve to its devpts instance from a user namespace, so
         # openpty() fails with ENOENT; mount devpts' own multiplexer instead.
         "/dev/pts/ptmx:/dev/ptmx"
-      ];
+      ]
+      # The NVIDIA device nodes, when enabled, bound into the private /dev
+      # ("-": skip nodes this machine lacks). The driver's libraries are under
+      # /run/opengl-driver, which the sessions already see.
+      ++ lib.optionals config.mine.ai-sandbox.gpu.enable (
+        map (dev: "-${dev}") (
+          [
+            "/dev/nvidiactl"
+            "/dev/nvidia-uvm"
+            "/dev/nvidia-uvm-tools"
+            "/dev/nvidia-modeset"
+          ]
+          ++ map (i: "/dev/nvidia${toString i}") (lib.range 0 7)
+        )
+      );
       BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds ++ sessionProxyBinds;
       # An empty ~/workspace that the launcher binds the slot's folder into;
       # read-only, so writes outside that folder fail instead of vanishing.
@@ -424,6 +438,8 @@ in
         default = [ ];
         description = "Additional packages to include in the AI sandbox service PATH.";
       };
+
+      gpu.enable = lib.mkEnableOption "the NVIDIA GPU in the agent sessions (Claude Code, Codex), for CUDA work such as testing GPU services";
 
       browseruse = {
         enable = lib.mkEnableOption "the browser-use MCP server; the Playwright one covers browser automation without it";
