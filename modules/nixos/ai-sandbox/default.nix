@@ -279,28 +279,30 @@ let
     automationConfig = config.mine.ai-sandbox.automationConfig;
   };
 
+  sandboxPackages =
+    extraPackages
+    ++ config.mine.ai-sandbox.extraPackages
+    ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package;
+
   # Environment, hardening and binds shared by every sandboxed agent unit:
   # ai-sandbox.service (opencode + MCP servers) and the on-demand agent
-  # sessions (agentSessionSandbox below).
-  sandboxEnvironment = [
-    "HOME=${userHome}"
-    "SSH_AUTH_SOCK=${sandboxSshAgentSocket}"
-    "XDG_CACHE_HOME=${userHome}/.cache"
-    "XDG_DATA_HOME=${userHome}/.local/share"
-    "XDG_STATE_HOME=${userHome}/.local/state"
-    "UV_CACHE_DIR=${userHome}/.cache/uv"
-    "UV_STATE_DIR=${userHome}/.local/state/uv"
-    "UV_DATA_DIR=${userHome}/.local/share/uv"
-    "PATH=${
-      lib.makeBinPath (
-        extraPackages
-        ++ config.mine.ai-sandbox.extraPackages
-        ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package
-      )
-    }"
-  ]
-  ++ lib.mapAttrsToList (name: value: "${name}=${value}") telemetryOptOut
-  ++ lib.optional config.mine.ai-sandbox.offlineModelCatalog.enable "OPENCODE_DISABLE_MODELS_FETCH=1";
+  # sessions (agentSessionSandbox below). The environment takes the unit's
+  # PATH packages.
+  sandboxEnvironment =
+    packages:
+    [
+      "HOME=${userHome}"
+      "SSH_AUTH_SOCK=${sandboxSshAgentSocket}"
+      "XDG_CACHE_HOME=${userHome}/.cache"
+      "XDG_DATA_HOME=${userHome}/.local/share"
+      "XDG_STATE_HOME=${userHome}/.local/state"
+      "UV_CACHE_DIR=${userHome}/.cache/uv"
+      "UV_STATE_DIR=${userHome}/.local/state/uv"
+      "UV_DATA_DIR=${userHome}/.local/share/uv"
+      "PATH=${lib.makeBinPath packages}"
+    ]
+    ++ lib.mapAttrsToList (name: value: "${name}=${value}") telemetryOptOut
+    ++ lib.optional config.mine.ai-sandbox.offlineModelCatalog.enable "OPENCODE_DISABLE_MODELS_FETCH=1";
   sandboxHardening = {
     NoNewPrivileges = true;
     ProtectClock = true;
@@ -349,6 +351,48 @@ let
     "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt"
   ];
 
+  # With the clipboard bridge on (clipboard.nix), the sessions' `wl-paste`
+  # forwards Claude Code's image paste (`wl-paste -l`, then `wl-paste --type
+  # image/png`) to it. An empty answer exits 1, as wl-paste does with nothing
+  # to paste, so Claude Code moves on to its next command.
+  clipboardCfg = config.mine.ai-sandbox.clipboard;
+  sessionWlPaste = pkgs.writeShellApplication {
+    name = "wl-paste";
+    runtimeInputs = with pkgs; [
+      coreutils
+      socat
+    ];
+    text = ''
+      request=""
+      case "$#:''${1:-}" in
+        1:-l | 1:--list-types) request=list ;;
+        2:-t | 2:--type)
+          case "$2" in
+            image/*) request="get $2" ;;
+          esac
+          ;;
+      esac
+      if [ -z "$request" ]; then
+        echo "wl-paste: the AI sandbox only lists and pastes clipboard images (-l, --type image/...)." >&2
+        exit 1
+      fi
+
+      answer="$(mktemp)"
+      trap 'rm -f "$answer"' EXIT
+      printf '%s\n' "$request" |
+        socat -t 30 - "UNIX-CONNECT:/run/user/$(id -u)/ai-sandbox-clipboard/socket" >"$answer"
+      if [ ! -s "$answer" ]; then
+        exit 1
+      fi
+      cat "$answer"
+    '';
+  };
+  sessionClipboardUnits = lib.optional clipboardCfg.enable "ai-sandbox-clipboard.socket";
+  sessionClipboardPackages = lib.optional clipboardCfg.enable sessionWlPaste;
+  # The socket's directory, which outlives socket restarts; connecting
+  # through a read-only bind works.
+  sessionClipboardBinds = lib.optional clipboardCfg.enable "${userRuntimeDir}/ai-sandbox-clipboard:${userRuntimeDir}/ai-sandbox-clipboard";
+
   # Sandbox of the agent sessions (modules/home/ai-sessions: Claude Code,
   # Codex), transient units started on demand. They share the opencode
   # sandbox's home and hardening, but none of its workspace (each session's
@@ -357,11 +401,12 @@ let
   # exec commands outside the sandbox).
   agentSessionSandbox = {
     Unit = {
-      After = [ "ai-sandbox-ssh-agent.service" ] ++ sessionProxyUnits;
-      Wants = [ "ai-sandbox-ssh-agent.service" ] ++ sessionProxyUnits;
+      After = [ "ai-sandbox-ssh-agent.service" ] ++ sessionProxyUnits ++ sessionClipboardUnits;
+      Wants = [ "ai-sandbox-ssh-agent.service" ] ++ sessionProxyUnits ++ sessionClipboardUnits;
     };
     Service = sandboxHardening // {
-      Environment = sandboxEnvironment ++ sessionProxyEnvironment;
+      Environment =
+        sandboxEnvironment (sandboxPackages ++ sessionClipboardPackages) ++ sessionProxyEnvironment;
       BindPaths = [
         sandboxHomeBind
         # The opencode sandbox's ssh-agent (GitHub key), for git pull/push.
@@ -385,7 +430,12 @@ let
           ++ map (i: "/dev/nvidia${toString i}") (lib.range 0 7)
         )
       );
-      BindReadOnlyPaths = [ sandboxSshConfigBind ] ++ sandboxJfrogBinds ++ sessionProxyBinds;
+      BindReadOnlyPaths = [
+        sandboxSshConfigBind
+      ]
+      ++ sandboxJfrogBinds
+      ++ sessionProxyBinds
+      ++ sessionClipboardBinds;
       # An empty ~/workspace that the launcher binds the slot's folder into;
       # read-only, so writes outside that folder fail instead of vanishing.
       TemporaryFileSystem = [ "${userHome}/workspace:ro" ];
@@ -404,7 +454,10 @@ let
   };
 in
 {
-  imports = [ ./proxy.nix ];
+  imports = [
+    ./clipboard.nix
+    ./proxy.nix
+  ];
 
   options = {
     mine.ai-sandbox = {
@@ -571,7 +624,7 @@ in
           WantedBy = [ "graphical-session.target" ];
         };
         Service = sandboxHardening // {
-          Environment = sandboxEnvironment;
+          Environment = sandboxEnvironment sandboxPackages;
           BindPaths = [
             sandboxHomeBind
             sandboxSshAgentBind
