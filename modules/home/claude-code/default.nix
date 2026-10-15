@@ -201,14 +201,14 @@ in
           backend = "anthropic";
           comment = "Sandboxed Claude Code (${cfg.model})";
         };
-        # S2 works in S1's folder (~/workspace/claude-s1): two sessions, one
-        # set of checkouts.
-        s2 = {
-          backend = "anthropic";
-          folder = "s1";
-          comment = "Sandboxed Claude Code (${cfg.model}), in S1's folder";
-        };
       }
+      # S2-S6 work in S1's folder (~/workspace/claude-s1): six sessions, one
+      # set of checkouts.
+      // lib.genAttrs (map (n: "s${toString n}") (lib.range 2 6)) (_: {
+        backend = "anthropic";
+        folder = "s1";
+        comment = "Sandboxed Claude Code (${cfg.model}), in S1's folder";
+      })
       // lib.optionalAttrs vcfg.enable {
         l1 = {
           backend = "vllm";

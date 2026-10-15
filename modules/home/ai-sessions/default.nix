@@ -4,7 +4,9 @@
 # sandbox comes from the AI sandbox NixOS module (`sandbox`) and is applied
 # through a unit-name-prefix drop-in. Each slot works in a folder
 # ~/workspace/<name>-<folder> (by default its own, folder = slot; slots may
-# share one), the only part of the workspace it can see.
+# share one), the only part of the workspace it can see. Services may start a
+# slot's session themselves with its launcher (`launchers`), as superapp's
+# Claude bridge does for the phone.
 {
   lib,
   config,
@@ -306,18 +308,28 @@ in
       default = { };
       description = "Sandboxed agent sessions, each with a `<name>-sandbox` launcher. Defined by the agent modules.";
     };
+
+    launchers = lib.mkOption {
+      type = lib.types.attrsOf lib.types.package;
+      readOnly = true;
+      description = "Each session's `<name>-sandbox` launcher, for services that start a slot's session themselves (in a tmux session of their own).";
+    };
   };
 
-  config = lib.mkIf (cfg.sessions != { }) {
-    home.packages = lib.mapAttrsToList mkLauncher cfg.sessions;
+  config = lib.mkMerge [
+    { mine.home.ai-sessions.launchers = lib.mapAttrs mkLauncher cfg.sessions; }
 
-    xdg.configFile = lib.mapAttrs' (
-      name: session:
-      lib.nameValuePair "systemd/user/${unitPrefix name}-.service.d/10-sandbox.conf" {
-        text = sandboxDropIn session;
-      }
-    ) cfg.sessions;
+    (lib.mkIf (cfg.sessions != { }) {
+      home.packages = lib.attrValues cfg.launchers;
 
-    xdg.desktopEntries = lib.concatMapAttrs mkDesktopEntries cfg.sessions;
-  };
+      xdg.configFile = lib.mapAttrs' (
+        name: session:
+        lib.nameValuePair "systemd/user/${unitPrefix name}-.service.d/10-sandbox.conf" {
+          text = sandboxDropIn session;
+        }
+      ) cfg.sessions;
+
+      xdg.desktopEntries = lib.concatMapAttrs mkDesktopEntries cfg.sessions;
+    })
+  ];
 }
