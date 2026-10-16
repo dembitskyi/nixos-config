@@ -108,6 +108,7 @@ in
         Unit = {
           Description = "AI Sandbox clipboard image request";
           CollectMode = "inactive-or-failed";
+          X-SwitchMethod = "keep-old";
         };
         Service = {
           ExecStart = lib.getExe serve;

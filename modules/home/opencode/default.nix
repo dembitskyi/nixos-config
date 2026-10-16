@@ -153,7 +153,7 @@ let
   // lib.optionalAttrs (cfg.goal.judgeModel != null) { judgeModel = modelRef cfg.goal.judgeModel; };
 
   # The AI sandbox only provides the browser-use MCP server when it is enabled there.
-  browserUse = cfg.mcpServerUrls ? browseruse;
+  browserUse = cfg.mcpServers ? mcp_browseruse;
 
   # Subagents doing dev's work get its tools, minus questions, context compression, and lanes runs.
   subagentTools = lib.subtractLists [
@@ -247,15 +247,10 @@ in
         `settings` they do not know, so raw request fields belong in `body`.
       '';
     };
-    mcpServerUrls = lib.mkOption {
-      type = lib.types.attrsOf lib.types.str;
-      default = { };
-      description = "MCP server name to URL. Populated by the AI sandbox NixOS module.";
-    };
     mcpServers = lib.mkOption {
       type = lib.types.attrsOf jsonFormat.type;
       default = { };
-      description = "Extra MCP servers, as native V2 `mcp.servers` entries.";
+      description = "MCP servers, as native V2 `mcp.servers` entries. The AI sandbox NixOS module adds its servers.";
     };
     plugins = lib.mkOption {
       type = lib.types.listOf jsonFormat.type;
@@ -464,13 +459,6 @@ in
           model = lib.mkDefault "github-copilot/gpt-5.4-mini";
           system = builtins.readFile ./prompts/notification.md;
           tools = [ ];
-          permissions = [
-            {
-              action = "shell";
-              resource = "hyprctl dispatch exec *";
-              effect = "allow";
-            }
-          ];
         };
       };
 
@@ -510,6 +498,12 @@ in
 
       automationConfig = {
         agents = lib.mapAttrs renderAgent cfg.automationAgents;
+        # One-shot automation sessions need no Ghidra JVM.
+        mcp.servers = lib.optionalAttrs (cfg.mcpServers ? mcp_ghidra) {
+          mcp_ghidra = cfg.mcpServers.mcp_ghidra // {
+            disabled = true;
+          };
+        };
         # One-shot automation sessions need no memory capture, context
         # pruning or subagent controls.
         plugins = [
@@ -595,16 +589,7 @@ in
         skills = [ "${skillsDir}" ];
         permissions = rules.global ++ map renderRule cfg.permissions;
         agents = lib.mapAttrs renderAgent cfg.agents;
-        mcp.servers =
-          lib.mapAttrs' (
-            name: url:
-            lib.nameValuePair "mcp_${lib.replaceStrings [ "-" ] [ "_" ] name}" {
-              type = "remote";
-              inherit url;
-              oauth = false;
-            }
-          ) cfg.mcpServerUrls
-          // cfg.mcpServers;
+        mcp.servers = cfg.mcpServers;
         commands.grill-me = {
           description = "Relentless design-tree interview to stress-test a plan before building.";
           template = ''

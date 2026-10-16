@@ -67,11 +67,7 @@ in
       })
 
       (lib.mkIf cfg.aiSandboxBind.enable {
-        home-manager.users.${config.variables.username} = {
-          systemd.user.services.ai-sandbox.Service.BindPaths = [
-            "-${cfg.sharedPath}:${cfg.sharedPath}"
-          ];
-        };
+        mine.ai-sandbox.binds = [ "-${cfg.sharedPath}:${cfg.sharedPath}" ];
       })
     ]
   );

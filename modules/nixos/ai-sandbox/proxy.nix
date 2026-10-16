@@ -12,13 +12,8 @@ let
   mitmweb = lib.getExe' pkgs.mitmproxy "mitmweb";
   confDir = "%t/ai-sandbox-proxy/confdir";
 
-  # Script that sets up the mitmproxy confdir and builds the CA bundle.
-  # Both the CA key and cert must be present so mitmproxy reuses them
-  # instead of generating a new cert on every restart.
-  # Also builds the combined cert bundle (system CAs + mitmproxy CA) that
-  # the AI sandbox service bind-mounts over /etc/ssl/certs/. Running this in
-  # the proxy service (which is ordered Before=ai-sandbox) guarantees the
-  # bundle file exists before the AI sandbox's namespace is set up.
+  # Sets up the mitmproxy confdir (CA key and cert, so it reuses them) and
+  # the CA bundle the sandboxed units bind over /etc/ssl/certs (units.nix).
   # NOTE: uses $XDG_RUNTIME_DIR instead of %t because systemd only expands
   # specifiers in unit file directives, not inside script contents.
   setupProxy = pkgs.writeShellScript "ai-sandbox-proxy-setup" ''
@@ -68,15 +63,11 @@ in
     };
 
     home-manager.users.${config.variables.username} = {
+      # Started by the first unit that wants it; keeps its flows until logout.
       systemd.user.services.ai-sandbox-proxy = {
         Unit = {
           Description = "AI Sandbox LLM traffic proxy (mitmweb)";
-          Before = [ "ai-sandbox.service" ];
           PartOf = [ "graphical-session.target" ];
-        };
-
-        Install = {
-          WantedBy = [ "graphical-session.target" ];
         };
 
         Service = {
@@ -116,21 +107,6 @@ in
           # MemoryMax thrashes instead of restarting.
           MemoryMax = "8G";
           MemorySwapMax = "0";
-        };
-      };
-
-      # Inject cert bundle bind-mounts into the AI sandbox service so that
-      # Bun's BoringSSL (which reads /etc/ssl/certs/) trusts the proxy CA.
-      systemd.user.services.ai-sandbox = {
-        Unit = {
-          After = [ "ai-sandbox-proxy.service" ];
-          Wants = [ "ai-sandbox-proxy.service" ];
-        };
-        Service = {
-          BindReadOnlyPaths = [
-            "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-bundle.crt"
-            "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt"
-          ];
         };
       };
     };
