@@ -63,9 +63,10 @@ let
     }
   '';
 
-  # A Ghidra project takes one user: one per working directory.
+  # A Ghidra project takes one user (one per working directory), in a path
+  # without dot-directories, which Ghidra rejects.
   ghidraMcp = pkgs.writeShellScript "ghidra-mcp" ''
-    exec ${uvx} pyghidra-mcp --project-path "$HOME/.local/share/ghidra/''${PWD//\//_}"
+    exec ${uvx} pyghidra-mcp --project-path "$HOME/ghidra-projects/''${PWD//\//_}"
   '';
 
   localServers = {
@@ -102,6 +103,8 @@ let
       env = {
         GHIDRA_INSTALL_DIR = "${pkgs.ghidra}/lib/ghidra";
         JAVA_HOME = "${pkgs.jdk21.home}";
+        # DISPLAY is inherited, but no display is reachable in the sandbox.
+        JAVA_TOOL_OPTIONS = "-Djava.awt.headless=true";
         # JPype's uv-installed native extension needs the C++ runtime.
         LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
       };

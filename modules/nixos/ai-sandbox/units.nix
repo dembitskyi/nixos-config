@@ -54,7 +54,9 @@ let
       diffutils
       gh
       (python313.withPackages (
-        ps: with ps; [
+        ps:
+        with ps;
+        [
           numpy
           scipy
           sympy
@@ -87,6 +89,7 @@ let
           openpyxl
           python-pptx
         ]
+        ++ cfg.pythonPackages ps
       ))
       pandoc
       readline
@@ -105,16 +108,6 @@ let
     ++ cfg.extraPackages
     ++ lib.optional config.mine.jfrog.enable config.mine.jfrog.package;
 
-  gpuDevices = map (dev: "-${dev}") (
-    [
-      "/dev/nvidiactl"
-      "/dev/nvidia-uvm"
-      "/dev/nvidia-uvm-tools"
-      "/dev/nvidia-modeset"
-    ]
-    ++ map (i: "/dev/nvidia${toString i}") (lib.range 0 7)
-  );
-
   proxyUrl = "http://127.0.0.1:${toString cfg.proxy.port}";
   caBundle = "/etc/ssl/certs/ca-bundle.crt";
 
@@ -131,6 +124,7 @@ in
       home ? "ai-sandbox",
       extraPackages ? [ ],
       proxy ? true,
+      docker ? false,
     }:
     let
       useProxy = proxy && cfg.proxy.enable;
@@ -183,7 +177,8 @@ in
           # PrivateDevices' /dev/ptmx breaks openpty() in a user namespace.
           "/dev/pts/ptmx:/dev/ptmx"
         ]
-        ++ lib.optionals cfg.gpu.enable gpuDevices;
+        # "-": skip devices this machine lacks.
+        ++ map (dev: "-${dev}") cfg.devices;
         BindReadOnlyPaths = [
           "${sshConfig}:/etc/ssh/ssh_config"
         ]
@@ -195,11 +190,9 @@ in
         # Its own /tmp: no host sockets (tmux, X11) or files.
         PrivateTmp = true;
         # Docker is root through the docker group, which survives the user
-        # namespace. Units get their secrets as credentials or binds.
-        InaccessiblePaths = [
-          "-/run/docker.sock"
-          "-/run/secrets.d"
-        ];
+        # namespace; only units that ask get it. Units get their secrets as
+        # credentials or binds.
+        InaccessiblePaths = lib.optional (!docker) "-/run/docker.sock" ++ [ "-/run/secrets.d" ];
       };
     };
 

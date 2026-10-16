@@ -109,7 +109,19 @@ in
       description = "Additional packages on the sandbox's PATH.";
     };
 
-    gpu.enable = lib.mkEnableOption "the NVIDIA GPU in the sandbox";
+    pythonPackages = lib.mkOption {
+      type = lib.types.functionTo (lib.types.listOf lib.types.package);
+      default = _: [ ];
+      example = lib.literalExpression "ps: [ ps.requests ]";
+      description = "Additional packages of the sandbox's Python.";
+    };
+
+    devices = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "/dev/dri/renderD128" ];
+      description = "Device nodes bound into every sandboxed unit, such as a GPU's.";
+    };
 
     home = lib.mkOption {
       type = lib.types.str;

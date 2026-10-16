@@ -81,6 +81,8 @@ let
         (units.sandbox {
           home = if server.isolated then "opencode-${id}" else "ai-sandbox";
           proxy = !server.isolated;
+          inherit (server) docker;
+          extraPackages = lib.optional server.docker pkgs.docker-client;
         })
         {
           Service = {
@@ -96,7 +98,8 @@ let
             ]
             ++ lib.optionals (!server.isolated) (
               [ "${userHome}/.local/share/opencode:${userHome}/.local/share/opencode" ] ++ cfg.binds
-            );
+            )
+            ++ map (dev: "-${dev}") server.devices;
             BindReadOnlyPaths = [
               "${userHome}/.config/opencode:${userHome}/.config/opencode"
             ]
@@ -197,6 +200,13 @@ in
                 description = "Port on 127.0.0.1 whose first connection starts the server.";
               };
               isolated = lib.mkEnableOption "its own home (database, logins, logs), password and workspace folder ~/workspace/opencode-<id>; only the config is shared";
+              docker = lib.mkEnableOption "the Docker daemon (root-equivalent) and CLI in the server";
+              devices = lib.mkOption {
+                type = lib.types.listOf lib.types.str;
+                default = [ ];
+                example = [ "/dev/bus/usb" ];
+                description = "Device nodes or directories bound into this server only (skipped when missing).";
+              };
               clients = lib.mkOption {
                 type = lib.types.listOf (lib.types.strMatching "[a-z0-9]+");
                 default = [ ];
