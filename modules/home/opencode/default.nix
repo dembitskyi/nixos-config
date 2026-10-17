@@ -257,6 +257,11 @@ in
       default = [ ];
       description = "Extra server plugins: package specs, plugin directories, or `{ package, options }`.";
     };
+    tuiPlugins = lib.mkOption {
+      type = lib.types.listOf jsonFormat.type;
+      default = [ ];
+      description = "Extra terminal (TUI) plugins in cli.json: package specs, plugin directories, or `{ package, options }`.";
+    };
     skills = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -558,7 +563,8 @@ in
             "${goalPlugin}"
             subagentMonitorPlugin
           ]
-          ++ lib.optional cfg.contextPruning pruningPlugin;
+          ++ lib.optional cfg.contextPruning pruningPlugin
+          ++ cfg.tuiPlugins;
         };
       };
       "opencode/opencode-mem.jsonc" = {
