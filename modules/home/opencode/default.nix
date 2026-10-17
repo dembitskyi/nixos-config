@@ -545,6 +545,7 @@ in
         source = jsonFormat.generate "opencode-cli.json" {
           "$schema" = "https://opencode.ai/v2/cli.json";
           theme.name = "catppuccin";
+          tabs.mode = "off";
           plugins = [
             {
               package = "${crewPlugin}";
