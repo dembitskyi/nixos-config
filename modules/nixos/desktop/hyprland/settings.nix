@@ -224,8 +224,9 @@ in
     "match:class ^(mpv)$, float on"
 
     # Place the AI browser on a hidden special workspace so it stays out of
-    # the way until toggled with ALT+O.
-    "match:class ^(ai-browser)$, workspace special:ai-browser silent"
+    # the way until toggled with ALT+O. render_unfocused keeps its hidden
+    # windows presenting frames, which CDP screenshots wait for.
+    "match:class ^(ai-browser)$, workspace special:ai-browser silent, render_unfocused on"
   ];
 
   bindm = [
