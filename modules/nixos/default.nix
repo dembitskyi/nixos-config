@@ -22,6 +22,7 @@
     ./dnsmasq
     ./vllm
     ./oom-swap
+    ./below
     ./thermal-monitor
     ./log-rate-limit
     ./modem
