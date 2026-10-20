@@ -23,6 +23,7 @@
     ./vllm
     ./oom-swap
     ./below
+    ./usage
     ./thermal-monitor
     ./log-rate-limit
     ./modem
