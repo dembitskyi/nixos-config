@@ -4,74 +4,56 @@ let
     type = "prometheus";
     uid = datasource;
   };
+  ref = i: builtins.substring i 1 "ABCDEFGHIJKLMNOP";
+  pos = x: y: w: h: {
+    inherit
+      x
+      y
+      w
+      h
+      ;
+  };
 
   # Leaf systemd units and docker scopes (user@N.service only nests them).
   leaf = ''id=~`.+\.(service|scope)`, id!~`.*/user@[0-9]+\.service`'';
-  unit = ''id="$unit"'';
-  inUnit = "groupname=~`\\[\${unit:regex}\\]\\|.*`";
-
-  bySvc =
-    e:
-    ''label_replace(label_replace(label_replace(sum by (id, name) (${e}), "service", "$1", "id", `.*/([^/]+)$`), "service", "$1 (docker)", "name", "(.+)"), "group", "$1", "id", `.*/([^/]+)/[^/]+$`)'';
-  byProc =
-    e:
-    ''label_replace(label_replace(label_replace(sum by (groupname) (${e}), "service", "$1", "groupname", `\[(?:.*/)?([^/]*)\]\|.*`), "program", "$1", "groupname", `[^|]*\|([^|]*)\|.*`), "comm", "$1", "groupname", `.*\|([^|]*)$`)'';
-
-  procMem = sel: memtype: ''namedprocess_namegroup_memory_bytes{${sel}memtype="${memtype}"}'';
-  procRate = sel: metric: "rate(namedprocess_namegroup_${metric}{${sel}}[1m])";
-
-  target =
-    i: t:
-    {
-      refId = builtins.substring i 1 "ABCDEFGHIJKLMNOP";
-      datasource = ds;
-    }
-    // t;
+  unit = ''id="$cgroup"'';
+  procs = ''cgroup="$cgroup"'';
+  svc = e: "sum by (id, unit, group) (${e})";
+  pss = sel: ''namedprocess_namegroup_memory_bytes{${sel}memtype="proportionalResident"}'';
+  rss = sel: ''namedprocess_namegroup_memory_bytes{${sel}memtype="resident"}'';
+  swapped = sel: ''namedprocess_namegroup_memory_bytes{${sel}memtype="swapped"}'';
+  procRate = sel: metric: "rate(namedprocess_namegroup_${metric}{${sel}}[30s])";
 
   panel =
     type: title: gridPos: targets: extra:
     lib.recursiveUpdate {
       inherit type title gridPos;
       datasource = ds;
-      targets = lib.imap0 target targets;
+      targets = lib.imap0 (
+        i: t:
+        {
+          refId = ref i;
+          datasource = ds;
+        }
+        // t
+      ) targets;
     } extra;
 
   series = expr: legendFormat: { inherit expr legendFormat; };
-  column = expr: {
+  instant = expr: {
     inherit expr;
     instant = true;
     range = false;
     format = "table";
   };
 
-  stat =
-    title: x: expr: unit: steps:
-    panel "stat" title
-      {
-        inherit x;
-        y = 0;
-        w = 4;
-        h = 4;
-      }
-      [ (series expr title) ]
-      {
-        fieldConfig.defaults = {
-          inherit unit;
-          decimals = 1;
-          thresholds = {
-            mode = "absolute";
-            steps = lib.imap0 (i: s: {
-              color = builtins.elemAt s 0;
-              value = if i == 0 then null else builtins.elemAt s 1;
-            }) steps;
-          };
-        };
-        options = {
-          reduceOptions.calcs = [ "lastNotNull" ];
-          graphMode = "area";
-          colorMode = "value";
-        };
-      };
+  thresholds = steps: {
+    mode = "absolute";
+    steps = lib.imap0 (i: s: {
+      color = builtins.elemAt s 0;
+      value = if i == 0 then null else builtins.elemAt s 1;
+    }) steps;
+  };
   calm = [ [ "text" ] ];
   pct = [
     [ "green" ]
@@ -84,6 +66,30 @@ let
       70
     ]
   ];
+  alarm = [
+    [ "green" ]
+    [
+      "red"
+      1
+    ]
+  ];
+
+  stat =
+    title: gridPos: expr: unit: steps: extra:
+    panel "stat" title gridPos [ (series expr title) ] (
+      lib.recursiveUpdate {
+        fieldConfig.defaults = {
+          inherit unit;
+          decimals = 1;
+          thresholds = thresholds steps;
+        };
+        options = {
+          reduceOptions.calcs = [ "lastNotNull" ];
+          graphMode = "area";
+          colorMode = "value";
+        };
+      } extra
+    );
 
   timeseries =
     title: gridPos: targets: unit: extra:
@@ -119,73 +125,6 @@ let
   };
   narrow = extra: lib.recursiveUpdate { options.legend.placement = "bottom"; } extra;
 
-  # Columns: [ title unit expr ]; the first is the default sort.
-  table =
-    title: gridPos: labels: columns: overrides:
-    let
-      names = lib.imap0 (i: c: {
-        name = "Value #${builtins.substring i 1 "ABCDEFGHIJKLMNOP"}";
-        value = builtins.elemAt c 0;
-      }) columns;
-    in
-    panel "table" title gridPos (map (c: column (builtins.elemAt c 2)) columns) {
-      transformations = [
-        {
-          id = "merge";
-          options = { };
-        }
-        {
-          id = "organize";
-          options = {
-            excludeByName = {
-              Time = true;
-              name = true;
-              groupname = true;
-            };
-            renameByName = lib.listToAttrs names;
-            indexByName = lib.listToAttrs (
-              lib.imap0 (i: n: lib.nameValuePair n i) (labels ++ map (n: n.name) names)
-            );
-          };
-        }
-      ];
-      fieldConfig = {
-        defaults.custom = {
-          align = "auto";
-          filterable = true;
-          width = 112;
-        };
-        overrides =
-          map (c: {
-            matcher = {
-              id = "byName";
-              options = builtins.elemAt c 0;
-            };
-            properties = [
-              {
-                id = "unit";
-                value = builtins.elemAt c 1;
-              }
-              {
-                id = "decimals";
-                value = if builtins.elemAt c 1 == "none" then 0 else 1;
-              }
-            ];
-          }) columns
-          ++ overrides;
-      };
-      options = {
-        showHeader = true;
-        cellHeight = "sm";
-        sortBy = [
-          {
-            displayName = builtins.elemAt (builtins.head columns) 0;
-            desc = true;
-          }
-        ];
-      };
-    };
-
   label = name: properties: {
     matcher = {
       id = "byName";
@@ -216,127 +155,137 @@ let
       ]
       ++ extra
     );
+  # Opens the service report for the row's cgroup.
+  report = field: {
+    id = "links";
+    value = [
+      {
+        title = "Open service report";
+        url = "/d/usage-service/usage-service?var-cgroup=\${__data.fields.${field}:percentencode}&kiosk";
+      }
+    ];
+  };
 
-  procColumns = sel: [
-    [
-      "Memory (PSS)"
-      "bytes"
-      (byProc (procMem sel "proportionalResident"))
-    ]
-    [
-      "RSS"
-      "bytes"
-      (byProc (procMem sel "resident"))
-    ]
-    [
-      "Swap"
-      "bytes"
-      (byProc (procMem sel "proportionalSwapped"))
-    ]
-    [
-      "CPU %"
-      "percent"
-      (byProc "100 * ${procRate sel "cpu_seconds_total"}")
-    ]
-    [
-      "Procs"
-      "none"
-      (byProc "namedprocess_namegroup_num_procs{${sel}}")
-    ]
-    [
-      "Threads"
-      "none"
-      (byProc "namedprocess_namegroup_num_threads{${sel}}")
-    ]
-    [
-      "Read/s"
-      "Bps"
-      (byProc (procRate sel "read_bytes_total"))
-    ]
-    [
-      "Write/s"
-      "Bps"
-      (byProc (procRate sel "write_bytes_total"))
-    ]
-  ];
-
-  procLabels = [
-    (titled "program" "Program" 200 [ ])
-    (titled "comm" "Name" 150 [ ])
-  ];
+  # Columns: [ title unit expr ]; the first is the default sort.
+  table =
+    title: gridPos: labels: columns: overrides:
+    let
+      names = lib.imap0 (i: c: {
+        name = "Value #${ref i}";
+        value = builtins.elemAt c 0;
+      }) columns;
+    in
+    panel "table" title gridPos (map (c: instant (builtins.elemAt c 2)) columns) {
+      transformations = [
+        {
+          id = "merge";
+          options = { };
+        }
+        {
+          id = "organize";
+          options = {
+            excludeByName.Time = true;
+            renameByName = lib.listToAttrs names;
+            indexByName = lib.listToAttrs (
+              lib.imap0 (i: n: lib.nameValuePair n i) (labels ++ map (n: n.name) names)
+            );
+          };
+        }
+      ];
+      fieldConfig = {
+        defaults.custom = {
+          align = "auto";
+          filterable = true;
+          width = 105;
+        };
+        overrides =
+          map (
+            c:
+            label (builtins.elemAt c 0) [
+              {
+                id = "unit";
+                value = builtins.elemAt c 1;
+              }
+              {
+                id = "decimals";
+                value = if builtins.elemAt c 1 == "none" then 0 else 1;
+              }
+              {
+                id = "custom.width";
+                value =
+                  if builtins.elemAt c 1 == "dateTimeFromNow" then
+                    140
+                  else if builtins.stringLength (builtins.elemAt c 0) > 10 then
+                    145
+                  else
+                    105;
+              }
+            ]
+          ) columns
+          ++ overrides;
+      };
+      options = {
+        showHeader = true;
+        cellHeight = "sm";
+        sortBy = [
+          {
+            displayName = builtins.elemAt (builtins.head columns) 0;
+            desc = true;
+          }
+        ];
+      };
+    };
 
   memOf = sel: "container_memory_rss{${sel}} + container_memory_swap{${sel}}";
   memAtEnd = sel: "container_memory_rss{${sel}} @ end() + container_memory_swap{${sel}} @ end()";
+  base = {
+    tags = [ "usage" ];
+    editable = false;
+    schemaVersion = 41;
+    refresh = "5s";
+  };
 in
 {
-  uid = "usage";
-  title = "Usage";
-  tags = [ "usage" ];
-  editable = false;
-  schemaVersion = 41;
-  refresh = "10s";
-  time = {
-    from = "now-1h";
-    to = "now";
-  };
+  usage = base // {
+    uid = "usage";
+    title = "Usage";
+    time = {
+      from = "now-1h";
+      to = "now";
+    };
+    panels = [
+      (stat "CPU" (pos 0 0 4 4)
+        ''100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[$__rate_interval])))''
+        "percent"
+        pct
+        { }
+      )
+      (stat "Memory in use" (pos 4 0 4
+        4
+      ) "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes" "bytes" calm { })
+      (stat "Available" (pos 8 0 4 4) "node_memory_MemAvailable_bytes" "bytes" calm { })
+      (stat "Swap in use" (pos 12 0 4
+        4
+      ) "node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes" "bytes" calm { })
+      (stat "Memory stall" (pos 16 0 4
+        4
+      ) "100 * rate(node_pressure_memory_waiting_seconds_total[$__rate_interval])" "percent" pct { })
+      (stat "I/O stall" (pos 20 0 4
+        4
+      ) "100 * rate(node_pressure_io_waiting_seconds_total[$__rate_interval])" "percent" pct { })
 
-  templating.list = [
-    {
-      name = "unit";
-      label = "Service";
-      type = "query";
-      datasource = ds;
-      query = {
-        query = "label_values(container_memory_usage_bytes{${leaf}}, id)";
-        refId = "unit";
-      };
-      regex = "/(?<value>.*\\/(?<text>[^\\/]+))/";
-      refresh = 2;
-      sort = 5;
-      current = { };
-    }
-  ];
-
-  panels = [
-    (stat "CPU" 0 ''100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[$__rate_interval])))''
-      "percent"
-      pct
-    )
-    (stat "Memory in use" 4 "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes" "bytes" calm)
-    (stat "Available" 8 "node_memory_MemAvailable_bytes" "bytes" calm)
-    (stat "Swap in use" 12 "node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes" "bytes" calm)
-    (stat "Memory stall" 16 "100 * rate(node_pressure_memory_waiting_seconds_total[$__rate_interval])"
-      "percent"
-      pct
-    )
-    (stat "I/O stall" 20 "100 * rate(node_pressure_io_waiting_seconds_total[$__rate_interval])"
-      "percent"
-      pct
-    )
-
-    (timeseries "Memory"
-      {
-        x = 0;
-        y = 4;
-        w = 12;
-        h = 8;
-      }
-      [
-        (series "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes" "In use")
-        (series "node_memory_MemAvailable_bytes - node_memory_MemFree_bytes" "Reclaimable cache")
-        (series "node_memory_MemFree_bytes" "Free")
-        (series "node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes" "Swap in use")
-      ]
-      "bytes"
-      (
-        lib.recursiveUpdate stacked {
-          fieldConfig.overrides = [
-            {
-              matcher = {
-                id = "byName";
-                options = "Swap in use";
-              };
-              properties = [
+      (timeseries "Memory" (pos 0 4 12 8)
+        [
+          (series "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes" "In use")
+          (series "node_memory_MemAvailable_bytes - node_memory_MemFree_bytes" "Reclaimable cache")
+          (series "node_memory_MemFree_bytes" "Free")
+          (series "node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes" "Swap in use")
+        ]
+        "bytes"
+        (
+          lib.recursiveUpdate stacked {
+            fieldConfig.overrides = [
+              (label "Swap in use" [
                 {
                   id = "custom.stacking";
                   value.mode = "none";
@@ -349,229 +298,326 @@ in
                   id = "custom.lineWidth";
                   value = 2;
                 }
-              ];
-            }
-          ];
-        }
-      )
-    )
-    (timeseries "CPU by mode"
-      {
-        x = 12;
-        y = 4;
-        w = 12;
-        h = 8;
-      }
-      [
-        (series ''100 * sum by (mode) (rate(node_cpu_seconds_total{mode!="idle"}[$__rate_interval])) / scalar(count(node_cpu_seconds_total{mode="idle"}))'' "{{mode}}")
-      ]
-      "percent"
-      stacked
-    )
-
-    (table "Services (click one for details below)"
-      {
-        x = 0;
-        y = 12;
-        w = 24;
-        h = 14;
-      }
-      [
-        "service"
-        "group"
-        "id"
-      ]
-      [
-        [
-          "Memory"
-          "bytes"
-          (bySvc (memOf leaf))
-        ]
-        [
-          "RAM"
-          "bytes"
-          (bySvc "container_memory_rss{${leaf}}")
-        ]
-        [
-          "Swap"
-          "bytes"
-          (bySvc "container_memory_swap{${leaf}}")
-        ]
-        [
-          "File cache"
-          "bytes"
-          (bySvc "container_memory_cache{${leaf}}")
-        ]
-        [
-          "CPU %"
-          "percent"
-          (bySvc "100 * rate(container_cpu_usage_seconds_total{${leaf}}[1m])")
-        ]
-        [
-          "Read/s"
-          "Bps"
-          (bySvc "rate(container_fs_reads_bytes_total{${leaf}}[1m])")
-        ]
-        [
-          "Write/s"
-          "Bps"
-          (bySvc "rate(container_fs_writes_bytes_total{${leaf}}[1m])")
-        ]
-        [
-          "Procs"
-          "none"
-          (bySvc "container_processes{${leaf}}")
-        ]
-        [
-          "Mem stall %"
-          "percent"
-          (bySvc "100 * rate(container_pressure_memory_waiting_seconds_total{${leaf}}[1m])")
-        ]
-      ]
-      [
-        (hidden "id")
-        (titled "service" "Service" 320 [
-          {
-            id = "links";
-            value = [
-              {
-                title = "Show details";
-                url = "/d/usage/usage?var-unit=\${__data.fields.id:percentencode}&\${__url_time_range}&kiosk";
-              }
+              ])
             ];
           }
-        ])
-        (titled "group" "Group" 120 [ ])
-      ]
-    )
+        )
+      )
+      (timeseries "CPU by mode" (pos 12 4 12 8) [
+        (series ''100 * sum by (mode) (rate(node_cpu_seconds_total{mode!="idle"}[$__rate_interval])) / scalar(count(node_cpu_seconds_total{mode="idle"}))'' "{{mode}}")
+      ] "percent" stacked)
 
-    (timeseries "Top 10 services: memory (RAM + swap)"
-      {
-        x = 0;
-        y = 26;
-        w = 12;
-        h = 9;
-      }
-      [ (series (bySvc "(${memOf leaf}) and on(id) topk(10, ${memAtEnd leaf})") "{{service}}") ]
-      "bytes"
-      { }
-    )
-    (timeseries "Top 10 services: CPU (% of one core)"
-      {
-        x = 12;
-        y = 26;
-        w = 12;
-        h = 9;
-      }
-      [
-        (series (bySvc "100 * rate(container_cpu_usage_seconds_total{${leaf}}[$__rate_interval]) and on(id) topk(10, rate(container_cpu_usage_seconds_total{${leaf}}[5m] @ end()))") "{{service}}")
-      ]
-      "percent"
-      { }
-    )
+      (table "Services (click one for its report)" (pos 0 12 24 14)
+        [
+          "unit"
+          "group"
+          "id"
+        ]
+        [
+          [
+            "Memory"
+            "bytes"
+            (svc (memOf leaf))
+          ]
+          [
+            "RAM"
+            "bytes"
+            (svc "container_memory_rss{${leaf}}")
+          ]
+          [
+            "Swap"
+            "bytes"
+            (svc "container_memory_swap{${leaf}}")
+          ]
+          [
+            "File cache"
+            "bytes"
+            (svc "container_memory_cache{${leaf}}")
+          ]
+          [
+            "CPU %"
+            "percent"
+            (svc "100 * rate(container_cpu_usage_seconds_total{${leaf}}[30s])")
+          ]
+          [
+            "Read/s"
+            "Bps"
+            (svc "rate(container_fs_reads_bytes_total{${leaf}}[30s])")
+          ]
+          [
+            "Write/s"
+            "Bps"
+            (svc "rate(container_fs_writes_bytes_total{${leaf}}[30s])")
+          ]
+          [
+            "Procs"
+            "none"
+            (svc "container_processes{${leaf}}")
+          ]
+          [
+            "Threads"
+            "none"
+            (svc "container_threads{${leaf}}")
+          ]
+          [
+            "Mem stall %"
+            "percent"
+            (svc "100 * rate(container_pressure_memory_waiting_seconds_total{${leaf}}[30s])")
+          ]
+        ]
+        [
+          (hidden "id")
+          (titled "unit" "Service" 320 [ (report "id") ])
+          (titled "group" "Group" 120 [ ])
+        ]
+      )
 
-    {
-      type = "row";
-      title = "Service: $unit";
-      collapsed = false;
-      gridPos = {
-        x = 0;
-        y = 35;
-        w = 24;
-        h = 1;
-      };
-      panels = [ ];
-    }
-    (timeseries "Memory"
+      (timeseries "Top 10 services: memory (RAM + swap)" (pos 0 26 12 9) [
+        (series (svc "(${memOf leaf}) and on(id) topk(10, ${memAtEnd leaf})") "{{unit}}")
+      ] "bytes" { })
+      (timeseries "Top 10 services: CPU (% of one core)" (pos 12 26 12 9) [
+        (series (svc "100 * rate(container_cpu_usage_seconds_total{${leaf}}[$__rate_interval]) and on(id) topk(10, rate(container_cpu_usage_seconds_total{${leaf}}[5m] @ end()))") "{{unit}}")
+      ] "percent" { })
+
+      (table "Programs (click one for its service report)" (pos 0 35 24 16)
+        [
+          "program"
+          "unit"
+          "cgroup"
+        ]
+        (
+          let
+            by = e: "sum by (cgroup, unit, program) (${e})";
+          in
+          [
+            [
+              "Memory (PSS)"
+              "bytes"
+              (by (pss ""))
+            ]
+            [
+              "RSS"
+              "bytes"
+              (by (rss ""))
+            ]
+            [
+              "Swap"
+              "bytes"
+              (by (swapped ""))
+            ]
+            [
+              "CPU %"
+              "percent"
+              "100 * ${by (procRate "" "cpu_seconds_total")}"
+            ]
+            [
+              "Procs"
+              "none"
+              "count by (cgroup, unit, program) (namedprocess_namegroup_num_threads)"
+            ]
+            [
+              "Threads"
+              "none"
+              (by "namedprocess_namegroup_num_threads")
+            ]
+          ]
+        )
+        [
+          (hidden "cgroup")
+          (titled "program" "Program" 220 [ (report "cgroup") ])
+          (titled "unit" "Service" 320 [ (report "cgroup") ])
+        ]
+      )
+    ];
+  };
+
+  usage-service = base // {
+    uid = "usage-service";
+    title = "Service report";
+    time = {
+      from = "now-15m";
+      to = "now";
+    };
+    links = [
       {
-        x = 0;
-        y = 36;
-        w = 6;
-        h = 10;
+        title = "All services";
+        type = "link";
+        icon = "dashboard";
+        url = "/d/usage/usage?kiosk";
       }
-      [
-        (series "container_memory_rss{${unit}}" "RAM")
-        (series "container_memory_swap{${unit}}" "Swap")
-        (series "container_memory_cache{${unit}}" "File cache")
-        (series "container_memory_kernel_usage{${unit}}" "Kernel")
-      ]
-      "bytes"
-      (narrow stacked)
-    )
-    (timeseries "CPU (% of one core)"
+    ];
+    templating.list = [
       {
-        x = 6;
-        y = 36;
-        w = 6;
-        h = 10;
+        name = "cgroup";
+        label = "Service";
+        type = "query";
+        datasource = ds;
+        query = {
+          query = "label_values(container_memory_usage_bytes{${leaf}}, id)";
+          refId = "cgroup";
+        };
+        regex = "/(?<value>.*\\/(?<text>[^\\/]+))/";
+        refresh = 2;
+        sort = 5;
+        current = { };
       }
-      [
-        (series "100 * rate(container_cpu_user_seconds_total{${unit}}[$__rate_interval])" "user")
-        (series "100 * rate(container_cpu_system_seconds_total{${unit}}[$__rate_interval])" "system")
-      ]
-      "percent"
-      (narrow stacked)
-    )
-    (timeseries "Disk I/O"
-      {
-        x = 12;
-        y = 36;
-        w = 6;
-        h = 10;
-      }
-      [
-        (series "sum(rate(container_fs_reads_bytes_total{${unit}}[$__rate_interval]))" "read")
-        (series "sum(rate(container_fs_writes_bytes_total{${unit}}[$__rate_interval]))" "write")
-      ]
-      "Bps"
-      (narrow {
-        fieldConfig.defaults.noValue = "Not tracked (user units have no I/O controller)";
+    ];
+    panels = [
+      (panel "stat" "Service" (pos 0 0 6 4)
+        [ (series "max by (unit, group) (container_last_seen{${unit}})" "{{unit}}  ·  {{group}}") ]
+        {
+          options = {
+            reduceOptions.calcs = [ "lastNotNull" ];
+            textMode = "name";
+            graphMode = "none";
+            colorMode = "none";
+          };
+        }
+      )
+      (stat "RAM + swap" (pos 6 0 3 4) "sum(${memOf unit})" "bytes" calm { })
+      (stat "RAM" (pos 9 0 3 4) "sum(container_memory_rss{${unit}})" "bytes" calm { })
+      (stat "Swap" (pos 12 0 3 4) "sum(container_memory_swap{${unit}})" "bytes" calm { })
+      (stat "File cache" (pos 15 0 3 4) "sum(container_memory_cache{${unit}})" "bytes" calm { })
+      (stat "CPU %" (pos 18 0 3 4)
+        "100 * sum(rate(container_cpu_usage_seconds_total{${unit}}[$__rate_interval]))"
+        "percent"
+        calm
+        { }
+      )
+      (stat "Processes" (pos 21 0 3 4) "sum(container_processes{${unit}})" "none" calm {
+        fieldConfig.defaults.decimals = 0;
       })
-    )
-    (timeseries "Stall (time waiting for a resource)"
-      {
-        x = 18;
-        y = 36;
-        w = 6;
-        h = 10;
-      }
-      [
-        (series "100 * rate(container_pressure_cpu_waiting_seconds_total{${unit}}[$__rate_interval])" "CPU")
-        (series "100 * rate(container_pressure_memory_waiting_seconds_total{${unit}}[$__rate_interval])" "memory")
-        (series "100 * rate(container_pressure_io_waiting_seconds_total{${unit}}[$__rate_interval])" "I/O")
-      ]
-      "percent"
-      (narrow { })
-    )
-    (table "Processes in $unit"
-      {
-        x = 0;
-        y = 46;
-        w = 24;
-        h = 10;
-      }
-      [
-        "program"
-        "comm"
-      ]
-      (procColumns "${inUnit}, ")
-      (procLabels ++ [ (hidden "service") ])
-    )
 
-    (table "All processes"
-      {
-        x = 0;
-        y = 56;
-        w = 24;
-        h = 16;
-      }
-      [
-        "program"
-        "comm"
-        "service"
-      ]
-      (procColumns "")
-      (procLabels ++ [ (titled "service" "Service" 280 [ ]) ])
-    )
-  ];
+      (stat "Threads" (pos 0 4 3 4) "sum(container_threads{${unit}})" "none" calm {
+        fieldConfig.defaults.decimals = 0;
+      })
+      (stat "Peak memory" (pos 3 4 3 4) "max(container_memory_max_usage_bytes{${unit}})" "bytes" calm { })
+      (stat "Memory limit" (pos 6 4 3 4) "max(container_spec_memory_limit_bytes{${unit}})" "bytes" calm {
+        fieldConfig.defaults.mappings = [
+          {
+            type = "value";
+            options."0".text = "none";
+          }
+        ];
+      })
+      (stat "Memory stall" (pos 9 4 3 4)
+        "100 * sum(rate(container_pressure_memory_waiting_seconds_total{${unit}}[$__rate_interval]))"
+        "percent"
+        pct
+        { }
+      )
+      (stat "CPU stall" (pos 12 4 3 4)
+        "100 * sum(rate(container_pressure_cpu_waiting_seconds_total{${unit}}[$__rate_interval]))"
+        "percent"
+        pct
+        { }
+      )
+      (stat "I/O stall" (pos 15 4 3 4)
+        "100 * sum(rate(container_pressure_io_waiting_seconds_total{${unit}}[$__rate_interval]))"
+        "percent"
+        pct
+        { }
+      )
+      (stat "OOM kills" (pos 18 4 3 4) "max(container_oom_events_total{${unit}})" "none" alarm {
+        fieldConfig.defaults.decimals = 0;
+      })
+      (stat "Running for" (pos 21 4 3 4) "time() - max(container_start_time_seconds{${unit}})" "s" calm {
+        options.graphMode = "none";
+      })
+
+      (timeseries "Memory" (pos 0 8 8 9) [
+        (series "sum(container_memory_rss{${unit}})" "RAM")
+        (series "sum(container_memory_swap{${unit}})" "Swap")
+        (series "sum(container_memory_cache{${unit}})" "File cache")
+        (series "sum(container_memory_kernel_usage{${unit}})" "Kernel")
+      ] "bytes" (narrow stacked))
+      (timeseries "CPU (% of one core)" (pos 8 8 8 9) [
+        (series "100 * sum(rate(container_cpu_user_seconds_total{${unit}}[$__rate_interval]))" "user")
+        (series "100 * sum(rate(container_cpu_system_seconds_total{${unit}}[$__rate_interval]))" "system")
+      ] "percent" (narrow stacked))
+      (timeseries "Memory by program (PSS)" (pos 16 8 8 9) [
+        (series "sum by (program) (${pss "${procs}, "}) and on(program) topk(8, sum by (program) (${pss "${procs}, "} @ end()))" "{{program}}")
+      ] "bytes" (narrow stacked))
+      (timeseries "CPU by program (% of one core)" (pos 0 17 8 8) [
+        (series "100 * sum by (program) (${procRate procs "cpu_seconds_total"}) and on(program) topk(8, sum by (program) (rate(namedprocess_namegroup_cpu_seconds_total{${procs}}[2m] @ end())))" "{{program}}")
+      ] "percent" (narrow stacked))
+      (timeseries "Disk I/O" (pos 8 17 8 8)
+        [
+          (series "sum(rate(container_fs_reads_bytes_total{${unit}}[$__rate_interval]))" "read")
+          (series "sum(rate(container_fs_writes_bytes_total{${unit}}[$__rate_interval]))" "write")
+        ]
+        "Bps"
+        (narrow {
+          fieldConfig.defaults.noValue = "Not tracked (user units have no I/O controller)";
+        })
+      )
+      (timeseries "Stall (time waiting for a resource)" (pos 16 17 8 8) [
+        (series "100 * sum(rate(container_pressure_cpu_waiting_seconds_total{${unit}}[$__rate_interval]))" "CPU")
+        (series "100 * sum(rate(container_pressure_memory_waiting_seconds_total{${unit}}[$__rate_interval]))" "memory")
+        (series "100 * sum(rate(container_pressure_io_waiting_seconds_total{${unit}}[$__rate_interval]))" "I/O")
+      ] "percent" (narrow { }))
+
+      (table "Processes" (pos 0 25 24 16)
+        [
+          "pid"
+          "user"
+          "program"
+          "args"
+        ]
+        (
+          let
+            by = e: "sum by (pid, user, program, args) (${e})";
+          in
+          [
+            [
+              "Memory (PSS)"
+              "bytes"
+              (by (pss "${procs}, "))
+            ]
+            [
+              "RSS"
+              "bytes"
+              (by (rss "${procs}, "))
+            ]
+            [
+              "Swap"
+              "bytes"
+              (by (swapped "${procs}, "))
+            ]
+            [
+              "CPU %"
+              "percent"
+              "100 * ${by (procRate procs "cpu_seconds_total")}"
+            ]
+            [
+              "Threads"
+              "none"
+              (by "namedprocess_namegroup_num_threads{${procs}}")
+            ]
+            [
+              "Read/s"
+              "Bps"
+              (by (procRate procs "read_bytes_total"))
+            ]
+            [
+              "Write/s"
+              "Bps"
+              (by (procRate procs "write_bytes_total"))
+            ]
+            [
+              "Started"
+              "dateTimeFromNow"
+              "1000 * ${by "namedprocess_namegroup_oldest_start_time_seconds{${procs}}"}"
+            ]
+          ]
+        )
+        [
+          (titled "pid" "PID" 80 [ ])
+          (titled "user" "User" 130 [ ])
+          (titled "program" "Program" 170 [ ])
+          (titled "args" "Arguments" 260 [ ])
+        ]
+      )
+    ];
+  };
 }
