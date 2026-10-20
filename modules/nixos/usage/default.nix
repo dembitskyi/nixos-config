@@ -7,49 +7,36 @@
 let
   cfg = config.mine.usage;
   prom = config.services.prometheus;
-  datasource = "usage-prometheus";
-  url = "${config.services.grafana.settings.server.root_url}/d/usage/usage?kiosk";
+  url = "http://127.0.0.1:${toString cfg.port}/";
 
-  dashboards = pkgs.runCommand "usage-dashboards" { } (
-    "mkdir $out\n"
-    + lib.concatStrings (
-      lib.mapAttrsToList (
-        name: dashboard:
-        "cp ${pkgs.writeText "${name}.json" (builtins.toJSON dashboard)} $out/${name}.json\n"
-      ) (import ./dashboard.nix { inherit lib datasource; })
-    )
-  );
+  npm =
+    name: version: hash:
+    pkgs.fetchurl {
+      url = "https://registry.npmjs.org/${name}/-/${name}-${version}.tgz";
+      inherit hash;
+    };
+  preact = npm "preact" "11.0.1" "sha256-pIoX66pcyuOXX+5C86DuMELvaNlwYLb7Aazj+pmWQF0=";
+  htm = npm "htm" "3.1.1" "sha256-JCW5vuEUCRd7yrx/MuMZkm/GaQwXAcCyV8iL3/LVupA=";
 
-  # Unit (or docker container) name and parent slice of each cgroup.
-  cgroupLabels = [
-    {
-      source_labels = [ "id" ];
-      regex = ".*/([^/]+)";
-      target_label = "unit";
-    }
-    {
-      source_labels = [ "name" ];
-      regex = "(.+)";
-      target_label = "unit";
-      replacement = "$1 (docker)";
-    }
-    {
-      source_labels = [ "id" ];
-      regex = ".*/([^/]+)/[^/]+";
-      target_label = "group";
-    }
-  ];
+  app = pkgs.runCommand "usage-app" { } ''
+    cp -r ${./app} $out
+    chmod u+w $out
+    mkdir $out/vendor
+    tar -xzf ${preact} -O package/dist/preact.mjs > $out/vendor/preact.mjs
+    tar -xzf ${preact} -O package/hooks/dist/hooks.mjs > $out/vendor/hooks.mjs
+    tar -xzf ${htm} -O package/dist/htm.mjs > $out/vendor/htm.mjs
+  '';
 
-  # Splits the process-exporter group name into labels; keeps what the dashboards use.
+  # Splits the process-exporter group name into labels; keeps what the app uses.
   processLabels = [
     {
       source_labels = [ "__name__" ];
-      regex = "namedprocess_namegroup_(cpu_seconds_total|memory_bytes|num_threads|read_bytes_total|write_bytes_total|oldest_start_time_seconds)";
+      regex = "namedprocess_namegroup_(cpu_seconds_total|memory_bytes|num_threads|oldest_start_time_seconds)";
       action = "keep";
     }
     {
       source_labels = [ "memtype" ];
-      regex = "virtual|proportionalSwapped";
+      regex = "virtual";
       action = "drop";
     }
   ]
@@ -66,7 +53,7 @@ let
         "pid"
         "user"
         "program"
-        "args"
+        "comm"
       ]
   ++ [
     # Chromium rewrites argv[0] to the whole command line.
@@ -76,11 +63,6 @@ let
       target_label = "program";
     }
     {
-      source_labels = [ "cgroup" ];
-      regex = ".*/([^/]+)";
-      target_label = "unit";
-    }
-    {
       regex = "groupname";
       action = "labeldrop";
     }
@@ -88,7 +70,12 @@ let
 in
 {
   options.mine.usage = {
-    enable = lib.mkEnableOption "the Usage app: CPU, memory, swap, I/O and pressure per systemd unit, docker container and process, as a Grafana dashboard in its own window";
+    enable = lib.mkEnableOption "the Usage app: live and historical CPU, memory, swap and I/O per systemd unit, docker container and process";
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = 9340;
+      description = "Localhost port that serves the Usage app.";
+    };
     retention = lib.mkOption {
       type = lib.types.str;
       default = "15d";
@@ -97,13 +84,6 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = [
-      {
-        assertion = config.services.grafana.enable;
-        message = "mine.usage provisions into Grafana; enable it (mine.grafana).";
-      }
-    ];
-
     services.cadvisor = {
       enable = true;
       port = 9338;
@@ -125,17 +105,21 @@ in
           enable = true;
           listenAddress = "127.0.0.1";
         };
+        # Command lines stay out: they can carry secrets and Prometheus is
+        # reachable from the AI sandboxes.
         process = {
           enable = true;
           listenAddress = "127.0.0.1";
+          # smaps (PSS) costs ~15% of a core every scrape; RSS comes from status.
           extraFlags = [
             "-threads=false"
+            "-gather-smaps=false"
             "-remove-empty-groups"
           ];
           settings.process_names = [
             {
-              name = "{{.Cgroups}}|{{.PID}}|{{.Username}}|{{.ExeBase}}|{{.Matches.Args}}";
-              cmdline = [ ''^\S+\s?(?P<Args>.{0,200})'' ];
+              name = "{{.Cgroups}}|{{.PID}}|{{.Username}}|{{.ExeBase}}|{{.Comm}}";
+              cmdline = [ ".+" ];
             }
           ];
         };
@@ -144,14 +128,12 @@ in
         {
           job_name = "cadvisor";
           static_configs = [ { targets = [ "127.0.0.1:${toString config.services.cadvisor.port}" ]; } ];
-          metric_relabel_configs = cgroupLabels;
         }
         {
           job_name = "node";
           static_configs = [ { targets = [ "127.0.0.1:${toString prom.exporters.node.port}" ]; } ];
         }
         {
-          # Reading every process's smaps takes ~1.4 s.
           job_name = "process";
           scrape_interval = "10s";
           static_configs = [ { targets = [ "127.0.0.1:${toString prom.exporters.process.port}" ]; } ];
@@ -160,7 +142,7 @@ in
       ];
     };
 
-    # Other users' smaps and io are ptrace-guarded.
+    # Other users' smaps are ptrace-guarded.
     systemd.services.prometheus-process-exporter.serviceConfig = {
       AmbientCapabilities = [
         "CAP_SYS_PTRACE"
@@ -172,25 +154,34 @@ in
       ];
     };
 
-    services.grafana.provision = {
-      datasources.settings.datasources = [
-        {
-          name = "Usage";
-          type = "prometheus";
-          uid = datasource;
-          url = "http://127.0.0.1:${toString prom.port}";
-          isDefault = false;
-          jsonData.timeInterval = prom.globalConfig.scrape_interval;
-        }
-      ];
-      dashboards.settings.providers = [
-        {
-          name = "usage";
-          folder = "Usage";
-          options.path = dashboards;
-        }
-      ];
+    services.nginx = {
+      enable = true;
+      virtualHosts.usage = {
+        listen = [
+          {
+            addr = "127.0.0.1";
+            inherit (cfg) port;
+          }
+        ];
+        root = app;
+        locations."~ ^/api/v1/(query|query_range)$" = {
+          proxyPass = "http://127.0.0.1:${toString prom.port}";
+          extraConfig = ''
+            limit_except GET POST { deny all; }
+          '';
+        };
+      };
     };
+
+    # The Grafana datasource of the first version; Grafana keeps removed ones otherwise.
+    services.grafana.provision.datasources.settings.deleteDatasources =
+      lib.mkIf config.services.grafana.enable
+        [
+          {
+            name = "Usage";
+            orgId = 1;
+          }
+        ];
 
     home-manager.users.${config.variables.username} = hm: {
       xdg.desktopEntries.usage = {
@@ -198,7 +189,7 @@ in
         genericName = "System monitor";
         comment = "CPU and memory per service and process";
         icon = "utilities-system-monitor";
-        exec = "${lib.getExe hm.config.programs.chromium.package} --class=usage --user-data-dir=${hm.config.xdg.stateHome}/usage-app --no-first-run --no-default-browser-check \"--app=${url}\"";
+        exec = "${lib.getExe hm.config.programs.chromium.package} --class=usage --user-data-dir=${hm.config.xdg.stateHome}/usage-app --no-first-run --no-default-browser-check --app=${url}";
         categories = [
           "System"
           "Monitor"
