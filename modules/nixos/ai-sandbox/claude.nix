@@ -160,9 +160,11 @@ in
           ];
         };
       };
-      # S2-S6 work in S1's folder: six sessions, one set of checkouts.
+      # S2-S6 work in S1's folder: six sessions, one set of checkouts. A1, there
+      # too, is for programs that drive a session, as opencode has its
+      # automation server.
       slots =
-        lib.genAttrs (map (n: "s${toString n}") (lib.range 1 6)) (_: {
+        lib.genAttrs (map (n: "s${toString n}") (lib.range 1 6) ++ [ "a1" ]) (_: {
           backend = "anthropic";
           folder = "s1";
         })
