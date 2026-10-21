@@ -92,8 +92,11 @@ let
           ]
           ++ lib.zipListsWith (src: dir: "${src}:${userHome}/${dir}") (slotDirsOf name session id
             slot
-          ) session.slotDirs;
-          BindReadOnlyPaths = lib.optional cfg.clipboard.enable "%t/ai-sandbox-clipboard:%t/ai-sandbox-clipboard";
+          ) session.slotDirs
+          ++ lib.optionals (!slot.isolated) cfg.binds;
+          BindReadOnlyPaths =
+            lib.optional cfg.clipboard.enable "%t/ai-sandbox-clipboard:%t/ai-sandbox-clipboard"
+            ++ lib.optionals (!slot.isolated) cfg.readOnlyBinds;
           PrivatePIDs = true;
         };
       }

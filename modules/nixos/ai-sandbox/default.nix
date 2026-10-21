@@ -84,7 +84,7 @@ let
     lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "${access} binds (`src:dst`) into the shared opencode servers (and `shared` MCP servers).";
+      description = "${access} binds (`src:dst`) into the shared opencode servers, `shared` MCP servers and session slots of the shared home.";
     };
 in
 {
