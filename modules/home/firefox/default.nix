@@ -1,8 +1,12 @@
 {
   lib,
   config,
+  pkgs,
   ...
 }:
+let
+  keepassxc = config.mine.home.keepassxc.enable;
+in
 {
 
   options = {
@@ -13,6 +17,13 @@
     programs.firefox = {
       enable = true;
       configPath = ".mozilla/firefox";
+      nativeMessagingHosts = lib.optional keepassxc pkgs.keepassxc;
+      policies.ExtensionSettings = lib.mkIf keepassxc {
+        "keepassxc-browser@keepassxc.org" = {
+          installation_mode = "force_installed";
+          install_url = "https://addons.mozilla.org/firefox/downloads/latest/keepassxc-browser/latest.xpi";
+        };
+      };
     };
   };
 }

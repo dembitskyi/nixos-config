@@ -24,12 +24,26 @@ let
       })
     else
       basePackage;
+
+  # The packaged script (with its Python modules); fuzzel picks among accounts.
+  accountPicker = pkgs.writeShellScriptBin "rofi" ''
+    exec ${lib.getExe pkgs.fuzzel} --dmenu --index --prompt "account: "
+  '';
+  keepassxc = pkgs.writeShellScript "qute-keepassxc" ''
+    PATH=${lib.makeBinPath [ accountPicker ]}:$PATH
+    exec ${qutePackage}/share/qutebrowser/userscripts/qute-keepassxc --key ${cfg.keepassxcKey} "$@"
+  '';
 in
 {
 
   options = {
     mine.home.qutebrowser.enable = lib.mkEnableOption "enable qutebrowser";
     mine.home.qutebrowser.forceXWayland = lib.mkEnableOption "run qutebrowser under XWayland";
+    mine.home.qutebrowser.keepassxcKey = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "GPG key for KeePassXC logins (,k fill, ,t TOTP, Alt-Shift-u in insert mode).";
+    };
     mine.home.qutebrowser.bookmarks = lib.mkOption {
       type = lib.types.lines;
       default = ''
@@ -66,7 +80,6 @@ in
     home.file.".local/share/qutebrowser/qtwebengine_dictionaries/en-US-10-1.bdic".source =
       pkgs.hunspellDictsChromium.en_US;
 
-    home.file.".config/qutebrowser/userscripts".source = ./scripts;
     home.file.".config/qutebrowser/catppuccin".source = ncInputs.catppuccin-qutebrowser;
 
     programs = {
@@ -115,6 +128,12 @@ in
           c.colors.tabs.selected.odd.fg = "#ffffff"
           c.colors.tabs.selected.even.bg = "#a40000"
           c.colors.tabs.selected.even.fg = "#ffffff"
+        ''
+        + lib.optionalString (cfg.keepassxcKey != null) ''
+
+          config.bind(',k', 'spawn --userscript ${keepassxc}')
+          config.bind(',t', 'spawn --userscript ${keepassxc} --totp')
+          config.bind('<Alt-Shift-u>', 'spawn --userscript ${keepassxc}', mode='insert')
         '';
       };
     };
