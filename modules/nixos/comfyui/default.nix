@@ -1,7 +1,6 @@
 {
   lib,
   config,
-  pkgs,
   ...
 }:
 {
@@ -31,7 +30,7 @@
 
     services.comfyui = {
       enable = true;
-      package = pkgs.comfyui.override { withManager = true; };
+      extraPackages = ps: [ ps.comfyui-manager ];
       listen = [ "127.0.0.1" ];
       extraArgs = [ "--enable-manager" ];
     };

@@ -33,18 +33,6 @@
       url = "github:catppuccin/thunderbird";
       flake = false;
     };
-    mkdocs-catppuccin = {
-      url = "github:ruslanlap/mkdocs-catppuccin";
-      flake = false;
-    };
-    noctalia-plugins = {
-      url = "github:noctalia-dev/noctalia-plugins/bff44cbfe4f7347ec90727cff08e35975e66d42a";
-      flake = false;
-    };
-    noctalia = {
-      url = "github:noctalia-dev/noctalia-shell/759454d2d5bce9be7dea982818700140335ed047";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     eyeblink-monitor = {
       url = "github:dembitskyi/eyeblink-monitor";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -94,7 +82,6 @@
               ./modules/home
               inputs.nixvim-custom.homeModules.default
               inputs.eyeblink-monitor.homeManagerModules.default
-              inputs.noctalia.homeModules.default
             ];
             _module.args.ncInputs = inputs;
           };

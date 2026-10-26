@@ -24,11 +24,10 @@
     ./oom-swap
     ./below
     ./usage
-    ./thermal-monitor
+    ./hardware-health
     ./log-rate-limit
     ./modem
     ./ghidra
-    ./otterwiki
     ./parallels-guest
     ./jlink
     ./jfrog

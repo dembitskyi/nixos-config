@@ -31,7 +31,6 @@
           '(void) signal(SIGINT, SIG_IGN);'
     '';
   });
-  otterwiki = final.callPackage ../pkgs/otterwiki.nix { };
 
   pythonPackagesExtensions = (prev.pythonPackagesExtensions or [ ]) ++ [
     (_python-final: python-prev: {

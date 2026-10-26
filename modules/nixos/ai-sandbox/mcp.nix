@@ -3,6 +3,7 @@
   lib,
   config,
   pkgs,
+  utils,
   ...
 }:
 let
@@ -10,8 +11,9 @@ let
   units = import ./units.nix { inherit lib pkgs config; };
   inherit (units) userHome telemetryOptOut;
   placeholder = config.sops.placeholder;
-  fastmcp = lib.getExe' (pkgs.python313.withPackages (ps: [ ps.fastmcp ])) "fastmcp";
   uvx = lib.getExe' pkgs.uv "uvx";
+  # nixpkgs' fastmcp is broken against mcp 2; pinned with its own deps for the HTTP bridge.
+  fastmcp = "${uvx} --from fastmcp==3.4.7 fastmcp";
 
   npx = package: env: {
     command = lib.getExe' pkgs.nodejs "npx";
@@ -156,19 +158,16 @@ let
       oauth = false;
     }) sharedPorts;
 
-  secretService =
-    name:
-    lib.mkMerge [
-      (units.sandbox { proxy = false; })
-      {
-        Service = {
-          WorkingDirectory = "${userHome}/workspace";
-          BindPaths = [ "${userHome}/workspace:${userHome}/workspace" ] ++ cfg.binds;
-          BindReadOnlyPaths = cfg.readOnlyBinds;
-          LoadCredential = [ "config.json:${config.sops.templates."mcp-${name}".path}" ];
-        };
-      }
-    ];
+  secretService = lib.mkMerge [
+    (units.sandbox { proxy = false; })
+    {
+      Service = {
+        WorkingDirectory = "${userHome}/workspace";
+        BindPaths = [ "${userHome}/workspace:${userHome}/workspace" ] ++ cfg.binds;
+        BindReadOnlyPaths = cfg.readOnlyBinds;
+      };
+    }
+  ];
 
   sharedUnits =
     name: port:
@@ -176,10 +175,13 @@ let
       description = "AI sandbox MCP server ${name}";
       inherit port;
       command = "${fastmcp} run \"$CREDENTIALS_DIRECTORY/config.json\" --no-banner -t streamable-http -p ${toString (units.backendPort port)} --path /${name}";
-      unit = secretService name;
+      unit = lib.mkMerge [
+        secretService
+        { Service.LoadCredential = [ "config.json:${config.sops.templates."mcp-${name}".path}" ]; }
+      ];
     };
 
-  secretUnits = name: _: {
+  secretUnits = name: server: {
     sockets."ai-sandbox-mcp-${name}" = {
       Unit.Description = "AI sandbox MCP server ${name}";
       Socket = {
@@ -191,14 +193,15 @@ let
       Install.WantedBy = [ "sockets.target" ];
     };
     services."ai-sandbox-mcp-${name}@" = lib.mkMerge [
-      (secretService name)
+      secretService
       {
         Unit = {
           Description = "AI sandbox MCP server ${name}";
           CollectMode = "inactive-or-failed";
         };
         Service = {
-          ExecStart = "${fastmcp} run %d/config.json --no-banner";
+          ExecStart = utils.escapeSystemdExecArgs ([ server.command ] ++ server.args or [ ]);
+          EnvironmentFile = config.sops.templates."mcp-${name}".path;
           StandardInput = "socket";
           StandardOutput = "socket";
           StandardError = "journal";
@@ -229,7 +232,7 @@ in
     extraServers = lib.mkOption {
       type = lib.types.attrsOf lib.types.anything;
       default = { };
-      description = "Additional MCP servers with secrets (fastmcp `mcpServers` entries), run like github and jira, or once for all clients with `shared = true` (stateful servers); hosts add them to opencode (`mcpServers`) themselves.";
+      description = "Additional MCP servers with secrets (`command`, `args`, `env`), run like github and jira, or once for all clients with `shared = true` (stateful servers, bridged to HTTP by fastmcp); hosts add them to opencode (`mcpServers`) themselves.";
     };
 
     browseruse = {
@@ -277,24 +280,32 @@ in
       "MCP/CONFLUENCE_API_TOKEN" = { };
     };
 
-    sops.templates = lib.mapAttrs' (
-      name: server:
-      lib.nameValuePair "mcp-${name}" {
-        content = builtins.toJSON {
-          mcpServers.${name} =
-            if server ? command then
-              removeAttrs server [ "shared" ]
-              // {
-                command = "${withAgent}";
-                args = [ server.command ] ++ server.args or [ ];
-                env = telemetryOptOut // server.env or { };
-              }
-            else
-              removeAttrs server [ "shared" ];
-        };
-        owner = config.variables.username;
-      }
-    ) secretServers;
+    sops.templates =
+      lib.mapAttrs' (
+        name: server:
+        lib.nameValuePair "mcp-${name}" {
+          content = lib.concatStrings (lib.mapAttrsToList (n: v: "${n}=${v}\n") (server.env or { }));
+          owner = config.variables.username;
+        }
+      ) perConnection
+      // lib.mapAttrs' (
+        name: server:
+        lib.nameValuePair "mcp-${name}" {
+          content = builtins.toJSON {
+            mcpServers.${name} =
+              if server ? command then
+                removeAttrs server [ "shared" ]
+                // {
+                  command = "${withAgent}";
+                  args = [ server.command ] ++ server.args or [ ];
+                  env = telemetryOptOut // server.env or { };
+                }
+              else
+                removeAttrs server [ "shared" ];
+          };
+          owner = config.variables.username;
+        }
+      ) sharedServers;
 
     home-manager.users.${config.variables.username} = {
       mine.home.opencode.mcpServers = lib.mapAttrs' (

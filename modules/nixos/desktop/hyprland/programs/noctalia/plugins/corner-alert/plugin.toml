@@ -1,0 +1,24 @@
+id = "nixos/corner-alert"
+name = "Corner Alert"
+version = "2.0.0"
+plugin_api = 32
+author = "nixos"
+license = "MIT"
+dependencies = []
+icon = "alert-circle"
+description = "Blinking red dot in the middle of the screen, started and stopped over IPC."
+tags = ["utility", "indicator"]
+
+# Open: noctalia msg panel-open nixos/corner-alert:dot [message]; stop: panel-close.
+[[panel]]
+id = "dot"
+entry = "dot.luau"
+# The panel frame pads its content by 14 px, so 48 leaves room for the 20 px dot.
+width = 48
+height = 48
+placement = "floating"
+position = "center"
+layer = "overlay"
+persistent = true
+keyboard_focus = "none"
+dismiss_on_outside_click = false

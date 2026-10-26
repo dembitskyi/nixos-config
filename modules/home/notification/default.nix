@@ -9,7 +9,7 @@ let
 
   notificationMonitorPython =
     let
-      python = pkgs.python313.withPackages (ps: [ ps.dbus-next ]);
+      python = pkgs.python3.withPackages (ps: [ ps.dbus-next ]);
     in
     "${python}/bin/python3 ${./notification-monitor.py}";
 in

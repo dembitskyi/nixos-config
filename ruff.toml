@@ -5,4 +5,4 @@
 # pre-push treefmt check on untouched files. Pinning the series turns that into
 # an explicit "wrong ruff version" error: when a bump moves ruff to 0.17, review
 # its default-rule changes, fix or suppress the new findings, then raise this.
-required-version = ">=0.16,<0.17"
+required-version = ">=0.17,<0.18"

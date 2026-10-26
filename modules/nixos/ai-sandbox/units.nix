@@ -51,7 +51,7 @@ let
       openssh
       diffutils
       gh
-      (python313.withPackages (
+      (python3.withPackages (
         ps:
         with ps;
         [
@@ -66,7 +66,6 @@ let
           statsmodels
           scikit-learn
           scikit-image
-          control
           pint
           uncertainties
           tabulate
@@ -77,13 +76,10 @@ let
           spatialmath-python
           pyquaternion
           transforms3d
-          pymc
           emcee
           arviz
-          cvxpy
           pyomo
           pulp
-          casadi
           openpyxl
           python-pptx
         ]

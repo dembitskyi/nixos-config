@@ -61,7 +61,25 @@ in
     mine.hyprland.noctalia.extraPlugins = lib.mkOption {
       type = lib.types.attrsOf lib.types.path;
       default = { };
-      description = "Extra Noctalia plugins, plugin id -> plugin directory path. Each plugin is enabled in plugins.json and its bar widget (plugin:<id>) is added to the right section after KeyboardLayout.";
+      description = "Extra Noctalia plugins, plugin id (author/name) -> plugin directory; each is installed and enabled.";
+    };
+    mine.hyprland.noctalia.extraBarWidgets = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Widget instance name.";
+            };
+            settings = lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              description = "The `[widget.<name>]` table, including its `type`.";
+            };
+          };
+        }
+      );
+      default = [ ];
+      description = "Extra Noctalia bar widgets, in order, added to the bar's end section after the keyboard layout.";
     };
     mine.hyprland.package = lib.mkOption {
       type = lib.types.package;
@@ -81,7 +99,6 @@ in
     mine.hyprland.package = hyprlandPackage;
     environment.systemPackages = with pkgs; [
       (import ./scripts/launcher.nix { inherit lib pkgs; })
-      ncInputs.noctalia.packages.${pkgs.stdenv.hostPlatform.system}.default
 
       eog
       nautilus
@@ -102,15 +119,10 @@ in
     # session. A non-zero CapEff makes apps look privileged to the same-uid
     # xdg-desktop-portal, whose ptrace-based /proc/<pid>/root check then fails
     # with EACCES, breaking all portal file dialogs (e.g. Chromium's "Change
-    # folder"). Drop the cap to stop the leak; the only cost is no SCHED_RR for
-    # Hyprland. Only needed for the pinned version.
-    security.wrappers.Hyprland = lib.mkIf config.mine.hyprland.pinned (
-      lib.mkForce {
-        owner = "root";
-        group = "root";
-        source = lib.getExe config.programs.hyprland.package;
-      }
-    );
+    # folder"). The flake's bin/Hyprland is also a bash wrapper, which NixOS's
+    # wrapper integrity check rejects. Drop the wrapper; the only cost is no
+    # SCHED_RR for Hyprland.
+    security.wrappers.Hyprland.enable = false;
 
     # nixpkgs flipped programs.fuse.enable to default false, dropping the SUID
     # fusermount3 wrapper that xdg-document-portal needs; without it the portal

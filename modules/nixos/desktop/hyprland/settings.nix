@@ -113,16 +113,17 @@ in
         "calendar"
         "notifications"
         "system-menu"
-        "quickshell:bar"
-        "quickshell:notifications:overlay"
-        "quickshell:osd"
+        "noctalia-bar-.+"
+        "noctalia-notification"
+        "noctalia-osd"
       ];
 
       highopacity = [
         "vicinae"
         "osd"
         "logout_dialog"
-        "quickshell:sidebar"
+        "noctalia-panel"
+        "noctalia-attached-panel"
       ];
 
       blurred = lib.concatLists [
@@ -132,11 +133,11 @@ in
     in
     [
       "${toRegex blurred}, blur true"
-      "match:namespace ^quickshell.*$, blur_popups true"
+      "match:namespace ^noctalia-.*$, blur_popups true"
       "${
         toRegex [
           "bar"
-          "quickshell:bar"
+          "noctalia-bar-.+"
         ]
       }, xray true"
       "${toRegex (highopacity ++ [ "music" ])}, ignore_alpha 0.5"
@@ -144,8 +145,7 @@ in
       "${
         toRegex [
           "notifications"
-          "quickshell:notifications:overlay"
-          "quickshell:notifictaions:panel"
+          "noctalia-(bar-.+|notification|dock|panel|attached-panel|osd|window-switcher)"
         ]
       }, no_anim true"
     ];
@@ -280,7 +280,7 @@ in
     ",F12,exec,pamixer -d 1"
     ",F13,exec,pamixer -i 1"
 
-    "CTRL ALT, L, exec, noctalia-shell ipc call lockScreen lock"
+    "CTRL ALT, L, exec, noctalia msg session lock"
 
     "$mod, A, exec, launcher drun"
     "$mod CTRL, A, exec, launcher drun-sudo"
@@ -290,9 +290,9 @@ in
     "$mod, V, exec, ${tools}/sbin/ClipManager.sh"
     "CTRL SUPER, C, exec, ${./scripts/clip-text-refiner}"
 
-    "$mod, N, exec, noctalia-shell ipc call notifications toggleHistory"
-    "$mod SHIFT, N, exec, noctalia-shell ipc call notifications clear"
-    "$mod, C, exec, noctalia-shell ipc call calendar toggle"
+    "$mod, N, exec, noctalia msg panel-toggle control-center notifications"
+    "$mod SHIFT, N, exec, noctalia msg notification-clear-history"
+    "$mod, C, exec, noctalia msg panel-toggle control-center calendar"
   ]
   ++ (builtins.concatLists (
     builtins.genList (

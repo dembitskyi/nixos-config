@@ -25,7 +25,7 @@
     environment.shells = with pkgs; [ bash ]; # /etc/shells
     programs.firejail.enable = true;
     environment.systemPackages = with pkgs; [
-      (python313.withPackages (
+      (python3.withPackages (
         ps: with ps; [
           pyqt6
           pyyaml
@@ -69,7 +69,7 @@
       cmake
       bc
       git-lfs
-      python313.pkgs.pip
+      python3.pkgs.pip
       statix
       shellcheck
       nixfmt
@@ -90,7 +90,6 @@
       fd
       ffmpeg
       git
-      git-remote-codecommit
       gnumake
       home-manager
       btop
@@ -102,7 +101,6 @@
       nmap
       openssl
       pciutils
-      python314
       ripgrep
       sops
       sqlite-interactive
