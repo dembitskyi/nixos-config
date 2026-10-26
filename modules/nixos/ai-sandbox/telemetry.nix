@@ -1,6 +1,4 @@
-# Opt-outs for the telemetry and update checks of the tools the AI sandbox
-# runs. ONNX Runtime (loaded by opencode-mem and chromadb) reports to
-# Microsoft by default since 1.29; the rest are the variables other tools honor.
+# Telemetry opt-outs.
 {
   ORT_DISABLE_TELEMETRY = "1";
   ANONYMIZED_TELEMETRY = "False";

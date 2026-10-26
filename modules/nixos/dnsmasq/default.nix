@@ -13,8 +13,9 @@
     services.dnsmasq = {
       enable = true;
       settings = {
-        listen-address = "127.0.0.1";
-        bind-interfaces = true;
+        listen-address = [ "127.0.0.1" ];
+        # Other modules may add addresses that appear later (e.g. a VPN's).
+        bind-dynamic = true;
         cache-size = 1000;
         log-queries = true;
         log-facility = "/var/log/dnsmasq.log";

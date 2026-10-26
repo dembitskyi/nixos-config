@@ -1,7 +1,4 @@
-# MCP servers, with exactly the access of the clients they serve. Servers
-# without secrets run inside each client's sandbox (stdio), in its workspace.
-# Servers with secrets run per connection in their own unit, as the shared
-# opencode servers (their only clients, through a socket only they see).
+# MCP servers for the sandbox's clients.
 {
   lib,
   config,
@@ -63,8 +60,6 @@ let
     }
   '';
 
-  # A Ghidra project takes one user (one per working directory), in a path
-  # without dot-directories, which Ghidra rejects.
   ghidraMcp = pkgs.writeShellScript "ghidra-mcp" ''
     exec ${uvx} pyghidra-mcp --project-path "$HOME/ghidra-projects/''${PWD//\//_}"
   '';
@@ -75,7 +70,6 @@ let
       command = lib.getExe pkgs.playwright-mcp;
       args = [
         "--cdp-endpoint=http://127.0.0.1:9222"
-        # Keeps snapshots and screenshots out of the working tree.
         "--output-dir=${userHome}/.cache/playwright-mcp"
       ];
     };
@@ -103,9 +97,7 @@ let
       env = {
         GHIDRA_INSTALL_DIR = "${pkgs.ghidra}/lib/ghidra";
         JAVA_HOME = "${pkgs.jdk21.home}";
-        # DISPLAY is inherited, but no display is reachable in the sandbox.
         JAVA_TOOL_OPTIONS = "-Djava.awt.headless=true";
-        # JPype's uv-installed native extension needs the C++ runtime.
         LD_LIBRARY_PATH = lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
       };
     };
@@ -129,25 +121,21 @@ let
     };
   }
   // cfg.extraServers;
-  # Stateful servers run once for all clients, on demand over HTTP on
-  # 127.0.0.1:8000+, which any local process can reach.
   sharedServers = lib.filterAttrs (_: s: s.shared or false) secretServers;
   sharedPorts = lib.listToAttrs (
     lib.imap0 (i: name: lib.nameValuePair name (8000 + i)) (lib.attrNames sharedServers)
   );
   perConnection = removeAttrs secretServers (lib.attrNames sharedServers);
 
-  # The MCP client passes the server only a few variables of its own.
   withAgent = pkgs.writeShellScript "ai-sandbox-mcp-env" ''
-    export SSH_AUTH_SOCK="/run/user/$(id -u)/ai-sandbox-ssh-agent/socket"
+    export SSH_AUTH_SOCK="${units.sshAgentDir}/socket"
     exec "$@"
   '';
 
   connect = pkgs.writeShellScript "ai-sandbox-mcp-connect" ''
-    exec ${lib.getExe pkgs.socat} STDIO "UNIX-CONNECT:/run/user/$(id -u)/ai-sandbox-mcp/$1.sock"
+    exec ${lib.getExe pkgs.socat} STDIO "UNIX-CONNECT:/run/ai-sandbox-mcp/$1.sock"
   '';
 
-  # Native opencode entries; the servers' own env gets the telemetry opt-outs.
   entry = command: env: {
     type = "local";
     inherit command;
@@ -168,7 +156,6 @@ let
       oauth = false;
     }) sharedPorts;
 
-  # As the shared opencode servers, with the server's config (and secrets).
   secretService =
     name:
     lib.mkMerge [
@@ -196,9 +183,9 @@ let
     sockets."ai-sandbox-mcp-${name}" = {
       Unit.Description = "AI sandbox MCP server ${name}";
       Socket = {
-        ListenStream = "%t/ai-sandbox-mcp/${name}.sock";
+        ListenStream = "/run/ai-sandbox-mcp/${name}.sock";
         Accept = true;
-        DirectoryMode = "0700";
+        SocketUser = config.variables.username;
         SocketMode = "0600";
       };
       Install.WantedBy = [ "sockets.target" ];
@@ -209,8 +196,6 @@ let
         Unit = {
           Description = "AI sandbox MCP server ${name}";
           CollectMode = "inactive-or-failed";
-          # A rebuild must not restart a live connection's instance.
-          X-SwitchMethod = "keep-old";
         };
         Service = {
           ExecStart = "${fastmcp} run %d/config.json --no-banner";
@@ -268,6 +253,17 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    mine.ai-sandbox.network.hostPorts = [ 9222 ];
+
+    mine.ai-sandbox.units = lib.mkMerge (
+      lib.mapAttrsToList secretUnits perConnection ++ lib.mapAttrsToList sharedUnits sharedPorts
+    );
+    systemd.tmpfiles.rules = [
+      "d /run/ai-sandbox-mcp 0700 ${config.variables.username} ${
+        config.users.users.${config.variables.username}.group
+      } -"
+    ];
+
     sops.secrets = {
       "MCP/GITHUB_TOKEN" = {
         owner = config.variables.username;
@@ -281,7 +277,6 @@ in
       "MCP/CONFLUENCE_API_TOKEN" = { };
     };
 
-    # fastmcp does not pass the unit's environment on.
     sops.templates = lib.mapAttrs' (
       name: server:
       lib.nameValuePair "mcp-${name}" {
@@ -302,14 +297,9 @@ in
     ) secretServers;
 
     home-manager.users.${config.variables.username} = {
-      # The built-in servers; hosts add their extra ones.
       mine.home.opencode.mcpServers = lib.mapAttrs' (
         name: lib.nameValuePair "mcp_${lib.replaceStrings [ "-" ] [ "_" ] name}"
       ) (removeAttrs entries (lib.attrNames cfg.extraServers));
-
-      systemd.user = lib.mkMerge (
-        lib.mapAttrsToList secretUnits perConnection ++ lib.mapAttrsToList sharedUnits sharedPorts
-      );
     };
   };
 }

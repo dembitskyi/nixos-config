@@ -1,4 +1,4 @@
-# Sandboxed opencode servers (on demand) and their terminal clients.
+# Sandboxed opencode servers and their clients.
 {
   lib,
   config,
@@ -25,7 +25,6 @@ let
       url = "http://127.0.0.1:${toString (units.backendPort server.port)}";
       password =
         if server.isolated then "$HOME/.opencode-password" else "$CREDENTIALS_DIRECTORY/password";
-      # An isolated server cannot reach the MCP servers with secrets.
       config' = lib.recursiveUpdate server.config (
         lib.optionalAttrs server.isolated {
           mcp.servers = lib.listToAttrs (
@@ -59,7 +58,6 @@ let
         + ''
           export OPENCODE_PASSWORD
         ''
-        # Ranks above every other config, project ones included.
         + lib.optionalString (config' != { }) ''
           OPENCODE_CONFIG_CONTENT="$(cat ${jsonFormat.generate "opencode-${id}.json" config'})"
           export OPENCODE_CONFIG_CONTENT
@@ -69,7 +67,6 @@ let
         ${curl} -fsS --max-time 10 -u "opencode:$(cat ${password})" ${url}/api/session/active |
           ${lib.getExe pkgs.jq} -e '.data != {}' >/dev/null
       '';
-      # Routes answer 503 until /api/info does 200 (500: the start failed).
       ready = ''
         case "$(${curl} -s -o /dev/null -w '%{http_code}' --max-time 5 -u "opencode:$(cat ${password} 2>/dev/null)" ${url}/api/info)" in
           200) ;;
@@ -88,11 +85,9 @@ let
           Service = {
             WorkingDirectory = workspace;
             Environment = [
-              # For the native modules of npm plugins.
               "LD_LIBRARY_PATH=${lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ]}"
               "OPENCODE_DB=${server.database}"
             ];
-            # Same paths as on the host, where the TUI runs.
             BindPaths = [
               "${workspace}:${workspace}"
             ]
@@ -105,8 +100,7 @@ let
             ]
             ++ cfg.opencode.readOnlyBinds
             ++ lib.optionals (!server.isolated) (
-              # The sockets of the MCP servers with secrets.
-              [ "-%t/ai-sandbox-mcp:%t/ai-sandbox-mcp" ] ++ cfg.readOnlyBinds
+              [ "-/run/ai-sandbox-mcp:/run/ai-sandbox-mcp" ] ++ cfg.readOnlyBinds
             );
             LoadCredential = lib.optional (!server.isolated) "password:${sharedPassword}";
           }
@@ -123,7 +117,6 @@ let
     ) cfg.opencode.servers
   );
 
-  # Isolated clients keep their history and logs in the server's home.
   clientCase =
     {
       client,
@@ -139,7 +132,6 @@ let
       if server.isolated then
         ''
           password_file=${homeOf id}/.opencode-password
-          # Its server makes the password on its first start.
           unit=opencode-${id}.service
           export XDG_DATA_HOME=${homeOf id}/.local/share
           export XDG_STATE_HOME=${homeOf id}/.local/state
@@ -175,7 +167,7 @@ let
       shift
       mkdir -p "$dir"
       if [ -n "$unit" ] && [ ! -s "$password_file" ]; then
-        systemctl --user start "$unit"
+        systemctl start "$unit"
       fi
       case "$PWD/" in
         "$dir"/*) ;;
@@ -238,6 +230,16 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    mine.ai-sandbox = {
+      units = lib.mkMerge (lib.mapAttrsToList serverUnits cfg.opencode.servers);
+      userControlledUnits = lib.mapAttrsToList (id: _: "opencode-${id}.service") (
+        lib.filterAttrs (_: server: server.isolated) cfg.opencode.servers
+      );
+      homes = lib.mapAttrsToList (id: _: "opencode-${id}") (
+        lib.filterAttrs (_: server: server.isolated) cfg.opencode.servers
+      );
+    };
+
     mine.ai-sandbox.opencode.servers = {
       main = {
         port = lib.mkDefault 4096;
@@ -280,19 +282,12 @@ in
         ) clients
       );
 
-      systemd.user = lib.mkMerge (
-        lib.mapAttrsToList serverUnits cfg.opencode.servers
-        ++ [
-          {
-            tmpfiles.rules = [
-              "d ${userHome}/.config/opencode 0700 - - -"
-              "d ${userHome}/.config/opencode/skills 0700 - - -"
-              "d ${userHome}/.local/share/opencode 0700 - - -"
-            ]
-            ++ lib.mapAttrsToList (id: server: "d ${workspaceOf id server} 0755 - - -") cfg.opencode.servers;
-          }
-        ]
-      );
+      systemd.user.tmpfiles.rules = [
+        "d ${userHome}/.config/opencode 0700 - - -"
+        "d ${userHome}/.config/opencode/skills 0700 - - -"
+        "d ${userHome}/.local/share/opencode 0700 - - -"
+      ]
+      ++ lib.mapAttrsToList (id: server: "d ${workspaceOf id server} 0755 - - -") cfg.opencode.servers;
     };
   };
 }

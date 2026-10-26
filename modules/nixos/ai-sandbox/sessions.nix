@@ -1,6 +1,4 @@
-# Interactive agent sessions (Claude Code, Codex). `<name>-sandbox <slot>` runs
-# the agent in the transient unit <name>-sandbox-<slot>, which its drop-in
-# sandboxes, with the slot's folder ~/workspace/<name>-<folder>.
+# Interactive agent sessions (Claude Code, Codex).
 {
   lib,
   config,
@@ -12,20 +10,6 @@ let
   units = import ./units.nix { inherit lib pkgs config; };
   inherit (units) userHome;
 
-  toIni = lib.generators.toINI {
-    listsAsDuplicateKeys = true;
-    mkKeyValue =
-      key: value: "${key}=${if lib.isBool value then lib.boolToString value else toString value}";
-  };
-  # Unit sections, lists concatenated.
-  merge = lib.zipAttrsWith (
-    _:
-    lib.zipAttrsWith (
-      _: values: if lib.all lib.isList values then lib.concatLists values else lib.last values
-    )
-  );
-
-  # Claude Code's image paste, forwarded to the clipboard bridge (images only).
   wlPaste = pkgs.writeShellApplication {
     name = "wl-paste";
     runtimeInputs = with pkgs; [
@@ -50,95 +34,88 @@ let
       answer="$(mktemp)"
       trap 'rm -f "$answer"' EXIT
       printf '%s\n' "$request" |
-        socat -t 30 - "UNIX-CONNECT:/run/user/$(id -u)/ai-sandbox-clipboard/socket" >"$answer"
+        socat -t 30 - "UNIX-CONNECT:/run/ai-sandbox-clipboard/socket" >"$answer"
       if [ ! -s "$answer" ]; then
         exit 1
       fi
       cat "$answer"
     '';
   };
-  clipboard = lib.optional cfg.clipboard.enable "ai-sandbox-clipboard.socket";
+  dtach = lib.getExe pkgs.dtach;
+  runOf = name: id: "/run/ai-sandbox-sessions/${name}-${id}";
 
   workspaceOf =
     name: id: slot:
     "${userHome}/workspace/${name}-${if slot.folder == null then id else slot.folder}";
-  # The slot's own copies of `slotDirs` (host paths), in the shared home.
   slotDirsOf =
     _name: session: id: slot:
     lib.optionals (!slot.isolated) (map (dir: "${cfg.home}/${dir}/${id}") session.slotDirs);
 
-  dropIn =
+  unitOf =
     name: session: id: slot:
     let
       workspace = workspaceOf name id slot;
+      run = runOf name id;
     in
-    toIni (merge [
+    lib.mkMerge [
       (units.sandbox {
         home = if slot.isolated then "${name}-${id}" else "ai-sandbox";
         proxy = !slot.isolated;
         extraPackages = lib.optional cfg.clipboard.enable wlPaste;
       })
       {
-        Unit = {
-          After = clipboard;
-          Wants = clipboard;
-        };
+        Unit.Description = "${session.title} (${id})";
         Service = {
-          # The entry's proof that this drop-in applies.
-          Environment = [ "AI_SESSION_SANDBOX=1" ];
+          Type = "exec";
+          ExecStart = lib.getExe (entry name session);
+          EnvironmentFile = "-${run}/env";
+          Environment = [
+            "AI_SESSION_SANDBOX=1"
+            "AI_SESSION_RUN=${run}"
+          ];
           TemporaryFileSystem = [ "${userHome}/workspace:ro" ];
           BindPaths = [
             "${workspace}:${workspace}"
+            "${run}:${run}"
           ]
           ++ lib.zipListsWith (src: dir: "${src}:${userHome}/${dir}") (slotDirsOf name session id
             slot
           ) session.slotDirs
           ++ lib.optionals (!slot.isolated) cfg.binds;
           BindReadOnlyPaths =
-            lib.optional cfg.clipboard.enable "%t/ai-sandbox-clipboard:%t/ai-sandbox-clipboard"
+            lib.optional cfg.clipboard.enable "-/run/ai-sandbox-clipboard:/run/ai-sandbox-clipboard"
             ++ lib.optionals (!slot.isolated) cfg.readOnlyBinds;
           PrivatePIDs = true;
         };
       }
       session.sandbox
-    ]);
+    ];
 
   exports =
     env: lib.mapAttrsToList (key: value: "export ${key}=${lib.escapeShellArg (toString value)}") env;
 
-  # Runs in the unit as `<entry> <backend> [ARGS...]`, as PID 1 of its
-  # namespace: the agent is its child, so orphans get reaped. The agent gets
-  # its own session and takes back the terminal, which systemd's fork into
-  # the PID namespace left without a session (no resizes otherwise).
   entry =
     name: session:
     pkgs.writeShellApplication {
       name = "${name}-sandbox-entry";
       text = ''
-        # Fail closed: without its drop-in the unit would see the whole home.
         if [ "''${AI_SESSION_SANDBOX:-}" != 1 ] || [ -e "/run/user/$(${lib.getExe' pkgs.coreutils "id"} -u)/bus" ]; then
-          echo "${name}-sandbox: the session sandbox is not active; run 'systemctl --user daemon-reload' and retry." >&2
+          echo "${name}-sandbox: the session sandbox is not active." >&2
           exit 1
         fi
+        mapfile -d "" -t start <"$AI_SESSION_RUN/start"
+        cd "''${start[0]}"
+        backend="''${start[1]}"
+        set -- "''${start[@]:2}"
         ${lib.concatLines (exports session.env)}
-        backend="$1"
-        shift
         status=0
         case "$backend" in
         ${lib.concatStrings (
           lib.mapAttrsToList (backend: b: ''
             ${backend})
               ${lib.concatLines (exports b.env)}
-              ${
-                lib.escapeShellArgs (
-                  [
-                    "${pkgs.util-linux}/bin/setsid"
-                    "--ctty"
-                    session.command
-                  ]
-                  ++ b.args
-                  ++ session.args
-                )
+              ${dtach} -N "$AI_SESSION_RUN/tty" -E -z -r winch ${
+                lib.escapeShellArgs ([ session.command ] ++ b.args ++ session.args)
               } "$@" || status=$?
               ;;
           '') session.backends
@@ -177,12 +154,12 @@ let
         slot="$1"
         shift
         unit="${name}-sandbox-$slot.service"
-        if systemctl --user --quiet is-active "$unit"; then
-          echo "${name}-sandbox: $unit is already running; attach to its tmux session or run 'systemctl --user stop $unit'." >&2
+        run="/run/ai-sandbox-sessions/${name}-$slot"
+        if systemctl --quiet is-active "$unit"; then
+          echo "${name}-sandbox: $unit is already running; attach to its tmux session or run 'systemctl stop $unit'." >&2
           exit 1
         fi
 
-        # Records of an earlier run are stale.
         for dir in "''${own[@]}"; do
           mkdir -p "$dir"
           find "$dir" -mindepth 1 -delete
@@ -193,25 +170,38 @@ let
           *) dir="$workspace" ;;
         esac
 
-        # Closing the tmux pane kills systemd-run, which never stops its unit.
-        trap 'systemctl --user stop "$unit" 2>/dev/null || true' EXIT
+        printf '%s\0' "$dir" "$backend" "$@" >"$run/start"
+        : >"$run/env"
+        for var in LANG LC_ALL TERM COLORTERM; do
+          if [ -n "''${!var:-}" ]; then
+            printf '%s=%s\n' "$var" "''${!var}" >>"$run/env"
+          fi
+        done
+        rm -f "$run/tty"
+
+        trap 'systemctl stop "$unit" 2>/dev/null || true' EXIT
         trap 'exit 129' HUP
         trap 'exit 143' TERM
 
-        setenv=()
-        for var in LANG LC_ALL; do
-          if [ -n "''${!var:-}" ]; then
-            setenv+=("--setenv=$var=''${!var}")
+        systemctl start "$unit"
+        until [ -S "$run/tty" ]; do
+          if ! systemctl --quiet is-active "$unit"; then
+            echo "${name}-sandbox: $unit stopped; see journalctl -u $unit." >&2
+            exit 1
           fi
+          sleep 0.1
         done
-
-        SYSTEMD_ADJUST_TERMINAL_TITLE=0 systemd-run --user --pty --quiet --collect \
-          --service-type=exec --expand-environment=no \
-          --unit="$unit" --description="${session.title} ($slot)" \
-          --working-directory="$dir" "''${setenv[@]}" \
-          -- ${lib.getExe (entry name session)} "$backend" "$@"
+        ${dtach} -a "$run/tty" -E -z -r winch
       '';
     };
+
+  slotList =
+    f:
+    lib.filter (x: x != "") (
+      lib.concatLists (
+        lib.mapAttrsToList (name: session: lib.mapAttrsToList (f name) session.slots) cfg.sessions
+      )
+    );
 
   envType = lib.types.attrsOf (lib.types.either lib.types.str lib.types.int);
 in
@@ -315,18 +305,35 @@ in
       ) cfg.sessions
     );
 
-    home-manager.users.${config.variables.username} = {
-      home.packages = lib.attrValues cfg.launchers;
-
-      xdg.configFile = lib.concatMapAttrs (
+    mine.ai-sandbox = {
+      units.services = lib.concatMapAttrs (
         name: session:
         lib.mapAttrs' (
-          id: slot:
-          lib.nameValuePair "systemd/user/${name}-sandbox-${id}.service.d/10-sandbox.conf" {
-            text = dropIn name session id slot;
-          }
+          id: slot: lib.nameValuePair "${name}-sandbox-${id}" (unitOf name session id slot)
         ) session.slots
       ) cfg.sessions;
+      userControlledUnits = slotList (
+        name: id: _:
+        "${name}-sandbox-${id}.service"
+      );
+      homes = slotList (
+        name: id: slot:
+        lib.optionalString slot.isolated "${name}-${id}"
+      );
+    };
+
+    systemd.tmpfiles.rules = [
+      "d /run/ai-sandbox-sessions 0755 root root -"
+    ]
+    ++ slotList (
+      name: id: _:
+      "d ${runOf name id} 0700 ${config.variables.username} ${
+        config.users.users.${config.variables.username}.group
+      } -"
+    );
+
+    home-manager.users.${config.variables.username} = {
+      home.packages = lib.attrValues cfg.launchers;
 
       xdg.desktopEntries = lib.concatMapAttrs (
         name: session:

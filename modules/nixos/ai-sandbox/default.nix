@@ -1,15 +1,29 @@
-# The AI sandbox: opencode servers, MCP servers and Claude Code / Codex
-# sessions, all in units built from `sandbox` (units.nix) and started on demand.
+# The AI sandbox: opencode servers, MCP servers and agent sessions.
 {
   lib,
   config,
   pkgs,
+  utils,
   ...
 }:
 let
   cfg = config.mine.ai-sandbox;
   units = import ./units.nix { inherit lib pkgs config; };
   inherit (units) userHome telemetryOptOut;
+  user = config.variables.username;
+  group = config.users.users.${user}.group;
+
+  sections =
+    names:
+    lib.types.submodule {
+      options = lib.genAttrs names (
+        _:
+        lib.mkOption {
+          type = lib.types.attrsOf utils.systemdUtils.unitOptions.unitOption;
+          default = { };
+        }
+      );
+    };
 
   sshAgentScript = pkgs.writeShellScript "ai-sandbox-ssh-agent" ''
     set -euo pipefail
@@ -45,7 +59,6 @@ let
     wait "$agent_pid"
   '';
 
-  # Debug helper: a shell (or command) in a running unit's namespaces.
   sandboxEnter = pkgs.writeShellApplication {
     name = "ai-sandbox-enter";
     runtimeInputs = with pkgs; [
@@ -55,7 +68,7 @@ let
     text = ''
       unit="''${1:-opencode-main.service}"
       shift || true
-      pid="$(systemctl --user show -p MainPID --value "$unit")"
+      pid="$(systemctl show -p MainPID --value "$unit")"
       if [ -z "$pid" ] || [ "$pid" = "0" ]; then
         echo "usage: ai-sandbox-enter [UNIT [COMMAND...]] ($unit is not running)" >&2
         exit 1
@@ -67,13 +80,14 @@ let
         set -- bash
       fi
 
-      exec nsenter \
+      exec sudo nsenter \
         --target "$pid" \
-        --user \
-        --preserve-credentials \
         --mount \
         --uts \
         --pid \
+        --net \
+        --setuid "$(id -u)" \
+        --setgid "$(id -g)" \
         --wd="${userHome}" \
         -- env "''${service_env[@]}" "$@"
     '';
@@ -93,6 +107,7 @@ in
     ./clipboard.nix
     ./codex.nix
     ./mcp.nix
+    ./network.nix
     ./opencode.nix
     ./proxy.nix
     ./sessions.nix
@@ -138,12 +153,99 @@ in
       default = 30;
       description = "Idle minutes before an opencode or MCP server exits.";
     };
+
+    homes = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      internal = true;
+      description = "Sandbox homes under ~/.local/state, added by the modules that use them.";
+    };
+
+    units = {
+      services = lib.mkOption {
+        type = lib.types.attrsOf (sections [
+          "Unit"
+          "Service"
+          "Install"
+        ]);
+        default = { };
+        internal = true;
+      };
+      sockets = lib.mkOption {
+        type = lib.types.attrsOf (sections [
+          "Unit"
+          "Socket"
+          "Install"
+        ]);
+        default = { };
+        internal = true;
+      };
+    };
+
+    userControlledUnits = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      internal = true;
+    };
   };
 
   config = lib.mkIf cfg.enable {
     environment.sessionVariables = telemetryOptOut;
 
-    # Fresh sandbox homes (the isolated ones) know GitHub's host key.
+    mine.ai-sandbox.homes = [ "ai-sandbox" ];
+
+    systemd.services =
+      lib.mapAttrs (_: unit: {
+        unitConfig = unit.Unit;
+        serviceConfig = {
+          User = lib.mkDefault user;
+          Group = lib.mkDefault group;
+        }
+        // unit.Service;
+        wantedBy = unit.Install.WantedBy or [ ];
+        restartIfChanged = false;
+      }) cfg.units.services
+      // {
+        ai-sandbox-ssh-agent = {
+          description = "AI Sandbox SSH Agent";
+          unitConfig.StopWhenUnneeded = true;
+          path = [
+            pkgs.coreutils
+            pkgs.openssh
+          ];
+          serviceConfig = {
+            User = user;
+            Group = group;
+            Type = "exec";
+            RuntimeDirectory = "ai-sandbox-ssh-agent";
+            RuntimeDirectoryPreserve = true;
+            LoadCredential = [ "github_ssh_key:${config.sops.secrets."MCP/GITHUB_SSH_KEY".path}" ];
+            ExecStart = "${sshAgentScript} ${units.sshAgentDir}/socket";
+          };
+        };
+      };
+    systemd.sockets = lib.mapAttrs (_: unit: {
+      unitConfig = unit.Unit;
+      socketConfig = unit.Socket;
+      wantedBy = unit.Install.WantedBy or [ ];
+    }) cfg.units.sockets;
+
+    systemd.tmpfiles.rules = [
+      "d ${userHome}/workspace 0755 ${user} ${group} -"
+    ]
+    ++ map (home: "d ${userHome}/.local/state/${home} 0700 ${user} ${group} -") cfg.homes;
+
+    security.polkit.extraConfig = lib.mkIf (cfg.userControlledUnits != [ ]) ''
+      polkit.addRule(function (action, subject) {
+        var units = ${builtins.toJSON cfg.userControlledUnits};
+        if (action.id == "org.freedesktop.systemd1.manage-units" && subject.user == "${user}" &&
+            units.indexOf(action.lookup("unit")) >= 0 &&
+            ["start", "stop", "restart"].indexOf(action.lookup("verb")) >= 0) {
+          return polkit.Result.YES;
+        }
+      });
+    '';
+
     programs.ssh.knownHosts."github.com".publicKey =
       "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 
@@ -152,34 +254,6 @@ in
       mode = "0400";
     };
 
-    home-manager.users.${config.variables.username} = {
-      home.packages = [ sandboxEnter ];
-
-      systemd.user.tmpfiles.rules = [ "d ${userHome}/workspace 0755 - - -" ];
-
-      systemd.user.services.ai-sandbox-ssh-agent = {
-        Unit = {
-          Description = "AI Sandbox SSH Agent";
-          StopWhenUnneeded = true;
-        };
-        Service = {
-          # Started once its runtime directory, which units bind, exists.
-          Type = "exec";
-          Environment = [
-            "PATH=${
-              lib.makeBinPath [
-                pkgs.coreutils
-                pkgs.openssh
-              ]
-            }"
-          ];
-          RuntimeDirectory = "ai-sandbox-ssh-agent";
-          # Running sessions keep the directory bound.
-          RuntimeDirectoryPreserve = true;
-          LoadCredential = [ "github_ssh_key:${config.sops.secrets."MCP/GITHUB_SSH_KEY".path}" ];
-          ExecStart = "${sshAgentScript} %t/ai-sandbox-ssh-agent/socket";
-        };
-      };
-    };
+    home-manager.users.${config.variables.username}.home.packages = [ sandboxEnter ];
   };
 }

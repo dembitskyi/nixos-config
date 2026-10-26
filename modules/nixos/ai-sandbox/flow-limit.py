@@ -1,26 +1,4 @@
-"""Record what fits from every flow, keep mitmweb's memory bounded, hide credentials.
-
-mitmproxy holds each body in full before forwarding it, and mitmweb never
-forgets a flow, so an always-on tracing proxy eventually runs out of memory.
-Here responses, and requests that may exceed 8 MiB, pass through as they
-arrive. A body is recorded only if it fits in 8 MiB; bigger ones keep just
-their headers. WebSocket, TCP and UDP flows keep their newest 8 MiB of
-messages. Every flow counts against the budget from its first event: once the
-recorded data passes 1.5 GiB or 5000 flows, the oldest finished flows are
-dropped. Open flows are never dropped (that would cut their connection); they
-stay until they finish.
-
-The recorded bytes are not all of the process (Python and glibc keep freed
-memory), so its resident size is watched too. Past 5 GiB the finished flows
-are shed down to a quarter of the budget and freed memory is handed back to
-the system; past 6.5 GiB every finished flow goes and open flows stop
-recording until memory falls back under 5 GiB. The service's hard limit is
-8 GiB (proxy.nix).
-
-Credentials (authorization, API-key and cookie headers) are blanked in the
-recorded flow as soon as the request has gone out, which is no later than the
-first response bytes. Replaying such a flow therefore fails authentication.
-"""
+"""mitmproxy addon: bounded flow recording, credentials hidden."""
 
 from __future__ import annotations
 
@@ -39,15 +17,12 @@ log = logging.getLogger(__name__)
 MAX_BODY = 8 * 1024 * 1024
 MAX_TOTAL = 1536 * 1024 * 1024
 MAX_FLOWS = 5000
-# Rough cost of a flow without its bodies: headers, connections, certificates.
 FLOW_OVERHEAD = 32 * 1024
 
 SOFT_RSS = 5 * 1024**3
 HARD_RSS = 6656 * 1024**2
 CHECK_SECONDS = 5
-# Shedding at the soft mark repeats at most this often.
 SOFT_SECONDS = 60
-# Freed memory is handed back once this much has been dropped.
 TRIM_BYTES = 256 * 1024 * 1024
 
 REQUEST_SECRETS = (
@@ -76,16 +51,12 @@ def _rss() -> int:
 def _release_memory(collect: bool = False) -> None:
     """Return the freed heap to the system without pausing the event loop."""
     if collect:
-        # Blocks every stream while it runs, so only in an emergency.
         gc.collect()
     if _malloc_trim is not None:
-        # ctypes drops the GIL for the call, so a worker thread does the trim
-        # while the event loop keeps forwarding.
         asyncio.get_running_loop().run_in_executor(None, _malloc_trim, 0)
 
 
 def _mask(value: str) -> str:
-    # Keep the scheme ("Bearer", "Basic") so the trace still shows the kind.
     scheme, sep, rest = value.partition(" ")
     if sep and rest and scheme.isalpha():
         return f"{scheme} {REDACTED}"
@@ -104,7 +75,6 @@ def _redact(headers: http.Headers, names: tuple[str, ...]) -> bool:
 
 
 def _finished(f: flow.Flow) -> bool:
-    # A TCP flow whose connection failed keeps live=True forever.
     return not f.live or f.error is not None
 
 
@@ -152,10 +122,8 @@ class _Tee:
 
 class FlowLimit:
     def __init__(self) -> None:
-        # Tracked flows, oldest first, with their counted size.
         self.sizes: OrderedDict[str, int] = OrderedDict()
         self.total = 0
-        # Recorded message bytes and dropped messages of WebSocket/TCP/UDP flows.
         self.kept: dict[str, int] = {}
         self.dropped: dict[str, list[int]] = {}
         self.notes: dict[str, dict[str, str]] = {}
@@ -164,8 +132,6 @@ class FlowLimit:
         self.last_soft = 0.0
         self.task: asyncio.Task | None = None
 
-    # --- Lifecycle ---
-
     def running(self) -> None:
         self.task = asyncio.get_running_loop().create_task(self._watch())
 
@@ -173,11 +139,7 @@ class FlowLimit:
         if self.task is not None:
             self.task.cancel()
 
-    # --- HTTP ---
-
     def requestheaders(self, f: http.HTTPFlow) -> None:
-        # Only requests that may not fit in memory stream; small ones keep
-        # mitmproxy's normal path.
         size = f.request.headers.get("content-length", "")
         if not size.isdigit() or int(size) > MAX_BODY:
             f.request.stream = _Tee(self.recording)
@@ -186,16 +148,13 @@ class FlowLimit:
     def request(self, f: http.HTTPFlow) -> None:
         self._settle(f, f.request, complete=True)
         tee = f.request.stream
-        # A streamed request has already gone out; a buffered one leaves after this hook.
         if isinstance(tee, _Tee) and tee.started:
             self._redact_request(f)
         self._track(f)
 
     def responseheaders(self, f: http.HTTPFlow) -> None:
-        # The server answered, so the request is on the wire.
         self._redact_request(f)
         if not self.recording and f.request.stream is None and f.request.raw_content:
-            # mitmproxy buffered this one itself; it is no longer needed.
             size = len(f.request.raw_content)
             f.request.raw_content = None
             self._note(
@@ -220,8 +179,6 @@ class FlowLimit:
             self._refresh(f)
         self._track(f)
 
-    # --- WebSocket ---
-
     def websocket_message(self, f: http.HTTPFlow) -> None:
         self._trim(f)
         self._track(f)
@@ -229,8 +186,6 @@ class FlowLimit:
     def websocket_end(self, f: http.HTTPFlow) -> None:
         self._trim(f, final=True)
         self._track(f)
-
-    # --- TCP and UDP ---
 
     def tcp_start(self, f: flow.Flow) -> None:
         self._track(f, shed=False)
@@ -260,8 +215,6 @@ class FlowLimit:
     def udp_error(self, f: flow.Flow) -> None:
         self.udp_end(f)
 
-    # --- DNS ---
-
     def dns_request(self, f: flow.Flow) -> None:
         self._track(f, shed=False)
 
@@ -270,8 +223,6 @@ class FlowLimit:
 
     def dns_error(self, f: flow.Flow) -> None:
         self._track(f)
-
-    # --- Recording ---
 
     def _note(self, f: flow.Flow, key: str, text: str) -> None:
         notes = self.notes.setdefault(f.id, {})
@@ -306,7 +257,6 @@ class FlowLimit:
         if not final:
             kept += len(messages[-1].content or b"")
         limit = MAX_BODY if self.recording else 0
-        # The newest message is still being forwarded while the flow is open.
         floor = 0 if final else 1
         drop = dropped_bytes = 0
         while kept > limit and len(messages) - drop > floor:
@@ -327,10 +277,7 @@ class FlowLimit:
                 f"{totals[0]} earlier {_kind(f)} messages not kept ({totals[1]} bytes)",
             )
 
-    # --- Credentials ---
-
     def _refresh(self, f: flow.Flow) -> None:
-        # Push the redacted flow to open mitmweb pages, not just the store.
         view = ctx.master.addons.get("view")
         if view is not None:
             view.update([f])
@@ -345,19 +292,15 @@ class FlowLimit:
             return
         tee = response.stream
         if isinstance(tee, _Tee) and tee.started:
-            # Streamed: the headers went to the client before the body.
             if _redact(response.headers, RESPONSE_SECRETS):
                 self._refresh(f)
             return
 
-        # A response without a body is sent right after this hook.
         def later() -> None:
             if f.response is not None and _redact(f.response.headers, RESPONSE_SECRETS):
                 self._refresh(f)
 
         asyncio.get_running_loop().call_later(1.0, later)
-
-    # --- Budget ---
 
     def _size(self, f: flow.Flow) -> int:
         size = FLOW_OVERHEAD + self.kept.get(f.id, 0)
@@ -391,7 +334,7 @@ class FlowLimit:
                 break
             f = view.get_by_id(flow_id) if view is not None else None
             if f is not None and not _finished(f):
-                continue  # Still open: it stays until it finishes.
+                continue
             doomed.append(flow_id)
             total -= size
             count -= 1
@@ -401,8 +344,6 @@ class FlowLimit:
             if f is not None:
                 view.remove([f])
         return len(doomed)
-
-    # --- Memory watchdog ---
 
     async def _watch(self) -> None:
         while True:
@@ -433,7 +374,6 @@ class FlowLimit:
     def _relieve(self, rss: int, hard: bool) -> None:
         entering = hard and self.recording
         if hard:
-            # Everything finished goes; open flows stop recording.
             self.recording = False
             shed = self._shed(0, 0)
             view = ctx.master.addons.get("view")

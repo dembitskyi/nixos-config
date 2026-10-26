@@ -1,4 +1,4 @@
-# Shared building blocks: the agent sandbox and socket-started services.
+# Shared building blocks of the sandbox's units.
 {
   lib,
   pkgs,
@@ -9,14 +9,12 @@ let
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
   telemetryOptOut = import ./telemetry.nix;
 
-  # ssh rejects the Include'd systemd drop-in, owned by `nobody` in the user namespace.
-  sshConfig = pkgs.writeText "ssh_config-sandbox" (
-    lib.concatStringsSep "\n" (
-      lib.filter (line: !(lib.hasInfix "20-systemd-ssh-proxy.conf" line)) (
-        lib.splitString "\n" config.environment.etc."ssh/ssh_config".text
-      )
-    )
+  netns = "/run/netns/ai-sandbox";
+  network = "ai-sandbox-network.service";
+  resolvConf = pkgs.writeText "ai-sandbox-resolv.conf" (
+    lib.concatMapStrings (server: "nameserver ${server}\n") cfg.network.nameservers
   );
+  sshAgentDir = "/run/ai-sandbox-ssh-agent";
 
   packages =
     with pkgs;
@@ -114,11 +112,22 @@ let
   sleep = lib.getExe' pkgs.coreutils "sleep";
 in
 {
-  inherit userHome telemetryOptOut;
+  inherit
+    userHome
+    telemetryOptOut
+    netns
+    network
+    sshAgentDir
+    ;
 
   backendPort = port: port + 10000;
 
-  # Unit sections every agent unit shares, around its own home.
+  portOf =
+    url:
+    lib.toInt (
+      lib.last (lib.splitString ":" (lib.head (lib.splitString "/" (lib.removePrefix "http://" url))))
+    );
+
   sandbox =
     {
       home ? "ai-sandbox",
@@ -132,16 +141,17 @@ in
     in
     {
       Unit = {
-        After = helpers;
+        After = helpers ++ [ network ];
         Wants = helpers;
+        BindsTo = [ network ];
       };
       Service = {
+        NetworkNamespacePath = netns;
         NoNewPrivileges = true;
         ProtectClock = true;
         PrivateDevices = true;
         PrivateMounts = true;
         ProtectHome = "tmpfs";
-        StateDirectory = home;
         ProtectHostname = true;
         ProtectKernelLogs = true;
         ProtectKernelModules = true;
@@ -151,7 +161,7 @@ in
         RestrictSUIDSGID = true;
         Environment = [
           "HOME=${userHome}"
-          "SSH_AUTH_SOCK=%t/ai-sandbox-ssh-agent/socket"
+          "SSH_AUTH_SOCK=${sshAgentDir}/socket"
           "XDG_CACHE_HOME=${userHome}/.cache"
           "XDG_DATA_HOME=${userHome}/.local/share"
           "XDG_STATE_HOME=${userHome}/.local/state"
@@ -168,37 +178,29 @@ in
           "NO_PROXY=127.0.0.1,localhost"
           "NODE_EXTRA_CA_CERTS=${caBundle}"
           "CODEX_CA_CERTIFICATE=${caBundle}"
-          # uv trusts only its bundled roots otherwise.
           "UV_SYSTEM_CERTS=1"
         ];
         BindPaths = [
-          "%S/${home}:${userHome}"
-          "%t/ai-sandbox-ssh-agent:%t/ai-sandbox-ssh-agent"
-          # PrivateDevices' /dev/ptmx breaks openpty() in a user namespace.
+          "${userHome}/.local/state/${home}:${userHome}"
+          "${sshAgentDir}:${sshAgentDir}"
           "/dev/pts/ptmx:/dev/ptmx"
         ]
-        # "-": skip devices this machine lacks.
         ++ map (dev: "-${dev}") cfg.devices;
         BindReadOnlyPaths = [
-          "${sshConfig}:/etc/ssh/ssh_config"
+          "${resolvConf}:/etc/resolv.conf"
         ]
         ++ lib.optional config.mine.jfrog.enable "${config.mine.jfrog.confPath}:${config.mine.jfrog.targetPath}"
         ++ lib.optionals useProxy [
-          "%S/ai-sandbox/ca-bundle.crt:${caBundle}"
-          "%S/ai-sandbox/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt"
+          "${cfg.home}/ca-bundle.crt:${caBundle}"
+          "${cfg.home}/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt"
         ];
-        # Its own /tmp: no host sockets (tmux, X11) or files.
         PrivateTmp = true;
-        # Docker is root through the docker group, which survives the user
-        # namespace; only units that ask get it. Units get their secrets as
-        # credentials or binds.
+        TemporaryFileSystem = [ "/run/ai-sandbox-sessions:ro" ];
         InaccessiblePaths = lib.optional (!docker) "-/run/docker.sock" ++ [ "-/run/secrets.d" ];
       };
     };
 
-  # A service started by the first connection to `port` (proxied to
-  # backendPort once `ready` holds) that exits after idleMinutes without one
-  # while `busy` fails.
+  # A service started by its socket, stopped when idle.
   onDemand =
     name:
     {
@@ -226,7 +228,6 @@ in
           wait -n -p finished "$server" "$!"
           status=$?
           if [ "''${finished:-}" = "$server" ]; then
-            # Fails a start still waiting for readiness.
             touch /tmp/.server-exited
             exit "$status"
           fi
@@ -257,13 +258,39 @@ in
         Socket.ListenStream = "127.0.0.1:${toString port}";
         Install.WantedBy = [ "sockets.target" ];
       };
+      sockets."${name}-proxy-sandbox" = {
+        Unit = {
+          Description = "${description} (in the sandbox)";
+          After = [ network ];
+          BindsTo = [ network ];
+        };
+        Socket = {
+          ListenStream = "127.0.0.1:${toString port}";
+          NetworkNamespacePath = netns;
+          Service = "${name}-proxy.service";
+        };
+        Install.WantedBy = [ "sockets.target" ];
+      };
       services."${name}-proxy" = {
         Unit = {
           Description = "${description} (proxy)";
-          BindsTo = [ "${name}.service" ];
-          After = [ "${name}.service" ];
+          BindsTo = [
+            "${name}.service"
+            network
+          ];
+          After = [
+            "${name}.service"
+            network
+          ];
         };
-        Service.ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${backend}";
+        Service = {
+          ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd 127.0.0.1:${backend}";
+          Sockets = [
+            "${name}-proxy.socket"
+            "${name}-proxy-sandbox.socket"
+          ];
+          NetworkNamespacePath = netns;
+        };
       };
       services.${name} = lib.mkMerge [
         unit
@@ -273,7 +300,6 @@ in
             ExecStart = "${run}";
             ExecStartPost = "${readyScript}";
             TimeoutStartSec = "5min";
-            # Hides its processes (and their environment) from other sandboxes.
             PrivatePIDs = true;
           };
         }

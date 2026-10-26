@@ -10,16 +10,12 @@ let
   proxyPort = toString cfg.port;
   proxyWebPort = toString cfg.webPort;
   mitmweb = lib.getExe' pkgs.mitmproxy "mitmweb";
-  confDir = "%t/ai-sandbox-proxy/confdir";
+  confDir = "/run/ai-sandbox-proxy/confdir";
 
-  # Sets up the mitmproxy confdir (CA key and cert, so it reuses them) and
-  # the CA bundle the sandboxed units bind over /etc/ssl/certs (units.nix).
-  # NOTE: uses $XDG_RUNTIME_DIR instead of %t because systemd only expands
-  # specifiers in unit file directives, not inside script contents.
   setupProxy = pkgs.writeShellScript "ai-sandbox-proxy-setup" ''
     set -euo pipefail
 
-    confdir="$XDG_RUNTIME_DIR/ai-sandbox-proxy/confdir"
+    confdir="${confDir}"
     mkdir -p "$confdir"
     cp "$CREDENTIALS_DIRECTORY/mitmproxy_ca" "$confdir/mitmproxy-ca.pem"
     chmod 600 "$confdir/mitmproxy-ca.pem"
@@ -51,6 +47,8 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    mine.ai-sandbox.network.hostPorts = [ cfg.port ];
+
     sops.secrets = {
       "MCP/MITMPROXY_CA" = {
         owner = config.variables.username;
@@ -62,52 +60,41 @@ in
       };
     };
 
-    home-manager.users.${config.variables.username} = {
-      # Started by the first unit that wants it; keeps its flows until logout.
-      systemd.user.services.ai-sandbox-proxy = {
-        Unit = {
-          Description = "AI Sandbox LLM traffic proxy (mitmweb)";
-          PartOf = [ "graphical-session.target" ];
-        };
-
-        Service = {
-          Environment = [
-            "HOME=${userHome}"
-            # glibc keeps freed body buffers in per-thread arenas and grows its
-            # mmap threshold up to 32 MiB, so freed memory rarely went back to
-            # the system. Buffers of 1 MiB and more now get their own mapping,
-            # returned on free, and two arenas bound the fragmentation
-            # (flow-limit.py also trims the heap after shedding flows).
-            "MALLOC_ARENA_MAX=2"
-            "MALLOC_MMAP_THRESHOLD_=1048576"
-          ];
-          RuntimeDirectory = "ai-sandbox-proxy";
-          UMask = "0077";
-          LoadCredential = [
-            "mitmproxy_ca:${config.sops.secrets."MCP/MITMPROXY_CA".path}"
-            "mitmproxy_ca_cert:${config.sops.secrets."MCP/MITMPROXY_CA_CERT".path}"
-          ];
-          ExecStartPre = "${setupProxy}";
-          ExecStart = lib.concatStringsSep " " [
-            mitmweb
-            "--set confdir=${confDir}"
-            "--mode regular"
-            "--listen-port ${proxyPort}"
-            "--web-port ${proxyWebPort}"
-            "--web-host 127.0.0.1"
-            "--set web_password=root"
-            "--no-web-open-browser"
-            "-s ${./flow-limit.py}"
-            "--quiet"
-          ];
-          Restart = "on-failure";
-          RestartSec = 3;
-          # flow-limit.py sheds flows from 5 GiB resident and stops recording
-          # at 6.5 GiB, well before this limit. Without the swap cap, hitting
-          # MemoryMax thrashes instead of restarting.
-          MemoryMax = "8G";
-          MemorySwapMax = "0";
-        };
+    systemd.services.ai-sandbox-proxy = {
+      description = "AI Sandbox LLM traffic proxy (mitmweb)";
+      serviceConfig = {
+        User = config.variables.username;
+        Group = config.users.users.${config.variables.username}.group;
+        Environment = [
+          "HOME=${userHome}"
+          "MALLOC_ARENA_MAX=2"
+          "MALLOC_MMAP_THRESHOLD_=1048576"
+        ];
+        RuntimeDirectory = "ai-sandbox-proxy";
+        UMask = "0077";
+        LoadCredential = [
+          "mitmproxy_ca:${config.sops.secrets."MCP/MITMPROXY_CA".path}"
+          "mitmproxy_ca_cert:${config.sops.secrets."MCP/MITMPROXY_CA_CERT".path}"
+        ];
+        ExecStartPre = "${setupProxy}";
+        ExecStart = lib.concatStringsSep " " [
+          mitmweb
+          "--set confdir=${confDir}"
+          "--mode regular"
+          "--listen-host 127.0.0.1"
+          "--listen-port ${proxyPort}"
+          "--web-port ${proxyWebPort}"
+          "--web-host 127.0.0.1"
+          "--set web_password=root"
+          "--no-web-open-browser"
+          "-s ${./flow-limit.py}"
+          "-s ${./local-guard.py}"
+          "--quiet"
+        ];
+        Restart = "on-failure";
+        RestartSec = 3;
+        MemoryMax = "8G";
+        MemorySwapMax = "0";
       };
     };
   };
