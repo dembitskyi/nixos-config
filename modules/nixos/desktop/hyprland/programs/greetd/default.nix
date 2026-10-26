@@ -5,6 +5,7 @@
   ...
 }:
 let
+  output = config.mine.hyprland.greeterOutput;
   westonConfig = ''
     [keyboard]
     keymap_layout=us
@@ -15,12 +16,13 @@ let
     [libinput]
     enable-tap=true
     left-handed=false
+  ''
+  + lib.optionalString (output != null) ''
 
     [output]
-    name = DP-7;  # e.g., "HDMI-A-1" or dynamic: "$(journalctl -u sddm | grep output)"
-    mode = "3840x2160@60";         # Native 4K
-    scale = 2;                     # 2x scaling (effective Full HD)
-    transform = normal;
+    name=${output.name}
+    mode=${output.mode}
+    scale=${toString output.scale}
   '';
   sddmDependencies = [
     pkgs.sddm-astronaut

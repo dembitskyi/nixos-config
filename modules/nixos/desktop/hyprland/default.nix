@@ -8,34 +8,17 @@
 let
   scripts = ./scripts;
 
-  # Use the pinned hyprland input (v0.53.3) with a glaze compatibility patch,
-  # or the latest hyprland from the rolling flake input.
-  hyprlandPackage =
-    if config.mine.hyprland.pinned then
-      ncInputs.hyprland-v0_53_3.packages.${pkgs.stdenv.hostPlatform.system}.default.overrideAttrs (old: {
-        patches = (old.patches or [ ]) ++ [ ../../../../patches/hyprland-hyprpm-glaze-7.diff ];
-      })
-    else
-      ncInputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.default;
-
-  hyprlandPortalPackage =
-    if config.mine.hyprland.pinned then
-      ncInputs.hyprland-v0_53_3.packages.${pkgs.stdenv.hostPlatform.system}.xdg-desktop-portal-hyprland
-    else
-      ncInputs.hyprland.packages.${pkgs.stdenv.hostPlatform.system}.xdg-desktop-portal-hyprland;
-
-  # Settings only valid for the pinned version (v0.53.3).
-  pinnedSettings = {
-    misc = {
-      vfr = true;
+  # The flake input pins the release; fetching it the way nixpkgs does keeps the
+  # build identical to nixpkgs' (cached) while both name the same version.
+  hyprlandPackage = pkgs.hyprland.overrideAttrs {
+    src = pkgs.fetchFromGitHub {
+      owner = "hyprwm";
+      repo = "hyprland";
+      inherit (ncInputs.hyprland) rev;
+      hash = ncInputs.hyprland.narHash;
     };
   };
-
-  # Settings only valid for the latest version.
-  latestSettings = {
-  };
-
-  versionSettings = if config.mine.hyprland.pinned then pinnedSettings else latestSettings;
+  hyprlandPortalPackage = pkgs.xdg-desktop-portal-hyprland;
   userHome = "/${config.variables.homePrefix}/${config.variables.username}";
 
   tools = pkgs.stdenv.mkDerivation {
@@ -53,10 +36,38 @@ in
 {
   options = {
     mine.hyprland.enable = lib.mkEnableOption "enable hyprland";
-    mine.hyprland.pinned = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Use the pinned hyprland version (v0.53.3) instead of the latest.";
+    mine.hyprland.textConsoles = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [
+        "tty3"
+        "tty4"
+      ];
+      description = "Virtual terminals that always run a text login, as a fallback when the graphical session fails.";
+    };
+    mine.hyprland.greeterOutput = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.submodule {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              example = "HDMI-A-1";
+              description = "Connector name (`ls /sys/class/drm`).";
+            };
+            mode = lib.mkOption {
+              type = lib.types.str;
+              example = "3840x2160@60";
+              description = "Mode, matching the Hyprland monitor line.";
+            };
+            scale = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 1;
+              description = "Integer scale, matching the Hyprland monitor line.";
+            };
+          };
+        }
+      );
+      default = null;
+      description = "Output mode of the SDDM greeter (Weston); null keeps Weston's default.";
     };
     mine.hyprland.noctalia.extraPlugins = lib.mkOption {
       type = lib.types.attrsOf lib.types.path;
@@ -97,6 +108,8 @@ in
 
   config = lib.mkIf config.mine.hyprland.enable {
     mine.hyprland.package = hyprlandPackage;
+
+    systemd.targets.getty.wants = map (tty: "getty@${tty}.service") config.mine.hyprland.textConsoles;
     environment.systemPackages = with pkgs; [
       (import ./scripts/launcher.nix { inherit lib pkgs; })
 
@@ -298,7 +311,7 @@ in
           enable = false;
           variables = [ "--all" ];
         };
-        settings = lib.recursiveUpdate commonSettings versionSettings;
+        settings = commonSettings;
       };
 
     };

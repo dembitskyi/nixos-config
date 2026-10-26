@@ -16,8 +16,13 @@
     nixpkgs-patcher.url = "github:gepbird/nixpkgs-patcher";
     nix-colors.url = "github:misterio77/nix-colors";
 
-    hyprland.url = "git+https://github.com/hyprwm/Hyprland?submodules=1&rev=b65714e3b8e123fb2febd507905d25fa6abd0400";
-    hyprland-v0_53_3.url = "github:hyprwm/Hyprland/dd220efe7b1e292415bd0ea7161f63df9c95bfd3";
+    # Hyprland source, pinned to the version nixos-unstable ships. It is built
+    # with nixpkgs' recipe, so it links the system's glibc and mesa and comes
+    # from cache.nixos.org while both versions agree.
+    hyprland = {
+      url = "github:hyprwm/Hyprland/v0.56.2";
+      flake = false;
+    };
 
     catppuccin-sioyek = {
       url = "github:catppuccin/sioyek";
