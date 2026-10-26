@@ -5,7 +5,7 @@
   ...
 }:
 let
-  output = config.mine.hyprland.greeterOutput;
+  output = config.mine.hyprland.mainOutput;
   westonConfig = ''
     [keyboard]
     keymap_layout=us

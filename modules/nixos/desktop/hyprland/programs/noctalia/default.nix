@@ -10,8 +10,59 @@ let
 
   plugins = {
     "nixos/corner-alert" = ./plugins/corner-alert;
+    "nixos/lock-header" = ./plugins/lock-header;
   }
   // cfg.extraPlugins;
+
+  # Lock screen in the v4 layout: greeting card on top, cards stacked right above the
+  # login box, sizes in logical px of the main output (1920x1080 without one).
+  output = config.mine.hyprland.mainOutput;
+  screen =
+    if output == null then
+      {
+        width = 1920;
+        height = 1080;
+      }
+    else
+      let
+        size = map lib.toInt (lib.splitString "x" (lib.head (lib.splitString "@" output.mode)));
+      in
+      {
+        width = lib.elemAt size 0 / output.scale;
+        height = lib.elemAt size 1 / output.scale;
+      };
+  centerX = screen.width / 2.0;
+  onOutput = lib.optionalAttrs (output != null) { output = output.name; };
+  cardScale = 1.1;
+  cardGap = 9;
+  cardWidth = lib.foldl' (
+    w: card: lib.max w (builtins.ceil (cardScale * card.width))
+  ) 0 cfg.lockCards;
+  login = {
+    width = if cfg.lockCards == [ ] then 860 else cardWidth;
+    height = 148;
+    bottom = screen.height - 162;
+  };
+  # Bottom-up from the login box, each card one gap above the previous one.
+  stack =
+    lib.foldl'
+      (acc: card: {
+        bottom = acc.bottom - cardScale * card.height - cardGap;
+        widgets = acc.widgets // {
+          ${card.name} = onOutput // {
+            inherit (card) type settings;
+            cx = centerX;
+            cy = acc.bottom - cardScale * card.height / 2.0;
+            box_width = builtins.ceil (cardScale * card.width);
+            box_height = builtins.ceil (cardScale * card.height);
+          };
+        };
+      })
+      {
+        bottom = login.bottom - login.height - cardGap;
+        widgets = { };
+      }
+      (lib.reverseList cfg.lockCards);
 
   pluginDir = pkgs.runCommand "noctalia-plugins" { } ''
     mkdir $out
@@ -128,6 +179,40 @@ in
           ];
 
           desktop_widgets.enabled = false;
+
+          lockscreen = {
+            blur_intensity = 0.0;
+            tint_intensity = 0.4;
+            transition = [ ];
+          };
+
+          lockscreen_widgets = {
+            enabled = true;
+            widget = {
+              header = onOutput // {
+                type = "nixos/lock-header:card";
+                cx = centerX;
+                cy = 161.0;
+                settings.background = false;
+              };
+            }
+            // lib.optionalAttrs (output != null) {
+              "lockscreen-login-box@${output.name}" = {
+                type = "login_box";
+                output = output.name;
+                cx = centerX;
+                cy = login.bottom - login.height / 2.0;
+                box_width = login.width;
+                settings = {
+                  show_media = false;
+                  show_session_buttons = false;
+                  show_unlock_hint = false;
+                  background_radius = 4.0;
+                };
+              };
+            }
+            // stack.widgets;
+          };
 
           notification = {
             layer = "overlay";

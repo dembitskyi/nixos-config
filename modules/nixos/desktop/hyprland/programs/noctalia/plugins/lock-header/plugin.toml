@@ -1,0 +1,14 @@
+id = "nixos/lock-header"
+name = "Lock Header"
+version = "1.0.0"
+plugin_api = 32
+author = "nixos"
+license = "MIT"
+dependencies = []
+icon = "user-circle"
+description = "Lock-screen greeting card: avatar, welcome line, date and a clock with a seconds ring."
+tags = ["lockscreen", "clock"]
+
+[[desktop_widget]]
+id = "card"
+entry = "header.luau"

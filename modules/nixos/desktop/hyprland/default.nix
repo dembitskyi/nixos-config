@@ -31,20 +31,57 @@ let
     '';
   };
 
-  commonSettings = import ./settings.nix { inherit lib pkgs tools; };
+  commonSettings = import ./settings.nix { inherit lib tools; };
+
+  lua = lib.generators.toLua { };
+  startHook = {
+    _args = [
+      "hyprland.start"
+      (lib.generators.mkLuaInline (
+        "function()\n"
+        + lib.concatMapStrings (
+          app:
+          "  hl.exec_cmd(${lua app.command}"
+          + lib.optionalString (app.workspace != null) ", ${lua { inherit (app) workspace; }}"
+          + ")\n"
+        ) config.mine.hyprland.autostart
+        + "end"
+      ))
+    ];
+  };
 in
 {
   options = {
     mine.hyprland.enable = lib.mkEnableOption "enable hyprland";
+    mine.hyprland.autostart = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            command = lib.mkOption {
+              type = lib.types.str;
+              description = "Shell command run when Hyprland starts.";
+            };
+            workspace = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "1 silent";
+              description = "Workspace rule for the windows it opens.";
+            };
+          };
+        }
+      );
+      default = [ ];
+      description = "Commands Hyprland runs at start, in order.";
+    };
     mine.hyprland.textConsoles = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
         "tty3"
         "tty4"
       ];
-      description = "Virtual terminals that always run a text login, as a fallback when the graphical session fails.";
+      description = "Virtual terminals that always run a text login, as a fallback when the graphical session fails; other VTs get none (tty1 is the greeter, the session takes tty2).";
     };
-    mine.hyprland.greeterOutput = lib.mkOption {
+    mine.hyprland.mainOutput = lib.mkOption {
       type = lib.types.nullOr (
         lib.types.submodule {
           options = {
@@ -67,7 +104,7 @@ in
         }
       );
       default = null;
-      description = "Output mode of the SDDM greeter (Weston); null keeps Weston's default.";
+      description = "The main monitor, matching its Hyprland monitor line: used by the SDDM greeter (Weston) and to lay out the lock screen; null keeps the defaults.";
     };
     mine.hyprland.noctalia.extraPlugins = lib.mkOption {
       type = lib.types.attrsOf lib.types.path;
@@ -92,6 +129,37 @@ in
       default = [ ];
       description = "Extra Noctalia bar widgets, in order, added to the bar's end section after the keyboard layout.";
     };
+    mine.hyprland.noctalia.lockCards = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.str;
+              description = "Lock-screen widget name.";
+            };
+            type = lib.mkOption {
+              type = lib.types.str;
+              description = "Widget type, e.g. a plugin's `author/plugin:entry`.";
+            };
+            width = lib.mkOption {
+              type = lib.types.number;
+              description = "Natural width in logical px.";
+            };
+            height = lib.mkOption {
+              type = lib.types.number;
+              description = "Natural height in logical px.";
+            };
+            settings = lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              default = { };
+              description = "The widget's settings.";
+            };
+          };
+        }
+      );
+      default = [ ];
+      description = "Lock-screen cards, top to bottom, stacked directly above the login box.";
+    };
     mine.hyprland.package = lib.mkOption {
       type = lib.types.package;
       readOnly = true;
@@ -109,7 +177,20 @@ in
   config = lib.mkIf config.mine.hyprland.enable {
     mine.hyprland.package = hyprlandPackage;
 
+    mine.hyprland.autostart = [
+      { command = "nm-applet --indicator"; }
+      { command = "systemctl --user start hyprpolkitagent"; }
+      { command = "${lib.getExe' pkgs.wl-clipboard "wl-paste"} --type text --watch cliphist store"; }
+      { command = "${lib.getExe' pkgs.wl-clipboard "wl-paste"} --type image --watch cliphist store"; }
+      { command = "rm '$XDG_CACHE_HOME/cliphist/db'"; }
+    ];
+
     systemd.targets.getty.wants = map (tty: "getty@${tty}.service") config.mine.hyprland.textConsoles;
+    # No on-demand gettys, so the session always lands on the first free VT after the greeter's.
+    services.logind.settings.Login = {
+      NAutoVTs = 0;
+      ReserveVT = 0;
+    };
     environment.systemPackages = with pkgs; [
       (import ./scripts/launcher.nix { inherit lib pkgs; })
 
@@ -302,8 +383,14 @@ in
 
       wayland.windowManager.hyprland = {
         enable = true;
-        # Preserve pre-26.05 HM default; new default is "lua".
-        configType = "hyprlang";
+        configType = "lua";
+        # Curves before the animations that use them; env and monitors before the rest.
+        importantPrefixes = [
+          "env"
+          "curve"
+          "config"
+          "monitor"
+        ];
         package = hyprlandPackage;
         portalPackage = hyprlandPortalPackage;
         plugins = [ ];
@@ -311,7 +398,9 @@ in
           enable = false;
           variables = [ "--all" ];
         };
-        settings = commonSettings;
+        settings = commonSettings // {
+          on = startHook;
+        };
       };
 
     };

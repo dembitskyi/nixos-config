@@ -8,6 +8,19 @@ let
   cfg = config.mine.trilium;
   aiCfg = cfg.ai;
 
+  # The release's bundled node, patched by autoPatchelf, segfaults in glibc
+  # 2.44's loader; run it on nixpkgs' node of the same major (same addon ABI).
+  node = pkgs.nodejs_24;
+  trilium = pkgs.trilium-server.overrideAttrs (old: {
+    postInstall = (old.postInstall or "") + ''
+      grep -qa "release/v${lib.versions.major node.version}\." "$out/share/trilium-server/node/bin/node"
+      rm -r "$out/share/trilium-server/node" "$out/bin/trilium-server"
+      makeWrapper ${lib.getExe node} "$out/bin/trilium-server" \
+        --chdir "$out/share/trilium-server" \
+        --add-flags main.mjs
+    '';
+  });
+
   # Trilium routes OpenAI-compatible backends (vLLM, llama.cpp-server,
   # LiteLLM) through an OpenAI-protocol provider with a custom base URL.
   # The settings live as rows in the `options` table; ETAPI exposes no
@@ -129,7 +142,7 @@ in
     (lib.mkIf cfg.enable {
       services.trilium-server = {
         enable = true;
-        package = pkgs.trilium-next-server;
+        package = trilium;
         host = "127.0.0.1";
         port = config.variables.trilium-port;
         dataDir = "/persistent/var/lib/trilium";

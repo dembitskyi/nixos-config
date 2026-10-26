@@ -6,7 +6,7 @@ TYPE=$1
 windowInfo=$(hyprctl activewindow -j)
 if echo "$windowInfo" | jq -e '.initialClass == "chromium-browser"' >/dev/null; then
   if [ "$TYPE" == "mouse_down" ]; then
-    hyprctl dispatch workspace e+1
+    hyprctl dispatch 'hl.dsp.focus({ workspace = "e+1" })'
   fi
 elif echo "$windowInfo" | jq -e '.initialClass == "org.qutebrowser.qutebrowser"' >/dev/null; then
   if [ "$TYPE" == "mouse_left" ]; then

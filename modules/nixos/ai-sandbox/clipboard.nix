@@ -77,7 +77,15 @@ in
     ];
 
     home-manager.users.${config.variables.username} = {
-      wayland.windowManager.hyprland.settings.bindn = [ "CTRL, V, exec, ${lib.getExe arm}" ];
+      wayland.windowManager.hyprland.settings.bind = [
+        {
+          _args = [
+            "CTRL + V"
+            (lib.generators.mkLuaInline "hl.dsp.exec_cmd(${lib.generators.toLua { } (lib.getExe arm)})")
+            { non_consuming = true; }
+          ];
+        }
+      ];
 
       systemd.user.sockets.ai-sandbox-clipboard = {
         Unit.Description = "AI Sandbox clipboard image bridge";

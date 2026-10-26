@@ -1,324 +1,406 @@
-# Common hyprland settings shared across all versions.
+# Common hyprland settings, rendered by home-manager as hyprland.lua.
 {
   lib,
-  pkgs,
   tools,
 }:
 let
-  inherit (lib) getExe';
+  inline = lib.generators.mkLuaInline;
+  lua = lib.generators.toLua { };
+
+  mod = "SUPER";
+  bind = keys: dispatcher: {
+    _args = [
+      keys
+      (inline dispatcher)
+    ];
+  };
+  exec = keys: command: bind keys "hl.dsp.exec_cmd(${lua command})";
+  mouseBind = keys: dispatcher: {
+    _args = [
+      keys
+      (inline dispatcher)
+      { mouse = true; }
+    ];
+  };
+  env = name: value: {
+    _args = [
+      name
+      value
+    ];
+  };
+  curve = name: x1: y1: x2: y2: {
+    _args = [
+      name
+      {
+        type = "bezier";
+        points = [
+          [
+            x1
+            y1
+          ]
+          [
+            x2
+            y2
+          ]
+        ];
+      }
+    ];
+  };
+  gradient = from: to: {
+    colors = [
+      from
+      to
+    ];
+    angle = 45;
+  };
+  activeBorder = gradient "rgba(ca9ee6ff)" "rgba(f2d5cfff)";
+  inactiveBorder = gradient "rgba(b4befecc)" "rgba(6c7086cc)";
+
+  namespaces = list: "^(${lib.concatStringsSep "|" list})$";
+  lowOpacity = [
+    "bar"
+    "calendar"
+    "notifications"
+    "system-menu"
+    "noctalia-bar-.+"
+    "noctalia-notification"
+    "noctalia-osd"
+  ];
+  highOpacity = [
+    "vicinae"
+    "osd"
+    "logout_dialog"
+    "noctalia-panel"
+    "noctalia-attached-panel"
+  ];
+
+  dell = "desc:Dell Inc. DELL U2720Q 9S4ZS83";
+  mouseHandler = "${./scripts/DynamicMouseEventHandler.sh}";
+  spotify = "playerctl --player=spotify,%any";
 in
 {
-  "$mod" = "SUPER";
   env = [
-    "XDG_CURRENT_DESKTOP,Hyprland"
-    "XDG_SESSION_DESKTOP,Hyprland"
-    "XDG_SESSION_TYPE,wayland"
-    "GDK_BACKEND,wayland,x11,*"
-    "NIXOS_OZONE_WL,1"
-    "ELECTRON_OZONE_PLATFORM_HINT,wayland"
-    "MOZ_ENABLE_WAYLAND,1"
-    "OZONE_PLATFORM,wayland"
-    "EGL_PLATFORM,wayland"
-    "CLUTTER_BACKEND,wayland"
-    "SDL_VIDEODRIVER,wayland"
-    "QT_QPA_PLATFORM,wayland"
-    "QT_WAYLAND_DISABLE_WINDOWDECORATION,1"
-    "QT_QPA_PLATFORMTHEME,gtk2"
-    "QT_AUTO_SCREEN_SCALE_FACTOR,1"
-    "QT_ENABLE_HIGHDPI_SCALING,1"
-    "WLR_RENDERER_ALLOW_SOFTWARE,1"
-    "NIXPKGS_ALLOW_UNFREE,1"
+    (env "XDG_CURRENT_DESKTOP" "Hyprland")
+    (env "XDG_SESSION_DESKTOP" "Hyprland")
+    (env "XDG_SESSION_TYPE" "wayland")
+    (env "GDK_BACKEND" "wayland,x11,*")
+    (env "NIXOS_OZONE_WL" "1")
+    (env "ELECTRON_OZONE_PLATFORM_HINT" "wayland")
+    (env "MOZ_ENABLE_WAYLAND" "1")
+    (env "OZONE_PLATFORM" "wayland")
+    (env "EGL_PLATFORM" "wayland")
+    (env "CLUTTER_BACKEND" "wayland")
+    (env "SDL_VIDEODRIVER" "wayland")
+    (env "QT_QPA_PLATFORM" "wayland")
+    (env "QT_WAYLAND_DISABLE_WINDOWDECORATION" "1")
+    (env "QT_QPA_PLATFORMTHEME" "gtk2")
+    (env "QT_AUTO_SCREEN_SCALE_FACTOR" "1")
+    (env "QT_ENABLE_HIGHDPI_SCALING" "1")
+    (env "WLR_RENDERER_ALLOW_SOFTWARE" "1")
+    (env "NIXPKGS_ALLOW_UNFREE" "1")
   ];
 
-  exec-once = [
-    "nm-applet --indicator"
-    "systemctl --user start hyprpolkitagent"
-    "${getExe' pkgs.wl-clipboard "wl-paste"} --type text --watch cliphist store"
-    "${getExe' pkgs.wl-clipboard "wl-paste"} --type image --watch cliphist store"
-    "rm '$XDG_CACHE_HOME/cliphist/db'"
+  config = {
+    input = {
+      kb_layout = "us,ua";
+      kb_options = "grp:alt_shift_toggle";
+      repeat_delay = 275;
+      repeat_rate = 35;
+      numlock_by_default = true;
+      follow_mouse = 1;
+      touchpad.natural_scroll = false;
+      tablet.output = "current";
+      sensitivity = 0;
+      force_no_accel = true;
+    };
+
+    general = {
+      gaps_in = 4;
+      gaps_out = 9;
+      border_size = 2;
+      col = {
+        active_border = activeBorder;
+        inactive_border = inactiveBorder;
+      };
+      resize_on_border = true;
+      layout = "dwindle";
+    };
+
+    decoration = {
+      rounding = 10;
+      dim_special = 0.3;
+      shadow = {
+        enabled = true;
+        range = 4;
+        render_power = 3;
+        color = "rgba(1a1a1aee)";
+      };
+      blur = {
+        enabled = true;
+        special = true;
+        size = 6;
+        passes = 2;
+        new_optimizations = true;
+        ignore_opacity = true;
+        xray = false;
+        vibrancy = 0.1696;
+      };
+    };
+
+    group.col = {
+      border_active = activeBorder;
+      border_inactive = inactiveBorder;
+      border_locked_active = activeBorder;
+      border_locked_inactive = inactiveBorder;
+    };
+
+    animations.enabled = true;
+    render.direct_scanout = 0;
+
+    ecosystem = {
+      no_update_news = true;
+      no_donation_nag = true;
+    };
+
+    misc = {
+      disable_hyprland_logo = true;
+      mouse_move_focuses_monitor = true;
+      swallow_regex = "^(Alacritty|kitty)$";
+      enable_swallow = true;
+      vrr = 2;
+    };
+
+    xwayland.force_zero_scaling = false;
+    dwindle.preserve_split = true;
+
+    master = {
+      new_status = "master";
+      new_on_top = true;
+      mfact = 0.5;
+    };
+  };
+
+  curve = [
+    (curve "linear" 0 0 1 1)
+    (curve "md3_standard" 0.2 0 0 1)
+    (curve "md3_decel" 0.05 0.7 0.1 1)
+    (curve "md3_accel" 0.3 0 0.8 0.15)
+    (curve "overshot" 0.05 0.9 0.1 1.1)
+    (curve "crazyshot" 0.1 1.5 0.76 0.92)
+    (curve "hyprnostretch" 0.05 0.9 0.1 1.0)
+    (curve "fluent_decel" 0.1 1 0 1)
+    (curve "easeInOutCirc" 0.85 0 0.15 1)
+    (curve "easeOutCirc" 0 0.55 0.45 1)
+    (curve "easeOutExpo" 0.16 1 0.3 1)
   ];
 
-  input = {
-    kb_layout = "us,ua";
-    kb_options = "grp:alt_shift_toggle";
-
-    repeat_delay = 275;
-    repeat_rate = 35;
-    numlock_by_default = true;
-
-    follow_mouse = 1;
-
-    touchpad.natural_scroll = false;
-
-    tablet.output = "current";
-
-    sensitivity = 0;
-    force_no_accel = true;
-  };
-
-  general = {
-    gaps_in = 4;
-    gaps_out = 9;
-    border_size = 2;
-    "col.active_border" = "rgba(ca9ee6ff) rgba(f2d5cfff) 45deg";
-    "col.inactive_border" = "rgba(b4befecc) rgba(6c7086cc) 45deg";
-    resize_on_border = true;
-    layout = "dwindle";
-  };
-
-  decoration = {
-    rounding = 10;
-    dim_special = 0.3;
-
-    shadow = {
+  animation = [
+    {
+      leaf = "windows";
       enabled = true;
-      range = 4;
-      render_power = 3;
-      color = "rgba(1a1a1aee)";
-    };
-    blur = {
+      speed = 3;
+      bezier = "md3_decel";
+      style = "popin 60%";
+    }
+    {
+      leaf = "border";
       enabled = true;
-      special = true;
-      size = 6;
-      passes = 2;
-      new_optimizations = true;
-      ignore_opacity = true;
-      xray = false;
-      vibrancy = 0.1696;
-    };
+      speed = 10;
+      bezier = "default";
+    }
+    {
+      leaf = "fade";
+      enabled = true;
+      speed = 2.5;
+      bezier = "md3_decel";
+    }
+    {
+      leaf = "workspaces";
+      enabled = true;
+      speed = 3.5;
+      bezier = "easeOutExpo";
+      style = "slide";
+    }
+    {
+      leaf = "specialWorkspace";
+      enabled = true;
+      speed = 3;
+      bezier = "md3_decel";
+      style = "slidevert";
+    }
+  ];
+
+  gesture = {
+    fingers = 3;
+    direction = "horizontal";
+    action = "workspace";
   };
 
-  group = {
-    "col.border_active" = "rgba(ca9ee6ff) rgba(f2d5cfff) 45deg";
-    "col.border_inactive" = "rgba(b4befecc) rgba(6c7086cc) 45deg";
-    "col.border_locked_active" = "rgba(ca9ee6ff) rgba(f2d5cfff) 45deg";
-    "col.border_locked_inactive" = "rgba(b4befecc) rgba(6c7086cc) 45deg";
-  };
-
-  debug = {
-    #disable_logs = false;
-  };
-
-  layerrule =
-    let
-      toRegex =
-        list:
-        let
-          elements = lib.concatStringsSep "|" list;
-        in
-        "match:namespace ^(${elements})$";
-
-      lowopacity = [
+  layer_rule = [
+    {
+      match.namespace = namespaces (lowOpacity ++ highOpacity);
+      blur = true;
+    }
+    {
+      match.namespace = "^noctalia-.*$";
+      blur_popups = true;
+    }
+    {
+      match.namespace = namespaces [
         "bar"
-        "calendar"
-        "notifications"
-        "system-menu"
         "noctalia-bar-.+"
-        "noctalia-notification"
-        "noctalia-osd"
       ];
-
-      highopacity = [
-        "vicinae"
-        "osd"
-        "logout_dialog"
-        "noctalia-panel"
-        "noctalia-attached-panel"
+      xray = true;
+    }
+    {
+      match.namespace = namespaces (highOpacity ++ [ "music" ]);
+      ignore_alpha = 0.5;
+    }
+    {
+      match.namespace = namespaces lowOpacity;
+      ignore_alpha = 0.2;
+    }
+    {
+      match.namespace = namespaces [
+        "notifications"
+        "noctalia-(bar-.+|notification|dock|panel|attached-panel|osd|window-switcher)"
       ];
-
-      blurred = lib.concatLists [
-        lowopacity
-        highopacity
-      ];
-    in
-    [
-      "${toRegex blurred}, blur true"
-      "match:namespace ^noctalia-.*$, blur_popups true"
-      "${
-        toRegex [
-          "bar"
-          "noctalia-bar-.+"
-        ]
-      }, xray true"
-      "${toRegex (highopacity ++ [ "music" ])}, ignore_alpha 0.5"
-      "${toRegex lowopacity}, ignore_alpha 0.2"
-      "${
-        toRegex [
-          "notifications"
-          "noctalia-(bar-.+|notification|dock|panel|attached-panel|osd|window-switcher)"
-        ]
-      }, no_anim true"
-    ];
-
-  animations = {
-    enabled = true;
-    bezier = [
-      "linear, 0, 0, 1, 1"
-      "md3_standard, 0.2, 0, 0, 1"
-      "md3_decel, 0.05, 0.7, 0.1, 1"
-      "md3_accel, 0.3, 0, 0.8, 0.15"
-      "overshot, 0.05, 0.9, 0.1, 1.1"
-      "crazyshot, 0.1, 1.5, 0.76, 0.92"
-      "hyprnostretch, 0.05, 0.9, 0.1, 1.0"
-      "fluent_decel, 0.1, 1, 0, 1"
-      "easeInOutCirc, 0.85, 0, 0.15, 1"
-      "easeOutCirc, 0, 0.55, 0.45, 1"
-      "easeOutExpo, 0.16, 1, 0.3, 1"
-    ];
-    animation = [
-      "windows, 1, 3, md3_decel, popin 60%"
-      "border, 1, 10, default"
-      "fade, 1, 2.5, md3_decel"
-      "workspaces, 1, 3.5, easeOutExpo, slide"
-      "specialWorkspace, 1, 3, md3_decel, slidevert"
-    ];
-  };
-
-  render = {
-    direct_scanout = 0;
-  };
-
-  ecosystem = {
-    no_update_news = true;
-    no_donation_nag = true;
-  };
-
-  misc = {
-    disable_hyprland_logo = true;
-    mouse_move_focuses_monitor = true;
-    swallow_regex = "^(Alacritty|kitty)$";
-    enable_swallow = true;
-    vrr = 2;
-  };
-
-  xwayland.force_zero_scaling = false;
-
-  gesture = [
-    "3, horizontal, workspace"
+      no_anim = true;
+    }
   ];
 
-  dwindle = {
-    preserve_split = true;
-  };
-
-  master = {
-    new_status = "master";
-    new_on_top = true;
-    mfact = 0.5;
-  };
-
-  windowrule = [
-    "match:title ^(Media viewer)$, float on"
-
-    "match:class ^(org.gnome.Calculator)$, float on"
-    "match:class ^(qalculate-gtk)$, float on"
-    "match:class ^(org.gnome.eog)$, float on"
-    "match:class ^(org.gnome.FileRoller)$, float on"
-    "match:class ^(org.gnome.Nautilus)$, float on"
-    "match:class ^(org.gnome.Calculator)$, float on"
-    "match:class ^(org.keepassxc.KeePassXC)$, float on"
-    "match:class ^(blueman-manager)$, float on"
-    "match:class ^(pavucontrol)$, float on"
-    "match:class ^(nm-connection-editor)$, float on"
-    "match:class ^(mpv)$, float on"
-
-    # Place the AI browser on a hidden special workspace so it stays out of
-    # the way until toggled with ALT+O. render_unfocused keeps its hidden
-    # windows presenting frames, which CDP screenshots wait for.
-    "match:class ^(ai-browser)$, workspace special:ai-browser silent, render_unfocused on"
-  ];
-
-  bindm = [
-    "$mod, mouse:272, movewindow"
-    "$mod, mouse:273, resizewindow"
-  ];
+  window_rule =
+    map
+      (class: {
+        match.class = "^(${class})$";
+        float = true;
+      })
+      [
+        "org.gnome.Calculator"
+        "qalculate-gtk"
+        "org.gnome.eog"
+        "org.gnome.FileRoller"
+        "org.gnome.Nautilus"
+        "org.keepassxc.KeePassXC"
+        "blueman-manager"
+        "pavucontrol"
+        "nm-connection-editor"
+        "mpv"
+      ]
+    ++ [
+      {
+        match.title = "^(Media viewer)$";
+        float = true;
+      }
+      # Place the AI browser on a hidden special workspace so it stays out of
+      # the way until toggled with ALT+O. render_unfocused keeps its hidden
+      # windows presenting frames, which CDP screenshots wait for.
+      {
+        match.class = "^(ai-browser)$";
+        workspace = "special:ai-browser silent";
+        render_unfocused = true;
+      }
+    ];
 
   bind = [
-    "$mod, Q, exec, hyprctl dispatch killactive"
-    "$mod SHIFT, Q, exec, hyprctl dispatch forcekillactive"
+    (mouseBind "${mod} + mouse:272" "hl.dsp.window.drag()")
+    (mouseBind "${mod} + mouse:273" "hl.dsp.window.resize()")
 
-    "$mod, S, exec, grim -s 1 -g \"\$(slurp)\" - | tee ~/Pictures/Screenshots/$(date +%s).png | wl-copy"
+    (bind "${mod} + Q" "hl.dsp.window.close()")
+    (bind "${mod} + SHIFT + Q" "hl.dsp.window.kill()")
 
-    "$mod, F, exec, firefox"
-    "$mod, B, exec, qutebrowser"
-    "$mod, T, exec, alacritty"
-    "$mod, h, movefocus, l"
-    "$mod, l, movefocus, r"
-    "$mod, k, movefocus, u"
-    "$mod, j, movefocus, d"
+    (exec "${mod} + S" "grim -s 1 -g \"$(slurp)\" - | tee ~/Pictures/Screenshots/$(date +%s).png | wl-copy")
 
-    "ALT, TAB, cyclenext"
-    "ALT, F, togglefloating"
-    "ALT, N, movetoworkspacesilent, special:minimized"
-    "ALT, R, movetoworkspace, e+0"
+    (exec "${mod} + F" "firefox")
+    (exec "${mod} + B" "qutebrowser")
+    (exec "${mod} + T" "alacritty")
+    (bind "${mod} + h" "hl.dsp.focus({ direction = \"left\" })")
+    (bind "${mod} + l" "hl.dsp.focus({ direction = \"right\" })")
+    (bind "${mod} + k" "hl.dsp.focus({ direction = \"up\" })")
+    (bind "${mod} + j" "hl.dsp.focus({ direction = \"down\" })")
 
-    "ALT, S, togglespecialworkspace, minimized"
-    "ALT, O, togglespecialworkspace, ai-browser"
+    (bind "ALT + TAB" "hl.dsp.window.cycle_next()")
+    (bind "ALT + F" "hl.dsp.window.float({ action = \"toggle\" })")
+    (bind "ALT + N" "hl.dsp.window.move({ workspace = \"special:minimized\", follow = false })")
+    (bind "ALT + R" "hl.dsp.window.move({ workspace = \"e+0\" })")
 
-    "ALT, return, fullscreen"
-    "$mod, M, fullscreen, 1"
-    #"$mod, z, exec, wl-freeze -a" # Freeze/unfreeze focused window (SIGSTOP/SIGCONT)
+    (bind "ALT + S" "hl.dsp.workspace.toggle_special(\"minimized\")")
+    (bind "ALT + O" "hl.dsp.workspace.toggle_special(\"ai-browser\")")
 
-    ", mouse:275, exec, ${./scripts/DynamicMouseEventHandler.sh} mouse_up"
-    ", mouse:276, exec, ${./scripts/DynamicMouseEventHandler.sh} mouse_down"
-    ", mouse:277, exec, ${./scripts/DynamicMouseEventHandler.sh} mouse_press_down"
-    ", mouse_left, exec, ${./scripts/DynamicMouseEventHandler.sh} mouse_left"
-    ", mouse_right, exec, ${./scripts/DynamicMouseEventHandler.sh} mouse_right"
-    ",XF86AudioLowerVolume,exec,pamixer -d 1"
-    ",XF86AudioRaiseVolume,exec,pamixer -i 1"
-    ",XF86AudioMute,exec,pamixer -t"
-    ",XF86AudioPlay,exec,playerctl --player=spotify,%any play-pause"
-    ",XF86AudioPause,exec,playerctl --player=spotify,%any play-pause"
-    ",xf86AudioNext,exec,playerctl --player=spotify,%any next"
-    ",xf86AudioPrev,exec,playerctl --player=spotify,%any previous"
+    (bind "ALT + return" "hl.dsp.window.fullscreen()")
+    (bind "${mod} + M" "hl.dsp.window.fullscreen({ mode = \"maximized\" })")
 
-    ",F11, exec, pamixer -t"
-    ",F9, exec, playerctl --player=spotify,%any play-pause"
-    ",F10,exec,playerctl --player=spotify,%any next"
-    ",F8,exec,playerctl --player=spotify,%any previous"
-    ",F12,exec,pamixer -d 1"
-    ",F13,exec,pamixer -i 1"
+    (exec "mouse:275" "${mouseHandler} mouse_up")
+    (exec "mouse:276" "${mouseHandler} mouse_down")
+    (exec "mouse:277" "${mouseHandler} mouse_press_down")
+    (exec "mouse_left" "${mouseHandler} mouse_left")
+    (exec "mouse_right" "${mouseHandler} mouse_right")
+    (exec "XF86AudioLowerVolume" "pamixer -d 1")
+    (exec "XF86AudioRaiseVolume" "pamixer -i 1")
+    (exec "XF86AudioMute" "pamixer -t")
+    (exec "XF86AudioPlay" "${spotify} play-pause")
+    (exec "XF86AudioPause" "${spotify} play-pause")
+    (exec "XF86AudioNext" "${spotify} next")
+    (exec "XF86AudioPrev" "${spotify} previous")
 
-    "CTRL ALT, L, exec, noctalia msg session lock"
+    (exec "F11" "pamixer -t")
+    (exec "F9" "${spotify} play-pause")
+    (exec "F10" "${spotify} next")
+    (exec "F8" "${spotify} previous")
+    (exec "F12" "pamixer -d 1")
+    (exec "F13" "pamixer -i 1")
 
-    "$mod, A, exec, launcher drun"
-    "$mod CTRL, A, exec, launcher drun-sudo"
-    "$mod, R, exec, launcher run"
-    "$mod CTRL, R, exec, launcher run-sudo"
+    (exec "CTRL + ALT + L" "noctalia msg session lock")
 
-    "$mod, V, exec, ${tools}/sbin/ClipManager.sh"
-    "CTRL SUPER, C, exec, ${./scripts/clip-text-refiner}"
+    (exec "${mod} + A" "launcher drun")
+    (exec "${mod} + CTRL + A" "launcher drun-sudo")
+    (exec "${mod} + R" "launcher run")
+    (exec "${mod} + CTRL + R" "launcher run-sudo")
 
-    "$mod, N, exec, noctalia msg panel-toggle control-center notifications"
-    "$mod SHIFT, N, exec, noctalia msg notification-clear-history"
-    "$mod, C, exec, noctalia msg panel-toggle control-center calendar"
+    (exec "${mod} + V" "${tools}/sbin/ClipManager.sh")
+    (exec "CTRL + SUPER + C" "${./scripts/clip-text-refiner}")
+
+    (exec "${mod} + N" "noctalia msg panel-toggle control-center notifications")
+    (exec "${mod} + SHIFT + N" "noctalia msg notification-clear-history")
+    (exec "${mod} + C" "noctalia msg panel-toggle control-center calendar")
   ]
-  ++ (builtins.concatLists (
-    builtins.genList (
-      x:
-      let
-        ws =
-          let
-            c = (x + 1) / 10;
-          in
-          toString (x + 1 - (c * 10));
-      in
-      [
-        "$mod, ${ws}, workspace, ${toString (x + 1)}"
-        "$mod SHIFT, ${ws}, movetoworkspace, ${toString (x + 1)}"
-        "$mod CTRL, ${ws}, movetoworkspacesilent, ${toString (x + 1)}"
-      ]
-    ) 10
-  ));
+  ++ lib.concatMap (
+    i:
+    let
+      key = toString (lib.mod i 10);
+      ws = toString i;
+    in
+    [
+      (bind "${mod} + ${key}" "hl.dsp.focus({ workspace = ${ws} })")
+      (bind "${mod} + SHIFT + ${key}" "hl.dsp.window.move({ workspace = ${ws} })")
+      (bind "${mod} + CTRL + ${key}" "hl.dsp.window.move({ workspace = ${ws}, follow = false })")
+    ]
+  ) (lib.range 1 10);
 
   monitor = [
-    ",preferred,auto,1"
-
-    "desc:Dell Inc. DELL U2720Q 9S4ZS83,3840x2160@60,0x0,2.0"
+    {
+      output = "";
+      mode = "preferred";
+      position = "auto";
+      scale = "1";
+    }
+    {
+      output = dell;
+      mode = "3840x2160@60";
+      position = "0x0";
+      scale = "2";
+    }
   ];
 
-  workspace = [
-    "1,monitor:desc:Dell Inc. DELL U2720Q 9S4ZS83,default:true"
-    "2,monitor:desc:Dell Inc. DELL U2720Q 9S4ZS83"
+  workspace_rule = [
+    {
+      workspace = "1";
+      monitor = dell;
+      default = true;
+    }
+    {
+      workspace = "2";
+      monitor = dell;
+    }
   ];
 }
