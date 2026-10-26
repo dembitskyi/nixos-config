@@ -62,7 +62,7 @@ local function render()
   if clock then
     table.insert(children, ui.image({ key = "clock", path = clock, width = CLOCK, height = CLOCK }))
   end
-  desktopWidget.render(ui.row({ padding = 25, gap = 36, minWidth = 500, align = "center", fill = "surface", radius = 4, border = "outline/0.2", borderWidth = 1 }, children))
+  desktopWidget.render(ui.row({ padding = 25, gap = 36, minWidth = 500, align = "center", fill = "surface", radius = 6, border = "outline/0.2", borderWidth = 1 }, children))
 end
 
 function update()

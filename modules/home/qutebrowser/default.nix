@@ -9,10 +9,18 @@
 let
   cfg = config.mine.home.qutebrowser;
 
-  basePackage = pkgs.qutebrowser.override {
-    withPdfReader = true;
-    enableWideVine = variables.qb-enableWideVine;
-  };
+  # nixpkgs builds the userscripts' module path from "$propagatedBuildInputs",
+  # which under structured attrs is only the first element; pass all of them.
+  basePackage =
+    (pkgs.qutebrowser.override {
+      withPdfReader = true;
+      enableWideVine = variables.qb-enableWideVine;
+    }).overrideAttrs
+      (old: {
+        postInstall =
+          lib.replaceStrings [ "$out $propagatedBuildInputs" ] [ "$out \${propagatedBuildInputs[*]}" ]
+            old.postInstall;
+      });
 
   qutePackage =
     if cfg.forceXWayland then

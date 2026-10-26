@@ -52,6 +52,29 @@ let
     };
   };
 
+  # A sandbox service on the host's own addresses: the sandbox's firewall refuses new connections into it, so the host
+  # listens (its end of the cable, a tunnel) and reaches the sandbox itself, which the firewall allows.
+  publish = port: {
+    socket = {
+      description = "Sandbox port ${port} on the host (${lib.concatStringsSep ", " net.publish.addresses})";
+      wantedBy = [ "sockets.target" ];
+      after = [ units.network ];
+      socketConfig = {
+        ListenStream = map (address: "${address}:${port}") net.publish.addresses;
+        # A tunnel's address may not exist yet when sockets.target starts.
+        FreeBind = true;
+      };
+    };
+    service = {
+      description = "Sandbox port ${port} on the host (proxy)";
+      serviceConfig = {
+        ExecStart = "${config.systemd.package}/lib/systemd/systemd-socket-proxyd ${net.address}:${port}";
+        DynamicUser = true;
+      };
+    };
+  };
+  publishPorts = lib.optionals (net.publish.addresses != [ ]) net.publish.ports;
+
   portCommand = pkgs.writeShellApplication {
     name = "ai-sandbox-port";
     runtimeInputs = [ pkgs.systemd ];
@@ -103,6 +126,24 @@ in
       default = [ ];
       example = [ "192.168.1.50" ];
       description = "LAN or VPN addresses (or prefixes) the sandbox may reach; other private addresses are refused.";
+    };
+
+    publish = {
+      ports = lib.mkOption {
+        type = lib.types.listOf lib.types.port;
+        default = [ ];
+        description = "Ports of services running in the sandbox that the host republishes, at the same port on each address below.";
+      };
+
+      addresses = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [
+          "10.233.0.1"
+          "10.100.0.4"
+        ];
+        description = "Host addresses the published ports listen on (the cable's host end, a tunnel's address); none publishes nothing.";
+      };
     };
 
     nameservers = lib.mkOption {
@@ -185,6 +226,11 @@ in
           (hostPort (toString port)).socket // { wantedBy = [ "sockets.target" ]; }
         )
       ) net.hostPorts
+    )
+    // lib.listToAttrs (
+      map (
+        port: lib.nameValuePair "ai-sandbox-publish-${toString port}" (publish (toString port)).socket
+      ) publishPorts
     );
     systemd.services = {
       ai-sandbox-network = {
@@ -210,6 +256,11 @@ in
       map (
         port: lib.nameValuePair "ai-sandbox-host-${toString port}" (hostPort (toString port)).service
       ) net.hostPorts
+    )
+    // lib.listToAttrs (
+      map (
+        port: lib.nameValuePair "ai-sandbox-publish-${toString port}" (publish (toString port)).service
+      ) publishPorts
     );
 
     environment.systemPackages = [ portCommand ];

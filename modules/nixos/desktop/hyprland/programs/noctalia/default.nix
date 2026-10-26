@@ -33,7 +33,7 @@ let
       };
   centerX = screen.width / 2.0;
   onOutput = lib.optionalAttrs (output != null) { output = output.name; };
-  cardScale = 1.1;
+  cardScale = 1.0;
   cardGap = 9;
   cardWidth = lib.foldl' (
     w: card: lib.max w (builtins.ceil (cardScale * card.width))
@@ -64,6 +64,31 @@ let
       }
       (lib.reverseList cfg.lockCards);
 
+  # Noctalia saves the lock-screen layout into its GUI overrides, which then
+  # mask every later layout change from config.toml; drop it at each start.
+  dropLockOverrides =
+    pkgs.writers.writePython3 "noctalia-drop-lock-overrides"
+      { libraries = [ pkgs.python3Packages.tomli-w ]; }
+      ''
+        import os
+        import tomllib
+
+        import tomli_w
+
+        home = os.path.expanduser("~")
+        state = os.environ.get("XDG_STATE_HOME") or f"{home}/.local/state"
+        path = os.path.join(state, "noctalia", "settings.toml")
+        try:
+            with open(path, "rb") as f:
+                overrides = tomllib.load(f)
+        except FileNotFoundError:
+            raise SystemExit(0)
+        if overrides.pop("lockscreen_widgets", None) is not None:
+            with open(path + ".tmp", "wb") as f:
+                tomli_w.dump(overrides, f)
+            os.replace(path + ".tmp", path)
+      '';
+
   pluginDir = pkgs.runCommand "noctalia-plugins" { } ''
     mkdir $out
     ${lib.concatStringsSep "\n" (
@@ -76,6 +101,8 @@ in
     environment.systemPackages = [ pkgs.noctalia ];
 
     home-manager.users.${config.variables.username} = {
+      systemd.user.services.noctalia.Service.ExecStartPre = "-${dropLockOverrides}";
+
       programs.noctalia = {
         enable = true;
         package = pkgs.noctalia;
@@ -84,7 +111,8 @@ in
           shell = {
             avatar_path = "${../../icons/avatars/profile.png}";
             clipboard_enabled = false;
-            corner_radius_scale = 0.2;
+            # v4 rounded panels at 0.2 but inputs at 1.0; v5 has one scale for both.
+            corner_radius_scale = 0.7;
             launch_apps_as_systemd_services = true;
             setup_wizard_enabled = false;
             shadow.direction = "down_right";
@@ -207,7 +235,12 @@ in
                   show_media = false;
                   show_session_buttons = false;
                   show_unlock_hint = false;
-                  background_radius = 4.0;
+                  show_password_reveal = false;
+                  # Floats: integer radii are ignored. 32 is the maximum, a pill at 0.7.
+                  input_radius = 32.0;
+                  background_color = "surface";
+                  background_opacity = 1.0;
+                  background_radius = 6.0;
                 };
               };
             }
