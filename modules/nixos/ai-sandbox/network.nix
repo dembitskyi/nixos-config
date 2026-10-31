@@ -18,7 +18,9 @@ let
     ${ip} netns del ai-sandbox 2>/dev/null || true
     ${ip} link del ${link} 2>/dev/null || true
     ${ip} netns add ai-sandbox
-    ${ip} link add ${link} type veth peer name eth0 netns ai-sandbox
+    ${ip} link add ${link} type veth peer name eth0 ${
+      lib.optionalString (net.macAddress != null) "address ${net.macAddress}"
+    } netns ai-sandbox
     ${ip} addr add ${net.hostAddress}/30 dev ${link}
     ${ip} -n ai-sandbox addr add ${net.address}/30 dev eth0
     ${ip} -n ai-sandbox link set lo up
@@ -165,6 +167,13 @@ in
       type = lib.types.str;
       default = "10.233.0.1";
       description = "The host's end of the cable (a /30 with the sandbox's address).";
+    };
+
+    macAddress = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "02:00:00:00:00:01";
+      description = "A fixed MAC for the sandbox's eth0; the kernel picks a random one otherwise.";
     };
   };
 
