@@ -16,25 +16,12 @@ let
 
   # Community plugins, pinned so OpenCode never updates them on its own.
   memoryPlugin = "opencode-mem@2.29.2";
-  pruningPlugin = "@tarquinen/opencode-dcp@3.2.0";
-  subagentMonitorPlugin = "opencode-subagent-magazine@1.7.4";
 
   # Local plugins must be directories: OpenCode loads `index.ts` (or
   # `server.ts`) on the server and `tui.ts` in the terminal client.
   hostPlugin = ./plugins/host;
   crewPlugin = ./plugins/crew;
   lanesPlugin = ./plugins/lanes;
-
-  # The /goal loop, pinned to a reviewed commit: keeps a session working toward
-  # a standing goal until a judge model calls it done or blocked, or one of its
-  # guards (turn budget, no tools, repetition, polling) stops it.
-  goalPlugin = pkgs.fetchFromGitHub {
-    name = "opencode-goal-plugin";
-    owner = "zignd";
-    repo = "opencode-goal-plugin";
-    rev = "3ba0c50e585f7c3d6202fc72984b73b72de03aea";
-    hash = "sha256-JPBY8mTkPKboy6xgDl8VIxjL+NwGYY5SUX1sbUAPMDg=";
-  };
 
   ruleType = lib.types.submodule {
     options = {
@@ -134,31 +121,12 @@ let
   sonnetModel = "github-copilot/claude-sonnet-5.5";
   splitModel = model: lib.splitString "/" model;
 
-  # `provider/model[#variant]` as the object plugins take.
-  modelRef =
-    ref:
-    let
-      parts = lib.splitString "#" ref;
-      path = splitModel (builtins.head parts);
-    in
-    {
-      providerID = builtins.head path;
-      id = lib.concatStringsSep "/" (lib.drop 1 path);
-    }
-    // lib.optionalAttrs (builtins.length parts > 1) { variant = builtins.elemAt parts 1; };
-
-  goalOptions = {
-    inherit (cfg.goal) maxTurns;
-  }
-  // lib.optionalAttrs (cfg.goal.judgeModel != null) { judgeModel = modelRef cfg.goal.judgeModel; };
-
   # The AI sandbox only provides the browser-use MCP server when it is enabled there.
   browserUse = cfg.mcpServers ? mcp_browseruse;
 
-  # Subagents doing dev's work get its tools, minus questions, context compression, and lanes runs.
+  # Subagents doing dev's work get its tools, minus questions and lanes runs.
   subagentTools = lib.subtractLists [
     "question"
-    "compress"
     "lanes_*"
   ] cfg.agents.dev.tools;
 
@@ -291,23 +259,10 @@ in
       defaultText = lib.literalExpression "config.mine.home.opencode.defaultModel";
       description = "Model (`provider/model`) opencode-mem uses to auto-capture memories.";
     };
-    contextPruning = lib.mkEnableOption "the Dynamic Context Pruning plugin (opencode-dcp) and dev's `compress` tool";
     maxLanes = lib.mkOption {
       type = lib.types.ints.positive;
       default = 8;
       description = "Default and maximum number of parallel lanes in a lanes run.";
-    };
-    goal = {
-      judgeModel = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = sonnetModel;
-        description = "Model (`provider/model[#variant]`) that judges after every /goal turn whether the goal is done; null uses the session's model.";
-      };
-      maxTurns = lib.mkOption {
-        type = lib.types.ints.positive;
-        default = 50;
-        description = "Continuation turns a /goal may take before it pauses; `/goal budget` changes it for one session.";
-      };
     };
     crewPresets = lib.mkOption {
       type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
@@ -355,7 +310,6 @@ in
               "question"
               "skill"
             ]
-            (lib.optional cfg.contextPruning "compress")
           ];
           subagents = [
             "general"
@@ -371,7 +325,7 @@ in
         };
 
         # Built-in research subagent, given dev's tools (but no questions or
-        # context compression) and the shared research prompt.
+        # lanes runs) and the shared research prompt.
         general = {
           description = "General-purpose assistant for software and configuration research, local code inspection, and web search.";
           model = lib.mkDefault "${opusModel}#medium";
@@ -509,15 +463,13 @@ in
             disabled = true;
           };
         };
-        # One-shot automation sessions need no memory capture, context
-        # pruning or subagent controls.
+        # One-shot automation sessions need no memory capture or subagent
+        # controls.
         plugins = [
           "-opencode-mem"
           "-crew"
           "-lanes"
-          "-goal"
-        ]
-        ++ lib.optional cfg.contextPruning "-opencode-dcp";
+        ];
       };
     };
 
@@ -561,10 +513,7 @@ in
               };
             }
             "${lanesPlugin}"
-            "${goalPlugin}"
-            subagentMonitorPlugin
           ]
-          ++ lib.optional cfg.contextPruning pruningPlugin
           ++ cfg.tuiPlugins;
         };
       };
@@ -575,12 +524,6 @@ in
           opencodeProvider = builtins.head (splitModel cfg.memoryModel);
           opencodeModel = lib.concatStringsSep "/" (lib.drop 1 (splitModel cfg.memoryModel));
         };
-      };
-    }
-    // lib.optionalAttrs cfg.contextPruning {
-      "opencode/dcp.jsonc" = {
-        force = true;
-        source = jsonFormat.generate "dcp.jsonc" { autoUpdate = false; };
       };
     };
 
@@ -618,13 +561,8 @@ in
             package = "${lanesPlugin}";
             options.maxLanes = cfg.maxLanes;
           }
-          {
-            package = "${goalPlugin}";
-            options = goalOptions;
-          }
           memoryPlugin
         ]
-        ++ lib.optional cfg.contextPruning pruningPlugin
         ++ cfg.plugins;
       }
       // lib.optionalAttrs (cfg.providers != { }) { inherit (cfg) providers; };

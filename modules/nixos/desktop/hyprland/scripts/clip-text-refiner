@@ -24,7 +24,7 @@ improved=$(printf '%s' "$clip" |
   jq -rs 'map(select(.type == "text") | .part.text) | join("\n")') || improved=""
 
 if [[ -n ${improved:-} ]]; then
-  printf '%s' "$improved" | wl-copy
+  printf '%s' "$improved" | wl-copy --type text/plain
   notify-send "ClipTextRefiner" "Text improved → clipboard ready"
 else
   notify-send "ClipTextRefiner" "OpenCode processing failed"

@@ -24,7 +24,7 @@ export interface Task {
 	ended?: number
 	// Already shown to the planner in a wake-up.
 	seen?: boolean
-	// Why OpenCode last interrupted the task's session (`user`, `inactivity`), kept until the watcher reads it.
+	// Why OpenCode last interrupted the task's session (`user`), kept until the watcher reads it.
 	interrupt?: string
 }
 

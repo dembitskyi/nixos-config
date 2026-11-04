@@ -100,8 +100,6 @@ export function host(ctx: ServerContext, log: Log): Host {
 		log,
 		settleMs: 1000,
 		publishDelayMs: 300,
-		// OpenCode evicts a directory after 60 minutes without session events.
-		keepAliveMs: 10 * 60_000,
 		now: () => Date.now(),
 		storage: {
 			get: (key) => ctx.storage.get(key),

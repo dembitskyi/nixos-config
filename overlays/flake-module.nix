@@ -14,13 +14,33 @@
 
     # opencode from the pinned upstream flake (see the `opencode` input), with a
     # TUI patch that lets plugins add tabs to the session composer.
-    opencode-pin = _final: prev: {
-      opencode =
-        inputs.opencode.packages.${prev.stdenv.hostPlatform.system}.opencode.overrideAttrs
-          (old: {
-            patches = (old.patches or [ ]) ++ [ ../patches/opencode-composer-plugin-tabs.diff ];
-          });
-    };
+    opencode-pin =
+      _final: prev:
+      let
+        system = prev.stdenv.hostPlatform.system;
+        upstream = inputs.opencode.packages.${system};
+        # v2.2.5's nix/hashes.json predates the last bun.lock changes before the
+        # tag, so upstream's node_modules hashes are stale. Only aarch64-linux
+        # is verified; x86_64-linux still uses upstream's. Drop this on the next
+        # tag bump.
+        nodeModulesHash =
+          {
+            aarch64-linux = "sha256-x903Q+5ThC84PQjCp/4Id/2pRXT7YtYNFHfkLvFsO+0=";
+          }
+          .${system} or null;
+        opencode =
+          if nodeModulesHash == null then
+            upstream.opencode
+          else
+            upstream.opencode.override {
+              node_modules = upstream.opencode.node_modules.override { hash = nodeModulesHash; };
+            };
+      in
+      {
+        opencode = opencode.overrideAttrs (old: {
+          patches = (old.patches or [ ]) ++ [ ../patches/opencode-composer-plugin-tabs.diff ];
+        });
+      };
 
     default = inputs.nixpkgs.lib.composeManyExtensions [
       inputs.self.overlays.opencode-pin

@@ -63,7 +63,6 @@ let
     "subagent"
     "webfetch"
     "websearch"
-    "compress"
   ];
 
   expand =

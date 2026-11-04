@@ -5,13 +5,12 @@
 //
 // How a session ended comes from the `idle` record OpenCode appends when an
 // execution ends: `succeeded`, `failed`, or `interrupted`. An interrupt's
-// event says why: `user` (someone stopped it) or `inactivity` (OpenCode
-// evicted the directory after an hour without session events, which a worker
-// inside one long command records none of). A shutdown appends no record, so
-// such sessions are resumed after a restart.
+// event says why: `user` (someone stopped it) or `shutdown`. A shutdown
+// appends no record, so such sessions are resumed after a restart.
 //
-// A plugin reload (e.g. that eviction) creates a new `Lanes` that resumes the
-// runs from storage; the old one is closed and must not act on its copies.
+// A plugin reload (e.g. OpenCode unloading an idle directory) creates a new
+// `Lanes` that resumes the runs from storage; the old one is closed and must
+// not act on its copies.
 import type { Fields, Log } from "./log"
 import {
 	active,
@@ -79,8 +78,6 @@ export interface Host {
 	readonly settleMs: number
 	// Coalesces run summary writes to the planner session.
 	readonly publishDelayMs: number
-	// How often a busy run republishes its summary, well under OpenCode's hour of inactivity; see keepAlive.
-	readonly keepAliveMs: number
 	now(): number
 	readonly storage: {
 		get(key: string): Promise<unknown>
@@ -111,7 +108,6 @@ export interface Host {
 const RETRIES = 1
 // Notes that need the orchestrator: they wake it, unless a waiting lanes_wait call receives them instead.
 const RELEASES = new Set(["done", "question", "blocked", "stalled", "paused"])
-const INACTIVE = "OpenCode stopped the session after an hour without activity in its directory"
 const key = (id: string) => `run:${id}`
 const reason = (error: unknown) => (error instanceof Error ? error.message : String(error))
 const ids = (tasks: readonly Task[]) => tasks.map((task) => task.id)
@@ -132,7 +128,6 @@ export class Lanes {
 	private readonly writes = new Map<string, Promise<void>>()
 	private readonly views = new Map<string, Promise<void>>()
 	private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
-	private readonly beats = new Map<string, ReturnType<typeof setTimeout>>()
 	private readonly reported = new Set<string>()
 	private readonly waiters = new Map<string, Set<(text: string) => void>>()
 	private readonly log: Log
@@ -174,16 +169,15 @@ export class Lanes {
 	}
 
 	/**
-	 * Stops this instance once the plugin unloads, e.g. when OpenCode evicts an idle directory or reloads
+	 * Stops this instance once the plugin unloads, e.g. when OpenCode unloads an idle directory or reloads
 	 * its plugins. The next instance resumes the runs from storage, so this one must not act on its stale
 	 * copies: no saves, notes, prompts, or launches, and lanes_wait calls are told to wait again.
 	 */
 	close() {
 		if (this.closed) return
 		this.closed = true
-		for (const timer of [...this.timers.values(), ...this.beats.values()]) clearTimeout(timer)
+		for (const timer of this.timers.values()) clearTimeout(timer)
 		this.timers.clear()
-		this.beats.clear()
 		this.log.info("lanes.closed", {
 			directory: this.host.directory,
 			runs: this.running().map((run) => run.id),
@@ -243,7 +237,6 @@ export class Lanes {
 			signal?.addEventListener("abort", aborted, { once: true })
 			waiting.add(finish)
 			this.log.info("wait.started", { run: run.id, limit: span })
-			this.keepAlive(run)
 		})
 	}
 
@@ -458,7 +451,7 @@ export class Lanes {
 
 	// --- Interrupt events ---
 
-	/** OpenCode stopped a session of a run: `user`, `inactivity`, or `shutdown`; see the header. */
+	/** OpenCode stopped a session of a run: `user` or `shutdown`; see the header. */
 	interrupted(sessionID: string, reason: string) {
 		if (this.closed) return
 		const found = this.owner(sessionID)
@@ -600,31 +593,6 @@ export class Lanes {
 		} catch (error) {
 			this.log.warn("view.publish-failed", { run: run.id, planner: sessionID, error })
 		}
-		this.keepAlive(run)
-	}
-
-	/**
-	 * OpenCode interrupts a directory's sessions and unloads its plugins after an hour without session
-	 * events, and a worker inside one long command (or a lanes_wait call) records none. While a run has
-	 * tasks in lanes or a waiting orchestrator, its summary is republished every `keepAliveMs`: each write
-	 * to the planner session is a session event in the directory.
-	 */
-	private keepAlive(run: Run) {
-		clearTimeout(this.beats.get(run.id))
-		this.beats.delete(run.id)
-		const waiting = () => this.waiters.get(run.id)?.size ?? 0
-		if (this.closed || run.status !== "running" || (!run.tasks.some(active) && !waiting())) return
-		const timer = setTimeout(() => {
-			this.beats.delete(run.id)
-			this.log.debug("run.keepalive", {
-				run: run.id,
-				planner: run.planner,
-				busy: run.tasks.filter(active).length,
-				waiting: waiting(),
-			})
-			this.publish(run)
-		}, this.host.keepAliveMs)
-		this.beats.set(run.id, timer)
 	}
 
 	private pump(run: Run) {
@@ -753,18 +721,15 @@ export class Lanes {
 					ending = "succeeded"
 					break
 				}
-				let error = finalError(messages) ?? "the session failed"
 				if (last.outcome === "interrupted") {
 					why = await this.interruptReason(task)
 					if (this.stale("watch", { run: run.id, task: task.id, session: sessionID, interrupt: why })) return
 					if (ended()) return
-					// Someone stopped it, so it is cancelled; OpenCode evicting the idle directory is retried instead.
-					if (why !== "inactivity") {
-						ending = "interrupted"
-						break
-					}
-					error = INACTIVE
+					// Someone stopped it, so it is cancelled.
+					ending = "interrupted"
+					break
 				}
+				const error = finalError(messages) ?? "the session failed"
 				if (task.attempts > RETRIES) {
 					ending = "failed"
 					failure = error
@@ -772,7 +737,7 @@ export class Lanes {
 				}
 				task.attempts++
 				this.log.warn("task.retry", { run: run.id, task: task.id, session: sessionID, attempt: task.attempts, error })
-				// Keeps the spent attempt, and the interrupt reason read above, across a reload.
+				// Keeps the spent attempt across a reload.
 				await this.save(run)
 				await this.syncModel(run, sessionID, task.agent, task.model)
 				if (this.stale("retry", { run: run.id, task: task.id, session: sessionID })) return
@@ -811,12 +776,11 @@ export class Lanes {
 	}
 
 	/**
-	 * Why OpenCode interrupted the task's session. Its event can land just after the idle record, and an
-	 * `inactivity` stop unloads this plugin right after, so both wait `settleMs` before anyone acts: after
-	 * a reload, the new instance reads the reason from storage and retries the task.
+	 * Why OpenCode interrupted the task's session, for the log and the task's error. Its event can land just
+	 * after the idle record, so it waits `settleMs` for one; a concurrent stop of the task wins meanwhile.
 	 */
 	private async interruptReason(task: Task) {
-		if (task.interrupt === undefined || task.interrupt === "inactivity") await delay(this.host.settleMs)
+		if (task.interrupt === undefined) await delay(this.host.settleMs)
 		const why = task.interrupt
 		task.interrupt = undefined
 		return why

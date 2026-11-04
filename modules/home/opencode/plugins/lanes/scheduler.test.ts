@@ -82,7 +82,6 @@ function fake(crew?: Record<string, string>) {
 		log,
 		settleMs: 5,
 		publishDelayMs: 0,
-		keepAliveMs: 60_000,
 		now: () => 1000,
 		storage: {
 			get: async (key) => storage.get(key),
@@ -319,42 +318,19 @@ describe("interrupts and restarts", () => {
 		expect(f.session(planner).prompts.at(-1)?.text).toBe("Message from the orchestrator: Carry on.")
 	})
 
-	test("OpenCode stopping an idle directory retries the task instead of cancelling it", async () => {
+	test("a task stopped while its interrupt event is pending is cancelled once", async () => {
 		const f = fake()
 		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
 		f.finish(planner, "succeeded")
 		const session = worker(run, "a")
-		f.finish(session, "interrupted")
-		// The interrupt's event can land just after the idle record.
-		await pause(1)
-		lanes.interrupted(session, "inactivity")
-		await f.settle()
-		expect(task(run, "a").status).toBe("running")
-		expect(f.session(session).prompts.at(-1)?.text).toContain("OpenCode stopped the session after an hour")
-		expect(f.logs.find((entry) => entry.event === "session.interrupted")?.fields).toMatchObject({
-			run: run.id,
-			role: "task",
-			task: "a",
-			reason: "inactivity",
-		})
-		f.finish(session, "succeeded", "Done A.")
-		await f.settle()
-		expect(task(run, "a").status).toBe("done")
-		expect(task(run, "a").interrupt).toBeUndefined()
-	})
-
-	test("a task cancelled while its interrupt is explained is not retried", async () => {
-		const f = fake()
-		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
-		f.finish(planner, "succeeded")
-		const session = worker(run, "a")
-		lanes.interrupted(session, "inactivity")
+		// No interrupt event yet, so the watcher waits for one.
 		f.finish(session, "interrupted")
 		await pause(0)
 		await lanes.stop(run, "a")
 		await f.settle()
 		expect(task(run, "a").status).toBe("cancelled")
 		expect(f.session(session).prompts).toHaveLength(1)
+		expect(f.logs.some((entry) => entry.event === "task.interrupted")).toBe(false)
 	})
 
 	test("a reload hands the run to the new plugin, and the closed one stops acting on its stale copy", async () => {
@@ -451,39 +427,15 @@ describe("interrupts and restarts", () => {
 		expect(f.notes[0]?.resume).toBe(true)
 	})
 
-	test("after a reload, the new plugin retries a task OpenCode stopped for inactivity", async () => {
-		const f = fake()
-		const { lanes, run, planner } = await started(f, { goal: "Ship", tasks: four.slice(0, 1) })
-		f.finish(planner, "succeeded")
-		await f.settle()
-		const session = worker(run, "a")
-		// OpenCode interrupts the worker, then evicts the directory, which unloads the plugin.
-		lanes.interrupted(session, "inactivity")
-		f.finish(session, "interrupted")
-		await pause(0)
-		lanes.close()
-		const reloaded = new Lanes(f.host)
-		await reloaded.load()
-		await f.settle()
-		const resumed = await reloaded.find(run.id)
-		expect(task(resumed, "a").status).toBe("running")
-		expect(f.session(session).prompts).toHaveLength(2)
-		expect(f.session(session).prompts[1]?.text).toContain("OpenCode stopped the session after an hour")
-		f.finish(session, "succeeded", "Done A.")
-		await f.settle()
-		expect(task(resumed, "a").status).toBe("done")
-		expect(task(run, "a").status).toBe("running")
-	})
-
 	test("logs why OpenCode interrupted the sessions of a run", async () => {
 		const f = fake()
 		const { lanes, run, planner } = await started(f, { goal: "Ship" })
 		lanes.interrupted(planner, "user")
-		lanes.interrupted("origin", "inactivity")
+		lanes.interrupted("origin", "shutdown")
 		lanes.interrupted("someone-else", "user")
 		expect(f.logs.filter((entry) => entry.event === "session.interrupted").map((entry) => entry.fields)).toEqual([
 			{ run: run.id, role: "planner", task: undefined, session: planner, reason: "user" },
-			{ run: run.id, role: "orchestrator", task: undefined, session: "origin", reason: "inactivity" },
+			{ run: run.id, role: "orchestrator", task: undefined, session: "origin", reason: "shutdown" },
 		])
 	})
 })
@@ -817,24 +769,4 @@ describe("lanes_wait", () => {
 		expect(await waiting).toStartWith("Stopped waiting: the lanes plugin reloaded.")
 		expect(await waiting).toEndWith("Call lanes_wait again to keep waiting.")
 	})
-})
-
-test("a busy run republishes its summary, which keeps OpenCode from evicting the directory", async () => {
-	const f = fake()
-	const lanes = new Lanes({ ...f.host, keepAliveMs: 5 })
-	const run = await lanes.start("origin", { goal: "Ship", tasks: four.slice(0, 1) })
-	const planner = run.planner as string
-	f.finish(planner, "succeeded")
-	await f.settle()
-	const writes = () => f.updates.filter((sessionID) => sessionID === planner).length
-	const before = writes()
-	await f.settle()
-	expect(writes()).toBeGreaterThan(before + 1)
-	expect(f.logs.some((entry) => entry.event === "run.keepalive")).toBe(true)
-	// Nothing runs once the run stops, so the writes stop too.
-	await lanes.stop(run)
-	await f.settle()
-	const stopped = writes()
-	await f.settle()
-	expect(writes()).toBe(stopped)
 })

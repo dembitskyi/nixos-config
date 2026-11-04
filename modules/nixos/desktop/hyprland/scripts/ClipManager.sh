@@ -19,4 +19,12 @@ EOF
 
 result=$(cliphist list | gawk -v tmp_dir="$tmp_dir" "$gawk_prog" | fuzzel --dmenu)
 
-[ -n "$result" ] && cliphist decode <<<"$result" | wl-copy
+[ -n "$result" ] || exit 0
+
+# Left to guess, wl-copy asks xdg-mime, which takes text starting with "module",
+# "class" or "def" for Ruby and then offers no text type that apps can paste.
+if [[ ${result#*$'\t'} == '[[ binary data '* ]]; then
+  cliphist decode <<<"$result" | wl-copy
+else
+  cliphist decode <<<"$result" | wl-copy --type text/plain
+fi

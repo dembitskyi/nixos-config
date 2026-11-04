@@ -45,6 +45,9 @@
 
             set-option -g  @yank_action copy-pipe
             set-option -g set-clipboard on
+            # Left to guess, wl-copy can offer text as a non-text type (such as
+            # application/x-ruby for "module...") that apps cannot paste.
+            if-shell 'command -v wl-copy' "set-option -g @override_copy_command 'wl-copy --type text/plain'"
           '';
         }
         {
