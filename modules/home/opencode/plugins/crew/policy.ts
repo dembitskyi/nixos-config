@@ -209,6 +209,13 @@ export function readPresets(value: unknown): Presets {
 	return presets
 }
 
+export function parseModel(ref: string): ModelRef | undefined {
+	if (!isModelRef(ref)) return undefined
+	const [path, variant] = ref.split("#")
+	const slash = path.indexOf("/")
+	return { providerID: path.slice(0, slash), id: path.slice(slash + 1), ...(variant ? { variant } : {}) }
+}
+
 export function formatModel(ref: ModelRef) {
 	return `${ref.providerID}/${ref.id}${ref.variant ? `#${ref.variant}` : ""}`
 }

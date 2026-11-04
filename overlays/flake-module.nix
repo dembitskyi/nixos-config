@@ -38,7 +38,10 @@
       in
       {
         opencode = opencode.overrideAttrs (old: {
-          patches = (old.patches or [ ]) ++ [ ../patches/opencode-composer-plugin-tabs.diff ];
+          patches = (old.patches or [ ]) ++ [
+            ../patches/opencode-composer-plugin-tabs.diff
+            ../patches/opencode-plugin-model-set.diff
+          ];
         });
       };
 

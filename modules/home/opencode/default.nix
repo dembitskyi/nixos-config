@@ -269,11 +269,12 @@ in
       default = { };
       example = {
         max = {
+          dev = "github-copilot/claude-opus-5.5#max";
           general = "github-copilot/claude-opus-5.5#max";
           vision = "github-copilot/gpt-6-luna#xhigh";
         };
       };
-      description = "Named `/crew` presets: subagent ID to `provider/model[#variant]`.";
+      description = "Named `/crew` presets: agent ID to `provider/model[#variant]`. An entry for the root session's agent also switches its model; presets are only applied when selected.";
     };
     automationConfig = lib.mkOption {
       inherit (jsonFormat) type;

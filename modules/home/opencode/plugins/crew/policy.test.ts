@@ -13,6 +13,7 @@ import {
 	type Managed,
 	modelOf,
 	note,
+	parseModel,
 	type Rule,
 	readCrew,
 	readManaged,
@@ -64,6 +65,16 @@ test("isModelRef accepts provider/model with an optional variant", () => {
 	expect(isModelRef("openrouter/anthropic/claude#high")).toBe(true)
 	expect(isModelRef("gpt-5.5")).toBe(false)
 	expect(isModelRef("a/b#c#d")).toBe(false)
+})
+
+test("parseModel splits provider, model, and variant", () => {
+	expect(parseModel("openrouter/anthropic/claude#high")).toEqual({
+		providerID: "openrouter",
+		id: "anthropic/claude",
+		variant: "high",
+	})
+	expect(parseModel("acme/gpt")).toEqual({ providerID: "acme", id: "gpt" })
+	expect(parseModel("gpt")).toBeUndefined()
 })
 
 describe("rules", () => {

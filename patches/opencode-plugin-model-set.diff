@@ -1,0 +1,112 @@
+diff --git a/packages/plugin/src/tui/context.ts b/packages/plugin/src/tui/context.ts
+index c01aeb5..4256604 100644
+--- a/packages/plugin/src/tui/context.ts
++++ b/packages/plugin/src/tui/context.ts
+@@ -551,6 +551,12 @@ export interface UI {
+   readonly model: {
+     /** The prompt's selected model; variant is undefined for the model default. Reactive when read in a Solid computation. */
+     current(): { readonly providerID: string; readonly modelID: string; readonly variant?: string } | undefined
++    /**
++     * Selects a model and variant for the prompt, the model default when variant is undefined. Like the variant picker,
++     * it also remembers the variant as that model's preferred one. The session's model switches when the prompt is
++     * submitted. Returns false when the model or variant is unavailable.
++     */
++    set(model: { readonly providerID: string; readonly modelID: string; readonly variant?: string }): boolean
+     readonly variant: {
+       /** Variant IDs of the selected model. Reactive when read in a Solid computation. */
+       list(): readonly string[]
+diff --git a/packages/tui/src/plugin/api.tsx b/packages/tui/src/plugin/api.tsx
+index 35a4eac..3b77fe9 100644
+--- a/packages/tui/src/plugin/api.tsx
++++ b/packages/tui/src/plugin/api.tsx
+@@ -1,5 +1,5 @@
+ import { PluginContextProvider } from "@opencode/plugin/tui"
+-import { createRoot, createUniqueId, getOwner, onCleanup, runWithOwner, untrack, type JSX } from "solid-js"
++import { batch, createRoot, createUniqueId, getOwner, onCleanup, runWithOwner, untrack, type JSX } from "solid-js"
+ import type {
+   Context,
+   Dialog,
+@@ -285,6 +285,23 @@ export function createPluginContext(input: {
+           if (!selection) return
+           return { providerID: selection.providerID, modelID: selection.modelID, variant: selection.variant }
+         },
++        set(model) {
++          const info = host.data.location.model
++            .list(host.location.ref)
++            ?.find((item) => item.providerID === model.providerID && item.id === model.modelID)
++          if (!info) return false
++          if (model.variant !== undefined && !info.variants.some((item) => item.id === model.variant)) return false
++          batch(() => {
++            host.local.model.set({ providerID: model.providerID, modelID: model.modelID })
++            host.local.model.variant.set(model.variant)
++          })
++          const selection = host.local.model.selection()
++          return (
++            selection?.providerID === model.providerID &&
++            selection.modelID === model.modelID &&
++            selection.variant === model.variant
++          )
++        },
+         variant: {
+           list: () => host.local.model.variant.list(),
+           set(variant) {
+diff --git a/packages/tui/test/plugin-model.test.tsx b/packages/tui/test/plugin-model.test.tsx
+index b802f7c..322f125 100644
+--- a/packages/tui/test/plugin-model.test.tsx
++++ b/packages/tui/test/plugin-model.test.tsx
+@@ -1,10 +1,14 @@
+ import { expect, test } from "bun:test"
+ import { createPluginContext, type Registry, type usePluginHost } from "../src/plugin/api"
+-import { model, renderLocal } from "./fixture/local"
++import { model, renderLocal, session } from "./fixture/local"
+ 
+ // Eagerly read host services need a shape; model access goes through the real LocalProvider.
+-function pluginModel(local: ReturnType<typeof usePluginHost>["local"]) {
++function pluginModel(
++  local: ReturnType<typeof usePluginHost>["local"],
++  services: Partial<Pick<ReturnType<typeof usePluginHost>, "data" | "location">> = {},
++) {
+   const host = {
++    ...services,
+     app: {},
+     client: {},
+     keymap: {},
+@@ -44,3 +48,38 @@ test("plugins cannot select unavailable variants or variants without a model", a
+   expect(none.variant.list()).toEqual([])
+   expect(none.variant.set(undefined)).toBe(false)
+ })
++
++test("plugins select a model and its variant for the prompt", async () => {
++  await using setup = await renderLocal({ models: [model("first", ["low"]), model("second", ["low", "high"])] })
++  const selected = pluginModel(setup.local, setup)
++
++  expect(selected.set({ providerID: "provider", modelID: "second", variant: "high" })).toBe(true)
++  expect(selected.current()).toEqual({ providerID: "provider", modelID: "second", variant: "high" })
++
++  expect(selected.set({ providerID: "provider", modelID: "first" })).toBe(true)
++  expect(selected.current()).toEqual({ providerID: "provider", modelID: "first", variant: undefined })
++})
++
++test("plugins replace a session's pending model choice", async () => {
++  await using setup = await renderLocal({
++    models: [model("first"), model("second", ["high"]), model("third")],
++    sessions: [session("ses_1", { providerID: "provider", id: "first" })],
++  })
++  await setup.data.session.sync("ses_1")
++  setup.route.navigate({ type: "session", sessionID: "ses_1" })
++  setup.local.model.set({ providerID: "provider", modelID: "third" })
++  expect(setup.local.model.current()?.modelID).toBe("third")
++
++  const selected = pluginModel(setup.local, setup)
++  expect(selected.set({ providerID: "provider", modelID: "second", variant: "high" })).toBe(true)
++  expect(selected.current()).toEqual({ providerID: "provider", modelID: "second", variant: "high" })
++})
++
++test("plugins cannot select unavailable models or variants", async () => {
++  await using setup = await renderLocal({ models: [model("first", ["low"]), model("second")] })
++  const selected = pluginModel(setup.local, setup)
++
++  expect(selected.set({ providerID: "provider", modelID: "missing" })).toBe(false)
++  expect(selected.set({ providerID: "provider", modelID: "second", variant: "low" })).toBe(false)
++  expect(selected.current()).toEqual({ providerID: "provider", modelID: "first", variant: undefined })
++})

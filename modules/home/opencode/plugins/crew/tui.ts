@@ -3,6 +3,8 @@
 // along with the Away switch for working without the user. Named presets come
 // from the Nix `crewPresets` option; agents in `managed` are started by another
 // plugin, so they get a model and, when they name their tools, an On/Off switch.
+// A preset's entry for the root session's agent also switches the root session's
+// model, and the prompt's pending model choice when the root session is shown.
 import {
 	type Access,
 	type AgentInfo,
@@ -17,6 +19,7 @@ import {
 	type ModelRef,
 	modelOf,
 	type Presets,
+	parseModel,
 	type Rule,
 	readCrew,
 	readManaged,
@@ -44,20 +47,27 @@ interface ModelInfo {
 	variants: readonly { id: string }[]
 }
 
-interface SessionInfo {
+interface ModelChoice {
+	providerID: string
+	modelID: string
+	variant?: string
+}
+
+export interface SessionInfo {
 	agent?: string
 	model?: ModelRef
 	metadata?: Record<string, unknown>
 	permissions?: Rule[]
 }
 
-interface TuiContext {
+export interface TuiContext {
 	readonly options: Readonly<Record<string, unknown>>
 	readonly location: LocationRef | undefined
 	readonly client: {
 		session: {
 			get(input: { sessionID: string }): Promise<SessionInfo>
 			update(input: { sessionID: string; metadata?: Record<string, unknown>; permissions?: Rule[] }): Promise<unknown>
+			switchModel?(input: { sessionID: string; model: ModelRef }): Promise<unknown>
 		}
 		agent: { list(input: { location: LocationRef }): Promise<{ data: AgentInfo[] }> }
 		model: { list(input: { location: LocationRef }): Promise<{ data: ModelInfo[] }> }
@@ -93,6 +103,8 @@ interface TuiContext {
 			}): Promise<Value | undefined>
 		}
 		toast: { show(input: { message: string; variant?: "info" | "success" | "warning" | "error" }): void }
+		// Selecting the prompt's model needs nixos-config/patches/opencode-plugin-model-set.diff; older clients only read it.
+		model?: { set?(model: ModelChoice): boolean }
 		slot(input: { append: string; render: () => null }): unknown
 	}
 }
@@ -108,6 +120,8 @@ interface State {
 interface Change {
 	crew: Crew
 	summary: string
+	// The model the root session switches to, from a preset's entry for its agent.
+	root?: ModelRef
 }
 
 type Choice =
@@ -233,8 +247,21 @@ async function editAgent(context: TuiContext, location: LocationRef, state: Stat
 	}
 }
 
+/** A preset's models, the root session's agent first. */
+function presetText(preset: Record<string, string>, main: string | undefined) {
+	const entries = Object.entries(preset)
+	const root = entries.filter(([agent]) => agent === main).map(([agent, model]) => `${agent} (main)=${model}`)
+	const rest = entries.filter(([agent]) => agent !== main).map(([agent, model]) => `${agent}=${model}`)
+	return [...root, ...rest].join(", ")
+}
+
 /** Returns the change to apply, or undefined when the dialog was dismissed. */
-async function edit(context: TuiContext, location: LocationRef, state: State, presets: Presets) {
+async function edit(
+	context: TuiContext,
+	location: LocationRef,
+	state: State,
+	presets: Presets,
+): Promise<Change | undefined> {
 	const { crew } = state
 	const choice = await context.ui.dialog.select<Choice>({
 		title: "Crew",
@@ -273,7 +300,12 @@ async function edit(context: TuiContext, location: LocationRef, state: State, pr
 				description: crew.away ? "On: no questions, approvals granted" : "Off",
 				category: "Session",
 			},
-			{ title: "Reset", value: { kind: "reset" }, description: "Back to the configured defaults", category: "Session" },
+			{
+				title: "Reset",
+				value: { kind: "reset" },
+				description: "Back to the configured defaults; the main session keeps its model",
+				category: "Session",
+			},
 		],
 	})
 
@@ -290,19 +322,24 @@ async function edit(context: TuiContext, location: LocationRef, state: State, pr
 				summary: choice.delegation === "allow" ? "all on" : "all off",
 			} satisfies Change
 		case "preset": {
+			const main = state.session.agent
 			const name = await context.ui.dialog.select({
 				title: "Preset",
 				current: crew.preset,
 				options: Object.entries(presets).map(([name, preset]) => ({
 					title: name,
 					value: name,
-					description: Object.entries(preset)
-						.map(([agent, model]) => `${agent}=${model}`)
-						.join(", "),
+					description: presetText(preset, main),
 				})),
 			})
 			if (!name) return undefined
-			return { crew: applyPreset(crew, name, presets[name]), summary: `preset ${name}` } satisfies Change
+			const preset = presets[name]
+			const root = main ? preset[main] : undefined
+			return {
+				crew: applyPreset(crew, name, preset),
+				summary: root ? `preset ${name}, ${main} → ${root}` : `preset ${name}`,
+				root: root ? parseModel(root) : undefined,
+			} satisfies Change
 		}
 		case "away":
 			return {
@@ -316,7 +353,34 @@ async function edit(context: TuiContext, location: LocationRef, state: State, pr
 	}
 }
 
-async function open(context: TuiContext, presets: Presets, managed: Managed) {
+/** Throws unless the root session can switch to `model`, so nothing is applied in vain. */
+async function checkModel(context: TuiContext, location: LocationRef, model: ModelRef) {
+	const ref = formatModel(model)
+	if (!context.client.session.switchModel) throw new Error(`this OpenCode cannot switch the session to ${ref}`)
+	const { data } = await context.client.model.list({ location })
+	const info = data.find((item) => item.providerID === model.providerID && item.id === model.id)
+	if (!info?.enabled) throw new Error(`${model.providerID}/${model.id} is not available`)
+	if (model.variant && !info.variants.some((variant) => variant.id === model.variant))
+		throw new Error(`${info.name} has no variant ${model.variant}`)
+}
+
+/**
+ * Points the prompt at `model` when it shows the root session: its pending choice
+ * otherwise wins over the session's model and would switch it back on submit.
+ * Returns a warning when the prompt could not follow, including when another
+ * session is on screen, since the root's prompt may still hold an older choice.
+ */
+function followPrompt(context: TuiContext, root: string, model: ModelRef) {
+	const ref = formatModel(model)
+	const route = context.ui.router.current()
+	if (route.type !== "session" || route.sessionID !== root)
+		return `open the main session and check that its prompt shows ${ref}`
+	if (!context.ui.model?.set) return `this OpenCode cannot update the prompt, so select ${ref} there too`
+	const selected = context.ui.model.set({ providerID: model.providerID, modelID: model.id, variant: model.variant })
+	return selected ? undefined : `the prompt could not select ${ref}, so select it there too`
+}
+
+export async function open(context: TuiContext, presets: Presets, managed: Managed) {
 	const route = context.ui.router.current()
 	if (route.type !== "session" || !route.sessionID) {
 		context.ui.toast.show({ message: "Open a session first.", variant: "warning" })
@@ -332,11 +396,28 @@ async function open(context: TuiContext, presets: Presets, managed: Managed) {
 		const state = { crew: readCrew(session.metadata?.[KEY]), session, agents, managed }
 		const change = await edit(context, location, state, presets)
 		if (!change) return
+		if (change.root) await checkModel(context, location, change.root)
 		await context.client.session.update({
 			sessionID: root,
 			metadata: withCrew(session.metadata, change.crew),
 			permissions: withRules(session.permissions, change.crew, managed),
 		})
+		if (change.root) {
+			try {
+				await context.client.session.switchModel?.({ sessionID: root, model: change.root })
+			} catch (error) {
+				context.ui.toast.show({
+					message: `Crew: subagents set, but switching ${session.agent} failed: ${String(error)}`,
+					variant: "error",
+				})
+				return
+			}
+			const warning = followPrompt(context, root, change.root)
+			if (warning) {
+				context.ui.toast.show({ message: `Crew: ${change.summary}; ${warning}`, variant: "warning" })
+				return
+			}
+		}
 		context.ui.toast.show({ message: `Crew: ${change.summary}`, variant: "success" })
 	} catch (error) {
 		context.ui.toast.show({ message: `Crew failed: ${String(error)}`, variant: "error" })
