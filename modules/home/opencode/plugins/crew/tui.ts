@@ -5,14 +5,20 @@
 // plugin, so they get a model and, when they name their tools, an On/Off switch.
 // A preset's entry for the root session's agent also switches the root session's
 // model, and the prompt's pending model choice when the root session is shown.
+// The Fallback switch lets the server move the crew to a fallback preset when
+// its provider refuses; picking a preset or Reset ends a fallback.
 import {
 	type Access,
 	type AgentInfo,
 	access,
 	applyPreset,
 	type Crew,
+	chainText,
 	effect,
 	emptyCrew,
+	type Fallbacks,
+	fallbackOn,
+	fallbackText,
 	formatModel,
 	KEY,
 	type Managed,
@@ -22,6 +28,7 @@ import {
 	parseModel,
 	type Rule,
 	readCrew,
+	readFallbacks,
 	readManaged,
 	readPresets,
 	withCrew,
@@ -60,6 +67,11 @@ export interface SessionInfo {
 	permissions?: Rule[]
 }
 
+interface SessionEvents {
+	"session.metadata.updated": { sessionID: string; metadata?: Record<string, unknown> }
+	"session.deleted": { sessionID: string }
+}
+
 export interface TuiContext {
 	readonly options: Readonly<Record<string, unknown>>
 	readonly location: LocationRef | undefined
@@ -75,6 +87,10 @@ export interface TuiContext {
 	readonly data: {
 		location: { default(): LocationRef }
 		session: { root(sessionID: string): string }
+		on?<Type extends keyof SessionEvents>(
+			type: Type,
+			handler: (event: { data: SessionEvents[Type] }) => void,
+		): () => void
 	}
 	readonly keymap: {
 		layer(
@@ -117,6 +133,24 @@ interface State {
 	managed: Managed
 }
 
+/** Automatic fallback settings from the Nix options. */
+export interface FallbackOptions {
+	fallbacks: Fallbacks
+	minutes: number
+	byDefault: boolean
+}
+
+const NO_FALLBACK: FallbackOptions = { fallbacks: {}, minutes: 30, byDefault: false }
+
+export function readFallbackOptions(options: Readonly<Record<string, unknown>>): FallbackOptions {
+	const minutes = options.fallbackMinutes
+	return {
+		fallbacks: readFallbacks(options.fallback),
+		minutes: typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0 ? minutes : 30,
+		byDefault: options.fallbackDefault === true,
+	}
+}
+
 interface Change {
 	crew: Crew
 	summary: string
@@ -129,6 +163,7 @@ type Choice =
 	| { kind: "all"; delegation: Access }
 	| { kind: "preset" }
 	| { kind: "away" }
+	| { kind: "fallback" }
 	| { kind: "reset" }
 
 function members(agents: readonly AgentInfo[]) {
@@ -234,13 +269,16 @@ async function editAgent(context: TuiContext, location: LocationRef, state: Stat
 			const model = await chooseModel(context, location, id)
 			if (!model) return undefined
 			return {
-				crew: { ...crew, models: { ...crew.models, [id]: model }, preset: undefined },
+				crew: { ...crew, models: { ...crew.models, [id]: model }, preset: undefined, fallback: undefined },
 				summary: `${id} → ${model}`,
 			} satisfies Change
 		}
 		case "unset": {
 			const { [id]: _, ...rest } = crew.models
-			return { crew: { ...crew, models: rest, preset: undefined }, summary: `${id} model reset` } satisfies Change
+			return {
+				crew: { ...crew, models: rest, preset: undefined, fallback: undefined },
+				summary: `${id} model reset`,
+			} satisfies Change
 		}
 		default:
 			return undefined
@@ -255,14 +293,24 @@ function presetText(preset: Record<string, string>, main: string | undefined) {
 	return [...root, ...rest].join(", ")
 }
 
+/** What the Fallback switch does for the crew now. */
+function fallbackState(crew: Crew, fallback: FallbackOptions) {
+	const active = fallbackText(crew, fallback.minutes)
+	if (active) return active
+	if (!crew.preset) return "pick a preset to fall back from"
+	return chainText(fallback.fallbacks, crew.preset) ?? `no fallback for ${crew.preset}`
+}
+
 /** Returns the change to apply, or undefined when the dialog was dismissed. */
 async function edit(
 	context: TuiContext,
 	location: LocationRef,
 	state: State,
 	presets: Presets,
+	fallback: FallbackOptions,
 ): Promise<Change | undefined> {
 	const { crew } = state
+	const autoFallback = fallbackOn(crew, fallback.byDefault)
 	const choice = await context.ui.dialog.select<Choice>({
 		title: "Crew",
 		options: [
@@ -289,7 +337,7 @@ async function edit(
 						{
 							title: "Preset",
 							value: { kind: "preset" } as Choice,
-							description: crew.preset ?? "None",
+							description: fallbackText(crew, fallback.minutes) ?? crew.preset ?? "None",
 							category: "Session",
 						},
 					]
@@ -300,6 +348,16 @@ async function edit(
 				description: crew.away ? "On: no questions, approvals granted" : "Off",
 				category: "Session",
 			},
+			...(Object.keys(fallback.fallbacks).length > 0
+				? [
+						{
+							title: "Fallback",
+							value: { kind: "fallback" } as Choice,
+							description: autoFallback ? `On: ${fallbackState(crew, fallback)}` : "Off",
+							category: "Session",
+						},
+					]
+				: []),
 			{
 				title: "Reset",
 				value: { kind: "reset" },
@@ -346,6 +404,12 @@ async function edit(
 				crew: { ...crew, away: crew.away ? undefined : true },
 				summary: crew.away ? "away off" : "away on: no questions, approvals granted",
 			} satisfies Change
+		case "fallback":
+			// Off ends a running fallback where it is: the crew stays on its current preset.
+			return {
+				crew: { ...crew, autoFallback: !autoFallback, fallback: undefined },
+				summary: autoFallback ? "fallback off" : `fallback on: ${fallbackState(crew, fallback)}`,
+			} satisfies Change
 		case "reset":
 			return { crew: emptyCrew(), summary: "reset" } satisfies Change
 		default:
@@ -380,7 +444,45 @@ function followPrompt(context: TuiContext, root: string, model: ModelRef) {
 	return selected ? undefined : `the prompt could not select ${ref}, so select it there too`
 }
 
-export async function open(context: TuiContext, presets: Presets, managed: Managed) {
+// The fallback state last seen per root, kept only while a fallback runs, so the
+// server's switches are announced once.
+const seen = new Map<string, string>()
+
+function remember(sessionID: string, crew: Crew) {
+	const previous = seen.get(sessionID)
+	const key = crew.fallback ? `${crew.preset}@${crew.fallback.since}` : undefined
+	if (key) seen.set(sessionID, key)
+	else seen.delete(sessionID)
+	return { previous, key }
+}
+
+/** Announces the server moving a crew to a fallback preset or back home. */
+export function watch(context: TuiContext, minutes: number) {
+	const stops = [
+		context.data.on?.("session.metadata.updated", (event) => {
+			const crew = readCrew(event.data.metadata?.[KEY])
+			const { previous, key } = remember(event.data.sessionID, crew)
+			if (previous === key) return
+			const text = fallbackText(crew, minutes)
+			// A root not seen before is only announced when its fallback just started.
+			if (text && crew.fallback && (previous || Date.now() - crew.fallback.since < 120_000))
+				context.ui.toast.show({ message: `Crew: ${text}`, variant: "warning" })
+			else if (!text && previous && crew.preset)
+				context.ui.toast.show({ message: `Crew: back on ${crew.preset}`, variant: "info" })
+		}),
+		context.data.on?.("session.deleted", (event) => void seen.delete(event.data.sessionID)),
+	]
+	return () => {
+		for (const stop of stops) stop?.()
+	}
+}
+
+export async function open(
+	context: TuiContext,
+	presets: Presets,
+	managed: Managed,
+	fallback: FallbackOptions = NO_FALLBACK,
+) {
 	const route = context.ui.router.current()
 	if (route.type !== "session" || !route.sessionID) {
 		context.ui.toast.show({ message: "Open a session first.", variant: "warning" })
@@ -394,9 +496,10 @@ export async function open(context: TuiContext, presets: Presets, managed: Manag
 			context.client.agent.list({ location }),
 		])
 		const state = { crew: readCrew(session.metadata?.[KEY]), session, agents, managed }
-		const change = await edit(context, location, state, presets)
+		const change = await edit(context, location, state, presets, fallback)
 		if (!change) return
 		if (change.root) await checkModel(context, location, change.root)
+		remember(root, change.crew)
 		await context.client.session.update({
 			sessionID: root,
 			metadata: withCrew(session.metadata, change.crew),
@@ -429,6 +532,8 @@ export default {
 	setup(context: TuiContext) {
 		const presets = readPresets(context.options.presets)
 		const managed = readManaged(context.options.managed)
+		const fallback = readFallbackOptions(context.options)
+		const stop = Object.keys(fallback.fallbacks).length > 0 ? watch(context, fallback.minutes) : undefined
 		// Keymap layers need the app's keymap provider, so register from an app slot.
 		context.ui.slot({
 			append: "app",
@@ -443,12 +548,13 @@ export default {
 							group: "Session",
 							palette: true,
 							slash: { name: "crew" },
-							run: () => void open(context, presets, managed),
+							run: () => void open(context, presets, managed, fallback),
 						},
 					],
 				}))
 				return null
 			},
 		})
+		return stop
 	},
 }

@@ -17,7 +17,24 @@ export interface Crew {
 	preset?: string
 	// The user is away: no questions, approval prompts granted, for this whole session tree.
 	away?: boolean
+	// Automatic fallback to another preset when a provider refuses; unset means the configured default.
+	autoFallback?: boolean
+	fallback?: Fallback
 }
+
+/** Why a provider refused: used up quota, a rejected token, or an outage. */
+export type Reason = "quota" | "auth" | "network"
+
+/** A fallback episode: the preset it started from, the reason of each switch, when the last one happened, and the presets tried. */
+export interface Fallback {
+	home: string
+	reasons: Reason[]
+	since: number
+	visited: string[]
+}
+
+/** Per preset, the preset to fall back to for each reason. */
+export type Fallbacks = Record<string, Partial<Record<Reason, string>>>
 
 export interface Rule {
 	action: string
@@ -102,7 +119,25 @@ export function readCrew(value: unknown): Crew {
 	}
 	if (typeof value.preset === "string" && value.preset) crew.preset = value.preset
 	if (value.away === true) crew.away = true
+	if (typeof value.autoFallback === "boolean") crew.autoFallback = value.autoFallback
+	const fallback = readFallback(value.fallback)
+	if (fallback && crew.preset) crew.fallback = fallback
 	return crew
+}
+
+const REASONS: readonly Reason[] = ["quota", "auth", "network"]
+
+function isReason(value: unknown): value is Reason {
+	return REASONS.includes(value as Reason)
+}
+
+function readFallback(value: unknown): Fallback | undefined {
+	if (!isRecord(value)) return undefined
+	const { home, since, visited } = value
+	const reasons = Array.isArray(value.reasons) ? value.reasons.filter(isReason) : []
+	if (typeof home !== "string" || !home || reasons.length === 0 || typeof since !== "number") return undefined
+	const names = Array.isArray(visited) ? visited.filter((name): name is string => typeof name === "string") : []
+	return { home, reasons, since, visited: names.includes(home) ? names : [home, ...names] }
 }
 
 export function isEmpty(crew: Crew) {
@@ -110,7 +145,8 @@ export function isEmpty(crew: Crew) {
 		crew.delegation === "default" &&
 		Object.keys(crew.access).length === 0 &&
 		Object.keys(crew.models).length === 0 &&
-		!crew.away
+		!crew.away &&
+		crew.autoFallback === undefined
 	)
 }
 
@@ -193,7 +229,7 @@ export function readManaged(value: unknown): Managed {
 
 export function applyPreset(crew: Crew, name: string, preset: Record<string, string>): Crew {
 	const models = Object.fromEntries(Object.entries(preset).filter(([, model]) => isModelRef(model)))
-	return { ...crew, models, preset: name }
+	return { ...crew, models, preset: name, fallback: undefined }
 }
 
 export function readPresets(value: unknown): Presets {
@@ -277,4 +313,130 @@ export function note(configured: readonly AgentInfo[], effective: readonly Agent
 	if (effective.length === 0)
 		return "The user turned off all subagents for this session with /crew; do the work yourself."
 	return `The user turned off these subagents for this session with /crew: ${off.join(", ")}.`
+}
+
+export function readFallbacks(value: unknown): Fallbacks {
+	if (!isRecord(value)) return {}
+	const fallbacks: Fallbacks = {}
+	for (const [name, entry] of Object.entries(value)) {
+		if (!isRecord(entry)) continue
+		const targets: Partial<Record<Reason, string>> = {}
+		for (const reason of REASONS) {
+			const target = entry[reason]
+			if (typeof target === "string" && target && target !== name) targets[reason] = target
+		}
+		if (Object.keys(targets).length > 0) fallbacks[name] = targets
+	}
+	return fallbacks
+}
+
+/** Whether the root's crew falls back automatically: its own switch, else the configured default. */
+export function fallbackOn(crew: Crew, byDefault = false) {
+	return crew.autoFallback ?? byDefault
+}
+
+export interface RetryError {
+	readonly type: string
+	readonly status?: number
+}
+
+/** What a 403 means: some gateways answer it when the client is off the corporate network. */
+export type Forbidden = "auth" | "network"
+
+export function readForbidden(value: unknown): Forbidden {
+	return value === "network" ? "network" : "auth"
+}
+
+/**
+ * The reason a refused request may fall back, or undefined to leave it to
+ * OpenCode; rate limits, stalls and other errors never fall back. `repeated`
+ * marks outages that may be brief (gateway errors and overloads, transport
+ * failures, timeouts, missing routes), which only fall back once they persist.
+ */
+export function classify(error: RetryError, forbidden: Forbidden): { reason: Reason; repeated: boolean } | undefined {
+	switch (error.type) {
+		case "provider.quota":
+			return { reason: "quota", repeated: false }
+		case "provider.auth":
+			if (error.status === 401) return { reason: "auth", repeated: false }
+			if (error.status === 403) return { reason: forbidden, repeated: false }
+			return undefined
+		case "provider.invalid-request":
+			return error.status === 404 ? { reason: "network", repeated: true } : undefined
+		case "provider.internal":
+		case "provider.transport":
+		case "provider.timeout":
+			return { reason: "network", repeated: true }
+		default:
+			return undefined
+	}
+}
+
+export function providerOf(ref: string) {
+	return ref.slice(0, ref.indexOf("/"))
+}
+
+/** Whether any of the crew's models runs on `providerID`. */
+export function usesProvider(crew: Crew, providerID: string) {
+	return Object.values(crew.models).some((model) => providerOf(model) === providerID)
+}
+
+/** Whether the crew's running fallback left `providerID` behind: a preset it tried before uses it. */
+export function leftProvider(crew: Crew, presets: Presets, providerID: string) {
+	const visited = crew.fallback?.visited ?? []
+	return visited
+		.filter((name) => name !== crew.preset)
+		.some((name) => Object.values(presets[name] ?? {}).some((model) => providerOf(model) === providerID))
+}
+
+/** The crew on its next fallback preset for `reason`, or undefined when there is none left to try. */
+export function nextFallback(
+	crew: Crew,
+	presets: Presets,
+	fallbacks: Fallbacks,
+	reason: Reason,
+	now: number,
+): Crew | undefined {
+	if (!crew.preset) return undefined
+	const target = fallbacks[crew.preset]?.[reason]
+	const visited = crew.fallback?.visited ?? [crew.preset]
+	if (!target || visited.includes(target) || !presets[target]) return undefined
+	const fallback: Fallback = {
+		home: crew.fallback?.home ?? crew.preset,
+		reasons: [...(crew.fallback?.reasons ?? []), reason],
+		since: now,
+		visited: [...visited, target],
+	}
+	return { ...applyPreset(crew, target, presets[target]), fallback }
+}
+
+/** The crew back on the preset its fallback started from, or undefined when that preset is gone. */
+export function homeCrew(crew: Crew, presets: Presets): Crew | undefined {
+	const home = crew.fallback?.home
+	if (!home || !presets[home]) return undefined
+	return applyPreset(crew, home, presets[home])
+}
+
+const LABELS: Record<Reason, string> = { quota: "quota", auth: "token", network: "network" }
+
+/** A preset's fallbacks, e.g. `main → backup (quota, token), spare (network)`. */
+export function chainText(fallbacks: Fallbacks, preset: string) {
+	const targets = new Map<string, string[]>()
+	for (const reason of REASONS) {
+		const target = fallbacks[preset]?.[reason]
+		if (target) targets.set(target, [...(targets.get(target) ?? []), LABELS[reason]])
+	}
+	if (targets.size === 0) return undefined
+	return `${preset} → ${[...targets].map(([target, reasons]) => `${target} (${reasons.join(", ")})`).join(", ")}`
+}
+
+const clock = (time: number) => new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+
+/** The crew's fallback state, e.g. `spare — fallback from main (quota, then network) at 2:05 PM, back at 2:35 PM`. */
+export function fallbackText(crew: Crew, minutes: number) {
+	const { fallback } = crew
+	if (!fallback || !crew.preset) return undefined
+	const reasons = fallback.reasons.map((reason) => LABELS[reason]).filter((label, i, all) => label !== all[i - 1])
+	const back = fallback.since + minutes * 60_000
+	return `${crew.preset} — fallback from ${fallback.home} (${reasons.join(", then ")}) at ${clock(fallback.since)}, back at ${clock(back)}`
 }

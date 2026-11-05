@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 import { type AgentInfo, KEY, type ModelRef, type Presets, type Rule } from "./policy"
-import { open, type SessionInfo, type TuiContext } from "./tui"
+import { type FallbackOptions, open, type SessionInfo, type TuiContext, watch } from "./tui"
 
 type Select = TuiContext["ui"]["dialog"]["select"]
 type Toast = { message: string; variant?: string }
@@ -283,5 +283,167 @@ describe("presets", () => {
 		})
 		await open(run.context, { mixed: { general: "acme/sonnet", dev: "acme/opus#max" } }, {})
 		expect(descriptions).toEqual(["dev (main)=acme/opus#max, general=acme/sonnet"])
+	})
+})
+
+describe("fallback", () => {
+	const fallback: FallbackOptions = {
+		fallbacks: { deep: { quota: "plain", auth: "plain", network: "legacy" } },
+		minutes: 30,
+		byDefault: false,
+	}
+	const since = new Date(2026, 10, 4, 14, 5).getTime()
+	const inFallback = (): SessionInfo => ({
+		...rootSession(),
+		metadata: {
+			[KEY]: {
+				delegation: "default",
+				access: {},
+				models: { ...presets.plain },
+				preset: "plain",
+				autoFallback: true,
+				fallback: { home: "deep", reasons: ["quota"], since, visited: ["deep", "plain"] },
+			},
+		},
+	})
+	const choose =
+		(kind: string, then?: (options: Parameters<Select>[0]) => unknown): Select =>
+		async (options) => {
+			if (options.title === "Crew")
+				return options.options.find((option) => (option.value as { kind: string }).kind === kind)?.value
+			return then?.(options) as never
+		}
+	const rows = async (session: SessionInfo | undefined, options = fallback) => {
+		let shown: Record<string, string | undefined> = {}
+		const run = fake({
+			session,
+			select: async (input) => {
+				shown = Object.fromEntries(input.options.map((option) => [option.title, option.description]))
+				return undefined
+			},
+		})
+		await open(run.context, presets, {}, options)
+		return shown
+	}
+
+	test("is hidden without a fallback map", async () => {
+		expect(await rows(undefined, { ...fallback, fallbacks: {} })).not.toHaveProperty("Fallback")
+	})
+
+	test("is off by default and describes the chain when on", async () => {
+		expect((await rows(undefined)).Fallback).toBe("Off")
+		const session = rootSession()
+		session.metadata = { [KEY]: { delegation: "default", access: {}, models: {}, preset: "deep", autoFallback: true } }
+		expect((await rows(session)).Fallback).toBe("On: deep → plain (quota, token), legacy (network)")
+		expect((await rows(rootSession(), { ...fallback, byDefault: true })).Fallback).toContain("On: pick a preset")
+	})
+
+	test("shows a running fallback with its times", async () => {
+		const shown = await rows(inFallback())
+		const at = (time: number) => new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+		const text = `plain — fallback from deep (quota) at ${at(since)}, back at ${at(since + 30 * 60_000)}`
+		expect(shown.Preset).toBe(text)
+		expect(shown.Fallback).toBe(`On: ${text}`)
+	})
+
+	test("turning it on keeps the rest of the crew", async () => {
+		const run = fake({ select: choose("fallback") })
+		await open(run.context, presets, {}, fallback)
+		expect(run.updates[0]?.metadata?.[KEY]).toEqual({
+			delegation: "default",
+			access: { explore: "deny" },
+			models: { general: "acme/opus" },
+			away: true,
+			autoFallback: true,
+		})
+		expect(run.switches).toEqual([])
+	})
+
+	test("turning it off leaves the current preset and ends the fallback", async () => {
+		const run = fake({ select: choose("fallback"), session: inFallback() })
+		await open(run.context, presets, {}, fallback)
+		expect(run.updates[0]?.metadata?.[KEY]).toEqual({
+			delegation: "default",
+			access: {},
+			models: { ...presets.plain },
+			preset: "plain",
+			autoFallback: false,
+		})
+		expect(run.toasts.at(-1)?.message).toBe("Crew: fallback off")
+	})
+
+	test("picking a preset ends the fallback but keeps the switch", async () => {
+		const run = fake({ select: choose("preset", () => "deep"), session: inFallback() })
+		await open(run.context, presets, {}, fallback)
+		const crew = run.updates[0]?.metadata?.[KEY] as Record<string, unknown>
+		expect(crew).toMatchObject({ preset: "deep", autoFallback: true })
+		expect(crew.fallback).toBeUndefined()
+	})
+
+	test("a model edit ends the fallback", async () => {
+		const run = fake({
+			select: async (options) => {
+				if (options.title === "Crew") return options.options.find((option) => option.title === "general")?.value
+				if (options.title === "general") return "unset" as never
+				return undefined
+			},
+			session: inFallback(),
+		})
+		await open(run.context, presets, {}, fallback)
+		const crew = run.updates[0]?.metadata?.[KEY] as Record<string, unknown>
+		expect(crew).toMatchObject({ autoFallback: true, models: { dev: "acme/opus" } })
+		expect(crew.preset).toBeUndefined()
+		expect(crew.fallback).toBeUndefined()
+	})
+
+	test("reset turns it off", async () => {
+		const run = fake({ select: choose("reset"), session: inFallback() })
+		await open(run.context, presets, {}, fallback)
+		expect(run.updates[0]?.metadata).toEqual({})
+	})
+
+	test("announces the server's switches once and forgets deleted sessions", () => {
+		const toasts: Toast[] = []
+		const handlers: Record<string, (event: { data: never }) => void> = {}
+		let stopped = 0
+		const run = fake({ select: async () => undefined })
+		const context: TuiContext = {
+			...run.context,
+			data: {
+				...run.context.data,
+				on: (type, callback) => {
+					handlers[type] = callback as (event: { data: never }) => void
+					return () => void stopped++
+				},
+			},
+			ui: { ...run.context.ui, toast: { show: (toast) => toasts.push(toast) } },
+		}
+		const stop = watch(context, 30)
+		const update = (sessionID: string, fallback?: unknown) =>
+			handlers["session.metadata.updated"]?.({
+				data: {
+					sessionID,
+					metadata: {
+						[KEY]: { delegation: "default", access: {}, models: {}, preset: fallback ? "plain" : "deep", fallback },
+					},
+				} as never,
+			})
+		const now = { home: "deep", reasons: ["quota"], since: Date.now(), visited: ["deep", "plain"] }
+		update("watched")
+		update("watched", now)
+		update("watched", now)
+		update("watched")
+		expect(toasts.map((toast) => toast.variant)).toEqual(["warning", "info"])
+		expect(toasts[0]?.message).toStartWith("Crew: plain — fallback from deep (quota)")
+		expect(toasts[1]?.message).toBe("Crew: back on deep")
+
+		// An old fallback of a deleted session is not announced when an ID reappears.
+		update("gone", now)
+		handlers["session.deleted"]?.({ data: { sessionID: "gone" } as never })
+		update("gone", { ...now, since: Date.now() - 600_000 })
+		expect(toasts).toHaveLength(3)
+
+		stop()
+		expect(stopped).toBe(2)
 	})
 })

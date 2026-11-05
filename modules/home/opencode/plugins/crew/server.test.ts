@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test"
 
 import { type AgentInfo, AWAY_ANSWER, AWAY_NOTE, KEY, type Rule } from "./policy"
-import plugin, { rootCrew, type ServerContext } from "./server"
+import plugin, { rootCrew, type ServerContext, type SessionHooks } from "./server"
 
 type Session = { parentID?: string; metadata?: Record<string, unknown>; permissions?: Rule[] }
 type ToolHook = Parameters<ServerContext["tool"]["hook"]>[1]
-type ContextHook = Parameters<ServerContext["session"]["hook"]>[1]
+type ContextHook = (event: SessionHooks["context"]) => Promise<void>
 type PermissionHook = Parameters<ServerContext["permission"]["hook"]>[1]
 type PermissionEvent = Parameters<PermissionHook>[0]
 
@@ -33,8 +33,8 @@ function fakeContext(sessions: Record<string, Session>) {
 		agent: { list: async () => ({ data: agents }) },
 		session: {
 			get: async ({ sessionID }) => ({ id: sessionID, ...sessions[sessionID] }),
-			hook: async (_name, callback) => {
-				hooks.context = callback
+			hook: async (name, callback) => {
+				if (name === "context") hooks.context = callback as ContextHook
 			},
 		},
 		tool: {

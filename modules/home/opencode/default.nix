@@ -20,6 +20,17 @@ let
   # Local plugins must be directories: OpenCode loads `index.ts` (or
   # `server.ts`) on the server and `tui.ts` in the terminal client.
   hostPlugin = ./plugins/host;
+
+  # Fallback presets without the unset reasons, as the crew plugins read them.
+  crewFallback = lib.mapAttrs (_: lib.filterAttrs (_: target: target != null)) cfg.crewFallback;
+  crewOptions = {
+    presets = cfg.crewPresets;
+    fallback = crewFallback;
+    fallbackMinutes = cfg.crewFallbackMinutes;
+    fallbackDefault = cfg.crewFallbackDefault;
+    networkFailures = cfg.crewFallbackNetworkFailures;
+    forbidden = cfg.crewFallbackForbiddenAs;
+  };
   crewPlugin = ./plugins/crew;
   lanesPlugin = ./plugins/lanes;
 
@@ -276,6 +287,79 @@ in
       };
       description = "Named `/crew` presets: agent ID to `provider/model[#variant]`. An entry for the root session's agent also switches its model; presets are only applied when selected.";
     };
+    crewFallback = lib.mkOption {
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = lib.genAttrs [ "quota" "auth" "network" ] (
+            reason:
+            lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Preset to fall back to on a `${reason}` refusal.";
+            }
+          );
+        }
+      );
+      default = { };
+      example = {
+        primary = {
+          quota = "secondary";
+          auth = "secondary";
+          network = "backup";
+        };
+        secondary.quota = "backup";
+      };
+      description = ''
+        Automatic `/crew` fallback: per preset, the preset the whole session
+        tree switches to when its provider refuses a request because the quota
+        is used up (`quota`), the credentials were rejected (`auth`: HTTP 401,
+        and 403 unless `crewFallbackForbiddenAs` says otherwise), or the
+        provider is unreachable (`network`: gateway errors and overloads,
+        transport failures, timeouts and missing routes, once one request hit
+        `crewFallbackNetworkFailures` of them in a row or OpenCode stopped
+        retrying). Rate limits never fall back. A missing
+        preset or reason means no fallback, and a preset is tried at most once
+        per fallback. Each session turns this on with the Fallback switch in
+        `/crew`, which is hidden while this is empty.
+      '';
+    };
+    crewFallbackMinutes = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 30;
+      description = "Minutes after a `/crew` fallback before the crew returns to the preset it fell back from.";
+    };
+    crewFallbackNetworkFailures = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 4;
+      description = ''
+        Network failures in a row of one request on one provider, counted
+        over OpenCode's retries of that request, before `/crew` falls back for
+        `network`. The count restarts with each new request, when the session
+        changes provider, and after 10 minutes without a failure; when
+        OpenCode stops retrying, the fallback happens at once.
+      '';
+    };
+    crewFallbackForbiddenAs = lib.mkOption {
+      type = lib.types.enum [
+        "auth"
+        "network"
+      ];
+      default = "auth";
+      description = ''
+        The `/crew` fallback reason for an HTTP 403 refusal. Some gateways
+        answer 403 when the client is off the corporate network; `network`
+        then falls back like an outage, at once.
+      '';
+    };
+    crewFallbackDefault = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether the `/crew` Fallback switch is on in sessions where it was
+        never set; it acts once a preset is selected. Reset in `/crew` returns
+        the switch to this default.
+      '';
+    };
     automationConfig = lib.mkOption {
       inherit (jsonFormat) type;
       readOnly = true;
@@ -285,6 +369,22 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = lib.concatLists (
+      lib.mapAttrsToList (
+        preset: targets:
+        [
+          {
+            assertion = cfg.crewPresets ? ${preset};
+            message = "mine.home.opencode.crewFallback.${preset}: there is no crew preset `${preset}`.";
+          }
+        ]
+        ++ lib.mapAttrsToList (reason: target: {
+          assertion = cfg.crewPresets ? ${target} && target != preset;
+          message = "mine.home.opencode.crewFallback.${preset}.${reason}: `${target}` is not another crew preset.";
+        }) targets
+      ) crewFallback
+    );
+
     mine.home.opencode = {
       agents = {
         # `dev` replaces the built-in build agent; plan is unused.
@@ -502,8 +602,7 @@ in
           plugins = [
             {
               package = "${crewPlugin}";
-              options = {
-                presets = cfg.crewPresets;
+              options = crewOptions // {
                 # Started by the lanes plugin rather than the subagent tool;
                 # switching it off hides the lanes tools and skill.
                 managed.planner = {
@@ -557,7 +656,10 @@ in
               provider = cfg.searchProvider;
             };
           }
-          "${crewPlugin}"
+          {
+            package = "${crewPlugin}";
+            options = crewOptions;
+          }
           {
             package = "${lanesPlugin}";
             options.maxLanes = cfg.maxLanes;
