@@ -20,12 +20,12 @@
         system = prev.stdenv.hostPlatform.system;
         upstream = inputs.opencode.packages.${system};
         # v2.2.5's nix/hashes.json predates the last bun.lock changes before the
-        # tag, so upstream's node_modules hashes are stale. Only aarch64-linux
-        # is verified; x86_64-linux still uses upstream's. Drop this on the next
+        # tag, so upstream's node_modules hashes are stale. Drop this on the next
         # tag bump.
         nodeModulesHash =
           {
             aarch64-linux = "sha256-x903Q+5ThC84PQjCp/4Id/2pRXT7YtYNFHfkLvFsO+0=";
+            x86_64-linux = "sha256-+GgLX4lq8fPOJVoDGp220uiCTLB0ZwrBkcNo36q9MZU=";
           }
           .${system} or null;
         opencode =
