@@ -3,9 +3,9 @@
 // may launch in this session and the model each one runs on. While the user is
 // away, the whole session tree works without them: no questions, and approval
 // prompts are granted (configured denies are settled before plugins see them).
-// With its Fallback switch on, a crew whose provider refuses (quota, token,
-// network) moves the whole tree to the configured fallback preset and returns
-// to its home preset after `fallbackMinutes`.
+// With a fallback chain selected, a crew whose provider refuses (quota, token,
+// network) moves the whole tree to the chain's next preset and returns to its
+// home preset after `fallbackMinutes`.
 import { appendFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -16,8 +16,7 @@ import {
 	available,
 	classify,
 	type Crew,
-	type Fallbacks,
-	fallbackOn,
+	type Chains,
 	type Forbidden,
 	formatModel,
 	homeCrew,
@@ -32,10 +31,12 @@ import {
 	QUESTION,
 	type RetryError,
 	readCrew,
-	readFallbacks,
+	readChainName,
+	readChains,
 	readForbidden,
 	readPresets,
 	type Rule,
+	selectedChain,
 	TOOL,
 	toolDescription,
 	usesProvider,
@@ -144,9 +145,10 @@ function fileLog(): Log {
 
 export interface FallbackSettings {
 	presets: Presets
-	fallbacks: Fallbacks
+	chains: Chains
 	minutes: number
-	byDefault: boolean
+	// The chain of sessions that never chose one.
+	defaultChain?: string
 	// Consecutive outage failures on one provider before a session falls back.
 	networkFailures: number
 	forbidden: Forbidden
@@ -160,9 +162,9 @@ const positive = (value: unknown, fallback: number) =>
 export function fallbackSettings(options: Readonly<Record<string, unknown>> = {}): FallbackSettings {
 	return {
 		presets: readPresets(options.presets),
-		fallbacks: readFallbacks(options.fallback),
+		chains: readChains(options.fallback),
 		minutes: positive(options.fallbackMinutes, 30),
-		byDefault: options.fallbackDefault === true,
+		defaultChain: readChainName(options.fallbackDefault),
 		networkFailures: positive(options.networkFailures, 4),
 		forbidden: readForbidden(options.forbidden),
 		now: () => Date.now(),
@@ -251,13 +253,15 @@ export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 		await locked(rootID, async () => {
 			const root = await ctx.session.get({ sessionID: rootID })
 			const crew = readCrew(root.metadata?.[KEY])
-			if (!fallbackOn(crew, settings.byDefault) || !crew.preset || !presets[crew.preset]) return
+			const chain = selectedChain(crew, settings.chains, settings.defaultChain)
+			if (!chain || !crew.preset || !presets[crew.preset]) return
 			const fields = {
 				session: event.sessionID,
 				root: rootID,
 				agent: event.agent,
 				model: formatModel(event.model),
 				reason,
+				chain,
 			}
 			if (!usesProvider(crew, event.model.providerID)) {
 				// Another session already moved the crew on from this provider: follow it.
@@ -269,7 +273,7 @@ export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 				}
 				return
 			}
-			const next = nextFallback(crew, presets, settings.fallbacks, reason, settings.now())
+			const next = nextFallback(crew, presets, settings.chains[chain] ?? {}, reason, settings.now())
 			if (!next?.preset) return
 			// Stored first, so a switch back is never missed; a stale entry is dropped by check().
 			const rootAgent = root.agent ?? (event.sessionID === rootID ? event.agent : undefined)
@@ -312,7 +316,8 @@ export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 					const root = await ctx.session.get({ sessionID: rootID }).catch(() => undefined)
 					if (!root) return ctx.storage?.remove(key)
 					const crew = readCrew(root.metadata?.[KEY])
-					if (!fallbackOn(crew, settings.byDefault) || !crew.fallback) return ctx.storage?.remove(key)
+					// The return home does not depend on the chain, which may have changed or gone.
+					if (!crew.fallback) return ctx.storage?.remove(key)
 					if (settings.now() < crew.fallback.since + settings.minutes * 60_000) return
 					// Without its home preset the crew stays where it is, out of the fallback.
 					const home = homeCrew(crew, presets)
@@ -381,7 +386,7 @@ export default {
 		})
 
 		const settings = fallbackSettings(ctx.options)
-		if (Object.keys(settings.fallbacks).length === 0) return
+		if (Object.keys(settings.chains).length === 0) return
 		const fallback = fallbacks(ctx, settings)
 		await ctx.session.hook("retry", fallback.retry)
 		let checking = false

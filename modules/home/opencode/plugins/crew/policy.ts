@@ -17,8 +17,11 @@ export interface Crew {
 	preset?: string
 	// The user is away: no questions, approval prompts granted, for this whole session tree.
 	away?: boolean
-	// Automatic fallback to another preset when a provider refuses; unset means the configured default.
-	autoFallback?: boolean
+	// The fallback chain that moves the crew to another preset when a provider
+	// refuses: its name, false for off, unset for the configured default.
+	fallbackChain?: string | false
+	// Stored by the version before named chains: on, with the default or first chain.
+	autoFallback?: true
 	fallback?: Fallback
 }
 
@@ -35,6 +38,9 @@ export interface Fallback {
 
 /** Per preset, the preset to fall back to for each reason. */
 export type Fallbacks = Record<string, Partial<Record<Reason, string>>>
+
+/** Named fallback chains the user picks from per session. */
+export type Chains = Record<string, Fallbacks>
 
 export interface Rule {
 	action: string
@@ -119,7 +125,10 @@ export function readCrew(value: unknown): Crew {
 	}
 	if (typeof value.preset === "string" && value.preset) crew.preset = value.preset
 	if (value.away === true) crew.away = true
-	if (typeof value.autoFallback === "boolean") crew.autoFallback = value.autoFallback
+	if ((typeof value.fallbackChain === "string" && value.fallbackChain) || value.fallbackChain === false)
+		crew.fallbackChain = value.fallbackChain
+	else if (value.autoFallback === false) crew.fallbackChain = false
+	else if (value.autoFallback === true) crew.autoFallback = true
 	const fallback = readFallback(value.fallback)
 	if (fallback && crew.preset) crew.fallback = fallback
 	return crew
@@ -146,7 +155,8 @@ export function isEmpty(crew: Crew) {
 		Object.keys(crew.access).length === 0 &&
 		Object.keys(crew.models).length === 0 &&
 		!crew.away &&
-		crew.autoFallback === undefined
+		crew.fallbackChain === undefined &&
+		!crew.autoFallback
 	)
 }
 
@@ -330,9 +340,34 @@ export function readFallbacks(value: unknown): Fallbacks {
 	return fallbacks
 }
 
-/** Whether the root's crew falls back automatically: its own switch, else the configured default. */
-export function fallbackOn(crew: Crew, byDefault = false) {
-	return crew.autoFallback ?? byDefault
+export function readChains(value: unknown): Chains {
+	if (!isRecord(value)) return {}
+	const chains: Chains = {}
+	for (const [name, chain] of Object.entries(value)) if (name && isRecord(chain)) chains[name] = readFallbacks(chain)
+	return chains
+}
+
+export function readChainName(value: unknown): string | undefined {
+	return typeof value === "string" && value ? value : undefined
+}
+
+/**
+ * The fallback chain the root's crew uses, or undefined when off: its own
+ * choice, else the configured default. A chain no longer configured is off;
+ * the earlier on switch means the default chain, else the first by name.
+ */
+export function selectedChain(crew: Crew, chains: Chains, byDefault?: string): string | undefined {
+	const known = (name: string | undefined) => (name !== undefined && chains[name] ? name : undefined)
+	if (crew.fallbackChain === false) return undefined
+	if (crew.fallbackChain !== undefined) return known(crew.fallbackChain)
+	if (crew.autoFallback) return known(byDefault) ?? Object.keys(chains).sort()[0]
+	return known(byDefault)
+}
+
+/** The crew on `chain`, or off for undefined; a choice equal to the default is left unstored, so it follows the default. */
+export function withChain(crew: Crew, chain: string | undefined, byDefault?: string): Crew {
+	const fallbackChain = chain === byDefault ? undefined : (chain ?? false)
+	return { ...crew, fallbackChain, autoFallback: undefined }
 }
 
 export interface RetryError {
@@ -419,7 +454,7 @@ export function homeCrew(crew: Crew, presets: Presets): Crew | undefined {
 
 const LABELS: Record<Reason, string> = { quota: "quota", auth: "token", network: "network" }
 
-/** A preset's fallbacks, e.g. `main → backup (quota, token), spare (network)`. */
+/** A preset's fallbacks, e.g. `main → backup (quota, token), spare (network)`; a target for every reason needs none. */
 export function chainText(fallbacks: Fallbacks, preset: string) {
 	const targets = new Map<string, string[]>()
 	for (const reason of REASONS) {
@@ -427,7 +462,26 @@ export function chainText(fallbacks: Fallbacks, preset: string) {
 		if (target) targets.set(target, [...(targets.get(target) ?? []), LABELS[reason]])
 	}
 	if (targets.size === 0) return undefined
-	return `${preset} → ${[...targets].map(([target, reasons]) => `${target} (${reasons.join(", ")})`).join(", ")}`
+	const text = [...targets].map(([target, reasons]) =>
+		reasons.length === REASONS.length ? target : `${target} (${reasons.join(", ")})`,
+	)
+	return `${preset} → ${text.join(", ")}`
+}
+
+/** The route a chain takes from `preset`, e.g. `main → backup (quota, token), spare (network); backup → spare`. */
+export function routeText(fallbacks: Fallbacks, preset: string) {
+	const queue = [preset]
+	const parts: string[] = []
+	for (let i = 0; i < queue.length; i++) {
+		const name = queue[i] as string
+		const text = chainText(fallbacks, name)
+		if (text) parts.push(text)
+		for (const reason of REASONS) {
+			const target = fallbacks[name]?.[reason]
+			if (target && !queue.includes(target)) queue.push(target)
+		}
+	}
+	return parts.length > 0 ? parts.join("; ") : undefined
 }
 
 const clock = (time: number) => new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })

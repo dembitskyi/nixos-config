@@ -21,15 +21,19 @@ let
   # `server.ts`) on the server and `tui.ts` in the terminal client.
   hostPlugin = ./plugins/host;
 
-  # Fallback presets without the unset reasons, as the crew plugins read them.
-  crewFallback = lib.mapAttrs (_: lib.filterAttrs (_: target: target != null)) cfg.crewFallback;
+  # Fallback chains without the unset reasons, as the crew plugins read them.
+  crewFallback = lib.mapAttrs (
+    _: lib.mapAttrs (_: lib.filterAttrs (_: target: target != null))
+  ) cfg.crewFallback;
   crewOptions = {
     presets = cfg.crewPresets;
     fallback = crewFallback;
     fallbackMinutes = cfg.crewFallbackMinutes;
-    fallbackDefault = cfg.crewFallbackDefault;
     networkFailures = cfg.crewFallbackNetworkFailures;
     forbidden = cfg.crewFallbackForbiddenAs;
+  }
+  // lib.optionalAttrs (cfg.crewFallbackDefault != null) {
+    fallbackDefault = cfg.crewFallbackDefault;
   };
   crewPlugin = ./plugins/crew;
   lanesPlugin = ./plugins/lanes;
@@ -289,38 +293,51 @@ in
     };
     crewFallback = lib.mkOption {
       type = lib.types.attrsOf (
-        lib.types.submodule {
-          options = lib.genAttrs [ "quota" "auth" "network" ] (
-            reason:
-            lib.mkOption {
-              type = lib.types.nullOr lib.types.str;
-              default = null;
-              description = "Preset to fall back to on a `${reason}` refusal.";
-            }
-          );
-        }
+        lib.types.attrsOf (
+          lib.types.submodule {
+            options = lib.genAttrs [ "quota" "auth" "network" ] (
+              reason:
+              lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                description = "Preset to fall back to on a `${reason}` refusal.";
+              }
+            );
+          }
+        )
       );
       default = { };
       example = {
-        primary = {
-          quota = "secondary";
-          auth = "secondary";
-          network = "backup";
+        via-backup = {
+          main = {
+            quota = "backup";
+            auth = "backup";
+            network = "spare";
+          };
+          backup = {
+            quota = "spare";
+            auth = "spare";
+            network = "spare";
+          };
         };
-        secondary.quota = "backup";
+        spare-only.main = {
+          quota = "spare";
+          auth = "spare";
+          network = "spare";
+        };
       };
       description = ''
-        Automatic `/crew` fallback: per preset, the preset the whole session
-        tree switches to when its provider refuses a request because the quota
-        is used up (`quota`), the credentials were rejected (`auth`: HTTP 401,
-        and 403 unless `crewFallbackForbiddenAs` says otherwise), or the
-        provider is unreachable (`network`: gateway errors and overloads,
-        transport failures, timeouts and missing routes, once one request hit
+        Named chains for automatic `/crew` fallback, selected per session in
+        `/crew` (the Fallback entry is hidden while this is empty). A chain
+        maps each preset to the preset the whole session tree switches to when
+        its provider refuses a request because the quota is used up (`quota`),
+        the credentials were rejected (`auth`: HTTP 401, and 403 unless
+        `crewFallbackForbiddenAs` says otherwise), or the provider is
+        unreachable (`network`: gateway errors and overloads, transport
+        failures, timeouts and missing routes, once one request hit
         `crewFallbackNetworkFailures` of them in a row or OpenCode stopped
-        retrying). Rate limits never fall back. A missing
-        preset or reason means no fallback, and a preset is tried at most once
-        per fallback. Each session turns this on with the Fallback switch in
-        `/crew`, which is hidden while this is empty.
+        retrying). Rate limits never fall back. A missing preset or reason
+        means no fallback, and a preset is tried at most once per fallback.
       '';
     };
     crewFallbackMinutes = lib.mkOption {
@@ -352,12 +369,13 @@ in
       '';
     };
     crewFallbackDefault = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "via-backup";
       description = ''
-        Whether the `/crew` Fallback switch is on in sessions where it was
-        never set; it acts once a preset is selected. Reset in `/crew` returns
-        the switch to this default.
+        The `crewFallback` chain of every session that never picked one in
+        `/crew`, existing sessions included; null means off. It acts once a
+        preset is selected; Reset in `/crew` returns a session to it.
       '';
     };
     automationConfig = lib.mkOption {
@@ -369,19 +387,36 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    assertions = lib.concatLists (
+    assertions = [
+      {
+        assertion = cfg.crewFallbackDefault == null || crewFallback ? ${cfg.crewFallbackDefault};
+        message = "mine.home.opencode.crewFallbackDefault: there is no crewFallback chain `${toString cfg.crewFallbackDefault}`.";
+      }
+    ]
+    ++ lib.concatLists (
       lib.mapAttrsToList (
-        preset: targets:
+        chain: presets:
         [
           {
-            assertion = cfg.crewPresets ? ${preset};
-            message = "mine.home.opencode.crewFallback.${preset}: there is no crew preset `${preset}`.";
+            assertion = chain != "";
+            message = "mine.home.opencode.crewFallback: chain names must not be empty.";
           }
         ]
-        ++ lib.mapAttrsToList (reason: target: {
-          assertion = cfg.crewPresets ? ${target} && target != preset;
-          message = "mine.home.opencode.crewFallback.${preset}.${reason}: `${target}` is not another crew preset.";
-        }) targets
+        ++ lib.concatLists (
+          lib.mapAttrsToList (
+            preset: targets:
+            [
+              {
+                assertion = cfg.crewPresets ? ${preset};
+                message = "mine.home.opencode.crewFallback.${chain}.${preset}: there is no crew preset `${preset}`.";
+              }
+            ]
+            ++ lib.mapAttrsToList (reason: target: {
+              assertion = cfg.crewPresets ? ${target} && target != preset;
+              message = "mine.home.opencode.crewFallback.${chain}.${preset}.${reason}: `${target}` is not another crew preset.";
+            }) targets
+          ) presets
+        )
       ) crewFallback
     );
 

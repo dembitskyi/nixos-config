@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test"
 
 import {
 	type Crew,
+	type Chains,
 	chainText,
 	classify,
 	type Fallbacks,
@@ -10,7 +11,13 @@ import {
 	KEY,
 	type ModelRef,
 	type Presets,
+	readChainName,
+	readChains,
 	readCrew,
+	routeText,
+	selectedChain,
+	withChain,
+	withCrew,
 } from "./policy"
 import plugin, { fallbacks, type FallbackSettings, PENDING, type RetryEvent, type ServerContext } from "./server"
 
@@ -20,20 +27,30 @@ const presets: Presets = {
 	spare: { dev: "spare/opus#medium", general: "spare/opus", explore: "spare/haiku" },
 }
 
-const chain: Fallbacks = {
+const via: Fallbacks = {
 	main: { quota: "backup", auth: "backup", network: "spare" },
 	backup: { quota: "spare", auth: "spare", network: "spare" },
 }
 
 type Session = { parentID?: string; agent?: string; model?: ModelRef; metadata?: Record<string, unknown> }
 
+const spareOnly: Fallbacks = { main: { quota: "spare", auth: "spare", network: "spare" } }
+const chains: Chains = { "via-backup": via, "spare-only": spareOnly }
+
 function crewOn(preset: string, extra: Partial<Crew> = {}): Crew {
-	return { delegation: "default", access: {}, models: { ...presets[preset] }, preset, autoFallback: true, ...extra }
+	return {
+		delegation: "default",
+		access: {},
+		models: { ...presets[preset] },
+		preset,
+		fallbackChain: "via-backup",
+		...extra,
+	}
 }
 
 function fake(
 	root: Crew | undefined,
-	input: { minutes?: number; byDefault?: boolean; fallbacks?: Fallbacks; forbidden?: Forbidden } = {},
+	input: { minutes?: number; defaultChain?: string; chains?: Chains; forbidden?: Forbidden } = {},
 ) {
 	const clock = { now: 1_000_000 }
 	const sessions: Record<string, Session> = {
@@ -78,9 +95,9 @@ function fake(
 	}
 	const settings: FallbackSettings = {
 		presets,
-		fallbacks: input.fallbacks ?? chain,
+		chains: input.chains ?? chains,
 		minutes: input.minutes ?? 30,
-		byDefault: input.byDefault ?? false,
+		defaultChain: input.defaultChain,
 		networkFailures: 4,
 		forbidden: input.forbidden ?? "auth",
 		now: () => clock.now,
@@ -145,14 +162,72 @@ describe("classify", () => {
 	})
 
 	test("describes a preset's chain by target", () => {
-		expect(chainText(chain, "main")).toBe("main → backup (quota, token), spare (network)")
-		expect(chainText(chain, "spare")).toBeUndefined()
+		expect(chainText(via, "main")).toBe("main → backup (quota, token), spare (network)")
+		expect(chainText(via, "backup")).toBe("backup → spare")
+		expect(chainText(via, "spare")).toBeUndefined()
+		expect(routeText(via, "main")).toBe("main → backup (quota, token), spare (network); backup → spare")
+		expect(routeText(spareOnly, "main")).toBe("main → spare")
+		expect(routeText(spareOnly, "backup")).toBeUndefined()
+	})
+})
+
+describe("chains", () => {
+	test("read the Nix option shape, dropping unset reasons and malformed entries", () => {
+		expect(
+			readChains({
+				"via-backup": { main: { quota: "backup", auth: "backup", network: "spare" }, backup: { quota: "spare" } },
+				"spare-only": { main: { quota: "spare", auth: null, network: "main" } },
+				empty: {},
+				"": { main: { quota: "spare" } },
+				bad: "x",
+			}),
+		).toEqual({
+			"via-backup": { main: { quota: "backup", auth: "backup", network: "spare" }, backup: { quota: "spare" } },
+			"spare-only": { main: { quota: "spare" } },
+			empty: {},
+		})
+		expect(readChains(undefined)).toEqual({})
+		expect(readChainName("via-backup")).toBe("via-backup")
+		for (const value of [undefined, null, "", 1]) expect(readChainName(value)).toBeUndefined()
+	})
+
+	const stored = (fields: Record<string, unknown>) =>
+		readCrew({ delegation: "default", access: {}, models: {}, ...fields })
+
+	test("map the earlier on/off switch", () => {
+		const on = stored({ autoFallback: true })
+		expect(selectedChain(on, chains, "via-backup")).toBe("via-backup")
+		expect(selectedChain(on, chains)).toBe("spare-only")
+		expect(selectedChain(on, chains, "removed")).toBe("spare-only")
+		const off = stored({ autoFallback: false })
+		expect(off.fallbackChain).toBe(false)
+		expect(selectedChain(off, chains, "via-backup")).toBeUndefined()
+		const absent = stored({})
+		expect(selectedChain(absent, chains)).toBeUndefined()
+		expect(selectedChain(absent, chains, "spare-only")).toBe("spare-only")
+	})
+
+	test("read a chosen chain; unknown chains are off", () => {
+		expect(selectedChain(stored({ fallbackChain: "spare-only" }), chains, "via-backup")).toBe("spare-only")
+		expect(selectedChain(stored({ fallbackChain: "removed" }), chains, "via-backup")).toBeUndefined()
+		expect(selectedChain(stored({ fallbackChain: false }), chains, "via-backup")).toBeUndefined()
+	})
+
+	test("store a choice and replace the earlier switch", () => {
+		const legacy = stored({ autoFallback: true })
+		expect(withCrew({}, withChain(legacy, "via-backup"))).toEqual({
+			[KEY]: { delegation: "default", access: {}, models: {}, fallbackChain: "via-backup" },
+		})
+		expect(withCrew({}, withChain(legacy, undefined))).toEqual({})
+		expect(withChain(legacy, undefined, "via-backup").fallbackChain).toBe(false)
+		expect(withChain(legacy, "via-backup", "via-backup").fallbackChain).toBeUndefined()
+		expect(withChain(legacy, "spare-only", "via-backup").fallbackChain).toBe("spare-only")
 	})
 })
 
 describe("retry", () => {
 	test("off by default: a quota refusal changes nothing", async () => {
-		const run = fake(crewOn("main", { autoFallback: undefined }))
+		const run = fake(crewOn("main", { fallbackChain: undefined }))
 		const event = refusal("child", "general", "main/opus")
 		await run.retry(event)
 		expect(event.decision).toEqual({ retry: false })
@@ -162,17 +237,61 @@ describe("retry", () => {
 	})
 
 	test("explicitly off wins over the default", async () => {
-		const run = fake(crewOn("main", { autoFallback: false }), { byDefault: true })
+		const run = fake(crewOn("main", { fallbackChain: false }), { defaultChain: "via-backup" })
 		await run.retry(refusal("child", "general", "main/opus"))
 		expect(run.crew().preset).toBe("main")
 	})
 
-	test("the default turns it on for a fresh crew", async () => {
-		const run = fake(crewOn("main", { autoFallback: undefined }), { byDefault: true })
+	test("the default chain applies to a fresh crew", async () => {
+		const run = fake(crewOn("main", { fallbackChain: undefined }), { defaultChain: "spare-only" })
 		const event = refusal("child", "general", "main/opus")
 		await run.retry(event)
-		expect(run.crew().preset).toBe("backup")
+		expect(run.crew().preset).toBe("spare")
 		expect(event.decision).toEqual({ retry: true, delay: 0 })
+	})
+
+	test("an unknown chain is off", async () => {
+		const run = fake(crewOn("main", { fallbackChain: "removed" }), { defaultChain: "via-backup" })
+		await run.retry(refusal("child", "general", "main/opus"))
+		expect(run.crew().preset).toBe("main")
+	})
+
+	test("the selected chain decides the route", async () => {
+		const direct = fake(crewOn("main", { fallbackChain: "spare-only" }))
+		await direct.retry(refusal("child", "general", "main/opus"))
+		expect(direct.crew().preset).toBe("spare")
+		expect(direct.crew().fallback?.visited).toEqual(["main", "spare"])
+
+		const stepped = fake(crewOn("main"))
+		await stepped.retry(refusal("child", "general", "main/opus"))
+		expect(stepped.crew().preset).toBe("backup")
+		await stepped.retry(refusal("child", "general", "backup/opus"))
+		expect(stepped.crew().fallback?.visited).toEqual(["main", "backup", "spare"])
+	})
+
+	test("a chain changed mid-fallback keeps the fallback and takes the next hop", async () => {
+		const run = fake(crewOn("main"), {
+			chains: { ...chains, "back-only": { main: { quota: "backup" } }, onward: { backup: { quota: "spare" } } },
+		})
+		const root = run.sessions.root as Session
+		root.metadata = { [KEY]: crewOn("main", { fallbackChain: "back-only" }) }
+		await run.retry(refusal("child", "general", "main/opus"))
+		expect(run.crew().preset).toBe("backup")
+		const event = refusal("child", "general", "backup/opus")
+		await run.retry(event)
+		expect(run.crew().preset).toBe("backup")
+		expect(event.decision).toEqual({ retry: false })
+
+		root.metadata = { [KEY]: { ...run.crew(), fallbackChain: "onward" } }
+		await run.retry(refusal("child", "general", "backup/opus"))
+		expect(run.crew()).toMatchObject({
+			preset: "spare",
+			fallbackChain: "onward",
+			fallback: { home: "main", visited: ["main", "backup", "spare"] },
+		})
+		run.clock.now += 30 * 60_000
+		await run.check()
+		expect(run.crew().preset).toBe("main")
 	})
 
 	test("first fallback switches the crew, the root and the failing session and retries at once", async () => {
@@ -187,7 +306,7 @@ describe("retry", () => {
 			models: presets.backup as Record<string, string>,
 			preset: "backup",
 			away: true,
-			autoFallback: true,
+			fallbackChain: "via-backup",
 			fallback: { home: "main", reasons: ["quota"], since: 1_000_000, visited: ["main", "backup"] },
 		})
 		expect(run.switches).toEqual([
@@ -240,7 +359,7 @@ describe("retry", () => {
 
 	test("never returns to a preset already tried in the episode", async () => {
 		const run = fake(crewOn("main"), {
-			fallbacks: { main: { quota: "backup" }, backup: { quota: "main" } },
+			chains: { "via-backup": { main: { quota: "backup" }, backup: { quota: "main" } } },
 		})
 		await run.retry(refusal("child", "general", "main/opus"))
 		const event = refusal("child", "general", "backup/opus")
@@ -450,7 +569,7 @@ describe("switch back", () => {
 		let reads = 0
 		;(run.ctx.session as { get: typeof get }).get = async (input) => {
 			if (input.sessionID === "root" && ++reads === 2)
-				(run.sessions.root as Session).metadata = { [KEY]: crewOn("spare", { autoFallback: true }) }
+				(run.sessions.root as Session).metadata = { [KEY]: crewOn("spare") }
 			return get(input)
 		}
 		await run.check()
@@ -496,11 +615,22 @@ describe("switch back", () => {
 		expect(run.store.size).toBe(0)
 	})
 
+	test("returns home after the chain was removed or renamed", async () => {
+		const run = fake(crewOn("main"), { minutes: 10 })
+		await run.retry(refusal("child", "general", "main/opus"))
+		const root = run.sessions.root as Session
+		root.metadata = { [KEY]: { ...run.crew(), fallbackChain: "renamed" } }
+		run.clock.now += 10 * 60_000
+		await run.check()
+		expect(run.crew()).toEqual(crewOn("main", { fallbackChain: "renamed" }))
+		expect(run.store.size).toBe(0)
+	})
+
 	test("turning the switch off stops the switch back", async () => {
 		const run = fake(crewOn("main"), { minutes: 10 })
 		await run.retry(refusal("child", "general", "main/opus"))
 		const root = run.sessions.root as Session
-		root.metadata = { [KEY]: { ...crewOn("backup"), autoFallback: false } }
+		root.metadata = { [KEY]: { ...crewOn("backup"), fallbackChain: false } }
 		run.clock.now += 10 * 60_000
 		await run.check()
 		expect(run.crew().preset).toBe("backup")
@@ -519,7 +649,7 @@ describe("plugin", () => {
 		process.env.XDG_DATA_HOME = "/tmp/opencode/crew-test"
 		for (const [options, expected] of [
 			[{}, ["context"]],
-			[{ presets, fallback: chain }, ["context", "retry"]],
+			[{ presets, fallback: chains }, ["context", "retry"]],
 		] as const) {
 			const names: string[] = []
 			const run = fake(crewOn("main"))

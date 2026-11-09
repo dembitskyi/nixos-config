@@ -288,23 +288,31 @@ describe("presets", () => {
 
 describe("fallback", () => {
 	const fallback: FallbackOptions = {
-		fallbacks: { deep: { quota: "plain", auth: "plain", network: "legacy" } },
+		chains: {
+			stepped: {
+				deep: { quota: "plain", auth: "plain", network: "legacy" },
+				plain: { quota: "legacy", auth: "legacy", network: "legacy" },
+			},
+			direct: { deep: { quota: "legacy", auth: "legacy", network: "legacy" } },
+		},
 		minutes: 30,
-		byDefault: false,
 	}
 	const since = new Date(2026, 10, 4, 14, 5).getTime()
+	const crewOf = (fields: Record<string, unknown>) => ({ delegation: "default", access: {}, models: {}, ...fields })
 	const inFallback = (): SessionInfo => ({
 		...rootSession(),
 		metadata: {
-			[KEY]: {
-				delegation: "default",
-				access: {},
+			[KEY]: crewOf({
 				models: { ...presets.plain },
 				preset: "plain",
-				autoFallback: true,
+				fallbackChain: "stepped",
 				fallback: { home: "deep", reasons: ["quota"], since, visited: ["deep", "plain"] },
-			},
+			}),
 		},
+	})
+	const withMetadata = (fields: Record<string, unknown>): SessionInfo => ({
+		...rootSession(),
+		metadata: { [KEY]: crewOf(fields) },
 	})
 	const choose =
 		(kind: string, then?: (options: Parameters<Select>[0]) => unknown): Select =>
@@ -325,17 +333,50 @@ describe("fallback", () => {
 		await open(run.context, presets, {}, options)
 		return shown
 	}
+	/** The Fallback picker's rows for `session`, and the value it marks as current. */
+	const picker = async (session: SessionInfo, options = fallback) => {
+		let shown: Record<string, string | undefined> = {}
+		let current: unknown
+		const run = fake({
+			session,
+			select: choose("fallback", (input) => {
+				shown = Object.fromEntries(input.options.map((option) => [option.title, option.description]))
+				current = input.current
+				return undefined
+			}),
+		})
+		await open(run.context, presets, {}, options)
+		return { shown, current }
+	}
 
-	test("is hidden without a fallback map", async () => {
-		expect(await rows(undefined, { ...fallback, fallbacks: {} })).not.toHaveProperty("Fallback")
+	test("is hidden without chains", async () => {
+		expect(await rows(undefined, { ...fallback, chains: {} })).not.toHaveProperty("Fallback")
 	})
 
-	test("is off by default and describes the chain when on", async () => {
+	test("is off by default and shows the selected chain's route", async () => {
 		expect((await rows(undefined)).Fallback).toBe("Off")
-		const session = rootSession()
-		session.metadata = { [KEY]: { delegation: "default", access: {}, models: {}, preset: "deep", autoFallback: true } }
-		expect((await rows(session)).Fallback).toBe("On: deep → plain (quota, token), legacy (network)")
-		expect((await rows(rootSession(), { ...fallback, byDefault: true })).Fallback).toContain("On: pick a preset")
+		expect((await rows(withMetadata({ preset: "deep", fallbackChain: "stepped" }))).Fallback).toBe(
+			"stepped: deep → plain (quota, token), legacy (network); plain → legacy",
+		)
+		expect((await rows(withMetadata({ preset: "plain", fallbackChain: "direct" }))).Fallback).toBe(
+			"direct: no fallback from plain",
+		)
+		expect((await rows(rootSession(), { ...fallback, defaultChain: "direct" })).Fallback).toBe(
+			"direct: pick a preset to fall back from",
+		)
+	})
+
+	test("an earlier on switch shows as the default or first chain", async () => {
+		const legacy = withMetadata({ preset: "deep", autoFallback: true })
+		expect((await rows(legacy)).Fallback).toBe("direct: deep → legacy")
+		expect((await rows(legacy, { ...fallback, defaultChain: "stepped" })).Fallback).toStartWith("stepped: ")
+		expect((await rows(withMetadata({ autoFallback: false }), { ...fallback, defaultChain: "stepped" })).Fallback).toBe(
+			"Off",
+		)
+	})
+
+	test("an unknown chain shows as off", async () => {
+		expect((await rows(withMetadata({ preset: "deep", fallbackChain: "removed" }))).Fallback).toBe("Off")
 	})
 
 	test("shows a running fallback with its times", async () => {
@@ -343,40 +384,77 @@ describe("fallback", () => {
 		const at = (time: number) => new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
 		const text = `plain — fallback from deep (quota) at ${at(since)}, back at ${at(since + 30 * 60_000)}`
 		expect(shown.Preset).toBe(text)
-		expect(shown.Fallback).toBe(`On: ${text}`)
+		expect(shown.Fallback).toBe(text)
 	})
 
-	test("turning it on keeps the rest of the crew", async () => {
-		const run = fake({ select: choose("fallback") })
+	test("the picker offers Off and each chain's route from the current preset", async () => {
+		const { shown, current } = await picker(withMetadata({ preset: "deep", fallbackChain: "direct" }))
+		expect(shown).toEqual({
+			Off: "Stay on the current preset when a provider refuses",
+			direct: "deep → legacy",
+			stepped: "deep → plain (quota, token), legacy (network); plain → legacy",
+		})
+		expect(current).toBe("direct")
+		const plain = await picker(withMetadata({ preset: "plain" }))
+		expect(plain.shown.direct).toBe("no fallback from plain")
+		expect(plain.current).toBe("")
+	})
+
+	test("choosing a chain keeps the rest of the crew", async () => {
+		const run = fake({ select: choose("fallback", () => "stepped") })
 		await open(run.context, presets, {}, fallback)
 		expect(run.updates[0]?.metadata?.[KEY]).toEqual({
 			delegation: "default",
 			access: { explore: "deny" },
 			models: { general: "acme/opus" },
 			away: true,
-			autoFallback: true,
+			fallbackChain: "stepped",
 		})
 		expect(run.switches).toEqual([])
+		expect(run.toasts.at(-1)?.message).toBe("Crew: fallback stepped: pick a preset to fall back from")
 	})
 
-	test("turning it off leaves the current preset and ends the fallback", async () => {
-		const run = fake({ select: choose("fallback"), session: inFallback() })
-		await open(run.context, presets, {}, fallback)
-		expect(run.updates[0]?.metadata?.[KEY]).toEqual({
-			delegation: "default",
-			access: {},
-			models: { ...presets.plain },
-			preset: "plain",
-			autoFallback: false,
+	test("choosing the default chain stores no choice", async () => {
+		const run = fake({
+			select: choose("fallback", () => "stepped"),
+			session: withMetadata({ fallbackChain: "direct" }),
 		})
-		expect(run.toasts.at(-1)?.message).toBe("Crew: fallback off")
+		await open(run.context, presets, {}, { ...fallback, defaultChain: "stepped" })
+		expect(run.updates[0]?.metadata?.[KEY]).not.toHaveProperty("fallbackChain")
 	})
 
-	test("picking a preset ends the fallback but keeps the switch", async () => {
+	test("changing the chain keeps a running fallback", async () => {
+		const run = fake({ select: choose("fallback", () => "direct"), session: inFallback() })
+		await open(run.context, presets, {}, fallback)
+		expect(run.updates[0]?.metadata?.[KEY]).toMatchObject({
+			preset: "plain",
+			fallbackChain: "direct",
+			fallback: { home: "deep", since },
+		})
+	})
+
+	test("Off leaves the current preset and ends the fallback", async () => {
+		const run = fake({ select: choose("fallback", () => ""), session: inFallback() })
+		await open(run.context, presets, {}, fallback)
+		expect(run.updates[0]?.metadata?.[KEY]).toEqual(crewOf({ models: { ...presets.plain }, preset: "plain" }))
+		expect(run.toasts.at(-1)?.message).toBe("Crew: fallback off")
+
+		const kept = fake({ select: choose("fallback", () => ""), session: inFallback() })
+		await open(kept.context, presets, {}, { ...fallback, defaultChain: "stepped" })
+		expect(kept.updates[0]?.metadata?.[KEY]).toMatchObject({ fallbackChain: false })
+	})
+
+	test("dismissing the picker changes nothing", async () => {
+		const run = fake({ select: choose("fallback", () => undefined), session: inFallback() })
+		await open(run.context, presets, {}, fallback)
+		expect(run.updates).toEqual([])
+	})
+
+	test("picking a preset ends the fallback but keeps the chain", async () => {
 		const run = fake({ select: choose("preset", () => "deep"), session: inFallback() })
 		await open(run.context, presets, {}, fallback)
 		const crew = run.updates[0]?.metadata?.[KEY] as Record<string, unknown>
-		expect(crew).toMatchObject({ preset: "deep", autoFallback: true })
+		expect(crew).toMatchObject({ preset: "deep", fallbackChain: "stepped" })
 		expect(crew.fallback).toBeUndefined()
 	})
 
@@ -391,7 +469,7 @@ describe("fallback", () => {
 		})
 		await open(run.context, presets, {}, fallback)
 		const crew = run.updates[0]?.metadata?.[KEY] as Record<string, unknown>
-		expect(crew).toMatchObject({ autoFallback: true, models: { dev: "acme/opus" } })
+		expect(crew).toMatchObject({ fallbackChain: "stepped", models: { dev: "acme/opus" } })
 		expect(crew.preset).toBeUndefined()
 		expect(crew.fallback).toBeUndefined()
 	})

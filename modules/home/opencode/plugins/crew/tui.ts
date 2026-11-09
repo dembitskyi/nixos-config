@@ -5,19 +5,18 @@
 // plugin, so they get a model and, when they name their tools, an On/Off switch.
 // A preset's entry for the root session's agent also switches the root session's
 // model, and the prompt's pending model choice when the root session is shown.
-// The Fallback switch lets the server move the crew to a fallback preset when
-// its provider refuses; picking a preset or Reset ends a fallback.
+// The Fallback entry picks the named chain along which the server moves the
+// crew to other presets when its provider refuses; picking a preset or Reset
+// ends a fallback.
 import {
 	type Access,
 	type AgentInfo,
 	access,
 	applyPreset,
 	type Crew,
-	chainText,
+	type Chains,
 	effect,
 	emptyCrew,
-	type Fallbacks,
-	fallbackOn,
 	fallbackText,
 	formatModel,
 	KEY,
@@ -28,9 +27,13 @@ import {
 	parseModel,
 	type Rule,
 	readCrew,
-	readFallbacks,
+	readChainName,
+	readChains,
 	readManaged,
 	readPresets,
+	routeText,
+	selectedChain,
+	withChain,
 	withCrew,
 	withRules,
 } from "./policy"
@@ -135,19 +138,20 @@ interface State {
 
 /** Automatic fallback settings from the Nix options. */
 export interface FallbackOptions {
-	fallbacks: Fallbacks
+	chains: Chains
 	minutes: number
-	byDefault: boolean
+	// The chain of sessions that never chose one.
+	defaultChain?: string
 }
 
-const NO_FALLBACK: FallbackOptions = { fallbacks: {}, minutes: 30, byDefault: false }
+const NO_FALLBACK: FallbackOptions = { chains: {}, minutes: 30 }
 
 export function readFallbackOptions(options: Readonly<Record<string, unknown>>): FallbackOptions {
 	const minutes = options.fallbackMinutes
 	return {
-		fallbacks: readFallbacks(options.fallback),
+		chains: readChains(options.fallback),
 		minutes: typeof minutes === "number" && Number.isInteger(minutes) && minutes > 0 ? minutes : 30,
-		byDefault: options.fallbackDefault === true,
+		defaultChain: readChainName(options.fallbackDefault),
 	}
 }
 
@@ -293,12 +297,43 @@ function presetText(preset: Record<string, string>, main: string | undefined) {
 	return [...root, ...rest].join(", ")
 }
 
-/** What the Fallback switch does for the crew now. */
-function fallbackState(crew: Crew, fallback: FallbackOptions) {
-	const active = fallbackText(crew, fallback.minutes)
-	if (active) return active
+/** The route `chain` takes from the crew's preset. */
+function chainRoute(crew: Crew, fallback: FallbackOptions, chain: string) {
 	if (!crew.preset) return "pick a preset to fall back from"
-	return chainText(fallback.fallbacks, crew.preset) ?? `no fallback for ${crew.preset}`
+	return routeText(fallback.chains[chain] ?? {}, crew.preset) ?? `no fallback from ${crew.preset}`
+}
+
+/** The Fallback line: off, the selected chain's route, or a running fallback. */
+function fallbackState(crew: Crew, fallback: FallbackOptions, chain: string | undefined) {
+	if (!chain) return "Off"
+	return fallbackText(crew, fallback.minutes) ?? `${chain}: ${chainRoute(crew, fallback, chain)}`
+}
+
+/** Picks the fallback chain; changing it keeps a running fallback, Off ends it where it is. */
+async function editFallback(context: TuiContext, crew: Crew, fallback: FallbackOptions, chain: string | undefined) {
+	const picked = await context.ui.dialog.select({
+		title: "Fallback",
+		current: chain ?? "",
+		options: [
+			{ title: "Off", value: "", description: "Stay on the current preset when a provider refuses" },
+			...Object.keys(fallback.chains)
+				.sort()
+				.map((name) => ({
+					title: name,
+					value: name,
+					description: chainRoute(crew, fallback, name),
+				})),
+		],
+	})
+	if (picked === undefined) return undefined
+	if (!picked) {
+		const next = withChain(crew, undefined, fallback.defaultChain)
+		return { crew: { ...next, fallback: undefined }, summary: "fallback off" } satisfies Change
+	}
+	return {
+		crew: withChain(crew, picked, fallback.defaultChain),
+		summary: `fallback ${picked}: ${chainRoute(crew, fallback, picked)}`,
+	} satisfies Change
 }
 
 /** Returns the change to apply, or undefined when the dialog was dismissed. */
@@ -310,7 +345,7 @@ async function edit(
 	fallback: FallbackOptions,
 ): Promise<Change | undefined> {
 	const { crew } = state
-	const autoFallback = fallbackOn(crew, fallback.byDefault)
+	const chain = selectedChain(crew, fallback.chains, fallback.defaultChain)
 	const choice = await context.ui.dialog.select<Choice>({
 		title: "Crew",
 		options: [
@@ -348,12 +383,12 @@ async function edit(
 				description: crew.away ? "On: no questions, approvals granted" : "Off",
 				category: "Session",
 			},
-			...(Object.keys(fallback.fallbacks).length > 0
+			...(Object.keys(fallback.chains).length > 0
 				? [
 						{
 							title: "Fallback",
 							value: { kind: "fallback" } as Choice,
-							description: autoFallback ? `On: ${fallbackState(crew, fallback)}` : "Off",
+							description: fallbackState(crew, fallback, chain),
 							category: "Session",
 						},
 					]
@@ -405,11 +440,7 @@ async function edit(
 				summary: crew.away ? "away off" : "away on: no questions, approvals granted",
 			} satisfies Change
 		case "fallback":
-			// Off ends a running fallback where it is: the crew stays on its current preset.
-			return {
-				crew: { ...crew, autoFallback: !autoFallback, fallback: undefined },
-				summary: autoFallback ? "fallback off" : `fallback on: ${fallbackState(crew, fallback)}`,
-			} satisfies Change
+			return editFallback(context, crew, fallback, chain)
 		case "reset":
 			return { crew: emptyCrew(), summary: "reset" } satisfies Change
 		default:
@@ -533,7 +564,7 @@ export default {
 		const presets = readPresets(context.options.presets)
 		const managed = readManaged(context.options.managed)
 		const fallback = readFallbackOptions(context.options)
-		const stop = Object.keys(fallback.fallbacks).length > 0 ? watch(context, fallback.minutes) : undefined
+		const stop = Object.keys(fallback.chains).length > 0 ? watch(context, fallback.minutes) : undefined
 		// Keymap layers need the app's keymap provider, so register from an app slot.
 		context.ui.slot({
 			append: "app",
