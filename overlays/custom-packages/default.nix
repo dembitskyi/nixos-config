@@ -1,9 +1,8 @@
 # keep-sorted start skip_lines=1
 (final: prev: {
   browser-use = import ../pkgs/browser-use.nix { pkgs = final; };
-  # Pinned ahead of nixpkgs: Opus 5.5 needs >= 2.1.280 and native AGENTS.md on
-  # third-party endpoints >= 2.1.281. The guard hands back to nixpkgs once it
-  # catches up. Refresh the manifest from
+  # Pinned ahead of nixpkgs: Fable 5.2 needs >= 2.1.321. The guard hands back
+  # to nixpkgs once it catches up. Refresh the manifest from
   # https://downloads.claude.ai/claude-code-releases/<version>/manifest.zst.json.
   claude-code =
     let
