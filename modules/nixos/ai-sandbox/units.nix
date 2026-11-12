@@ -106,6 +106,13 @@ let
   caBundle = "/etc/ssl/certs/ca-bundle.crt";
 
   sleep = lib.getExe' pkgs.coreutils "sleep";
+
+  deviceBinds = devices: lib.mapAttrsToList (path: _: "-${path}") devices;
+  deviceAllows =
+    devices:
+    lib.mapAttrsToList (
+      path: device: "${if device.group == null then path else device.group} ${device.access}"
+    ) devices;
 in
 {
   inherit
@@ -114,7 +121,31 @@ in
     netns
     network
     sshAgentDir
+    deviceBinds
+    deviceAllows
     ;
+
+  devicesType = lib.types.attrsOf (
+    lib.types.submodule {
+      options = {
+        access = lib.mkOption {
+          type = lib.types.enum [
+            "r"
+            "w"
+            "rw"
+          ];
+          default = "r";
+          description = "Access the unit's device policy grants.";
+        };
+        group = lib.mkOption {
+          type = lib.types.nullOr (lib.types.strMatching "(char|block)-.+");
+          default = null;
+          example = "char-usb_device";
+          description = "Device group from /proc/devices to allow instead of the node, for a directory of nodes.";
+        };
+      };
+    }
+  );
 
   backendPort = port: port + 10000;
 
@@ -181,7 +212,8 @@ in
           "${sshAgentDir}:${sshAgentDir}"
           "/dev/pts/ptmx:/dev/ptmx"
         ]
-        ++ map (dev: "-${dev}") cfg.devices;
+        ++ deviceBinds cfg.devices;
+        DeviceAllow = deviceAllows cfg.devices;
         BindReadOnlyPaths = [
           "${resolvConf}:/etc/resolv.conf"
         ]

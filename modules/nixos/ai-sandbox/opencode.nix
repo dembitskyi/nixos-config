@@ -94,7 +94,8 @@ let
             ++ lib.optionals (!server.isolated) (
               [ "${userHome}/.local/share/opencode:${userHome}/.local/share/opencode" ] ++ cfg.binds
             )
-            ++ map (dev: "-${dev}") server.devices;
+            ++ units.deviceBinds server.devices;
+            DeviceAllow = units.deviceAllows server.devices;
             BindReadOnlyPaths = [
               "${userHome}/.config/opencode:${userHome}/.config/opencode"
             ]
@@ -194,10 +195,17 @@ in
               isolated = lib.mkEnableOption "its own home (database, logins, logs), password and workspace folder ~/workspace/opencode-<id>; only the config is shared";
               docker = lib.mkEnableOption "the Docker daemon (root-equivalent) and CLI in the server";
               devices = lib.mkOption {
-                type = lib.types.listOf lib.types.str;
-                default = [ ];
-                example = [ "/dev/bus/usb" ];
-                description = "Device nodes or directories bound into this server only (skipped when missing).";
+                type = units.devicesType;
+                default = { };
+                example = lib.literalExpression ''
+                  {
+                    "/dev/bus/usb" = {
+                      access = "rw";
+                      group = "char-usb_device";
+                    };
+                  }
+                '';
+                description = "Like `mine.ai-sandbox.devices`, for this server only.";
               };
               clients = lib.mkOption {
                 type = lib.types.listOf (lib.types.strMatching "[a-z0-9]+");

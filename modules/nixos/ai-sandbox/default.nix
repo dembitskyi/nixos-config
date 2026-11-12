@@ -132,10 +132,15 @@ in
     };
 
     devices = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [ ];
-      example = [ "/dev/dri/renderD128" ];
-      description = "Device nodes bound into every sandboxed unit, such as a GPU's.";
+      type = units.devicesType;
+      default = { };
+      example = lib.literalExpression ''
+        {
+          "/dev/dri/renderD128".access = "rw";
+          "/dev/video0" = { };
+        }
+      '';
+      description = "Devices bound into every sandboxed unit (skipped when missing) and allowed by its device policy.";
     };
 
     home = lib.mkOption {
