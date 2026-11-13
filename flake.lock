@@ -56,11 +56,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1783568743,
-        "narHash": "sha256-6fWRfwtXSiirrn1flA8iH//RpRzYm9v3BSeaHpwVnVY=",
+        "lastModified": 1794446473,
+        "narHash": "sha256-xuewIq0J1vqEtcuklbPJMnHo0sJfcrzjHxa7QeB9AmM=",
         "owner": "dembitskyi",
         "repo": "eyeblink-monitor",
-        "rev": "da8e13acde2a2a20eb92683f02f24754070ce036",
+        "rev": "b0019be845766bcf6abb4317423039bda94ffe64",
         "type": "github"
       },
       "original": {
