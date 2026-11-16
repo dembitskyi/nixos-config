@@ -542,7 +542,7 @@ in
           description = "Writing Analyzing and Improving Prompt";
           mode = "primary";
           hidden = true;
-          model = lib.mkDefault "github-copilot/gpt-5.6-luna";
+          model = lib.mkDefault "github-copilot/gpt-6-luna";
           system = builtins.readFile ./prompts/english.md;
           tools = [ ];
         };
@@ -551,7 +551,7 @@ in
           description = "Classifies desktop notifications and outputs structured action markers.";
           mode = "primary";
           hidden = true;
-          model = lib.mkDefault "github-copilot/gpt-5.4-mini";
+          model = lib.mkDefault "github-copilot/gpt-6-luna";
           system = builtins.readFile ./prompts/notification.md;
           tools = [ ];
         };
