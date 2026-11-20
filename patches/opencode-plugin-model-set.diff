@@ -1,8 +1,8 @@
 diff --git a/packages/plugin/src/tui/context.ts b/packages/plugin/src/tui/context.ts
-index c01aeb5..4256604 100644
+index fe641b39d5..b1b4c2519a 100644
 --- a/packages/plugin/src/tui/context.ts
 +++ b/packages/plugin/src/tui/context.ts
-@@ -551,6 +551,12 @@ export interface UI {
+@@ -530,6 +530,12 @@ export interface UI {
    readonly model: {
      /** The prompt's selected model; variant is undefined for the model default. Reactive when read in a Solid computation. */
      current(): { readonly providerID: string; readonly modelID: string; readonly variant?: string } | undefined
@@ -16,17 +16,17 @@ index c01aeb5..4256604 100644
        /** Variant IDs of the selected model. Reactive when read in a Solid computation. */
        list(): readonly string[]
 diff --git a/packages/tui/src/plugin/api.tsx b/packages/tui/src/plugin/api.tsx
-index 35a4eac..3b77fe9 100644
+index c79b86a37a..d8217a858c 100644
 --- a/packages/tui/src/plugin/api.tsx
 +++ b/packages/tui/src/plugin/api.tsx
-@@ -1,5 +1,5 @@
+@@ -1,5 +1,6 @@
  import { PluginContextProvider } from "@opencode/plugin/tui"
--import { createRoot, createUniqueId, getOwner, onCleanup, runWithOwner, untrack, type JSX } from "solid-js"
-+import { batch, createRoot, createUniqueId, getOwner, onCleanup, runWithOwner, untrack, type JSX } from "solid-js"
- import type {
-   Context,
-   Dialog,
-@@ -285,6 +285,23 @@ export function createPluginContext(input: {
+ import {
++  batch,
+   children,
+   createMemo,
+   createRoot,
+@@ -303,6 +304,23 @@ export function createPluginContext(input: {
            if (!selection) return
            return { providerID: selection.providerID, modelID: selection.modelID, variant: selection.variant }
          },
@@ -51,7 +51,7 @@ index 35a4eac..3b77fe9 100644
            list: () => host.local.model.variant.list(),
            set(variant) {
 diff --git a/packages/tui/test/plugin-model.test.tsx b/packages/tui/test/plugin-model.test.tsx
-index b802f7c..322f125 100644
+index b802f7cae8..322f12520f 100644
 --- a/packages/tui/test/plugin-model.test.tsx
 +++ b/packages/tui/test/plugin-model.test.tsx
 @@ -1,10 +1,14 @@

@@ -1,11 +1,6 @@
-// `/crew`: per-session control of the subagents the root session may launch, the
-// model each one runs on, and whether the user is away. Settings live in the root
-// session's metadata under `crew`; access is enforced through that session's
-// native permission rules, models are injected by the server plugin when a
-// subagent is launched, and the server plugin applies the away rules. The crew's
-// rules also deny the playbook skills (`crew`, `crew-<agent>`) of members that are
-// off, and managed members (started by another plugin) can be switched off, which
-// hides their tools and skill.
+// `/crew`: per-session control of the subagents the root session may launch, their
+// models, and the away switch. Settings live in the root session's metadata; access
+// uses native permission rules, and the server plugin injects models and applies away.
 
 export type Access = "allow" | "deny"
 export type Delegation = "default" | Access
@@ -17,8 +12,7 @@ export interface Crew {
 	preset?: string
 	// The user is away: no questions, approval prompts granted, for this whole session tree.
 	away?: boolean
-	// The fallback chain that moves the crew to another preset when a provider
-	// refuses: its name, false for off, unset for the configured default.
+	// Fallback chain name, false for off, unset for the configured default.
 	fallbackChain?: string | false
 	// Stored by the version before named chains: on, with the default or first chain.
 	autoFallback?: true
@@ -28,7 +22,7 @@ export interface Crew {
 /** Why a provider refused: used up quota, a rejected token, or an outage. */
 export type Reason = "quota" | "auth" | "network"
 
-/** A fallback episode: the preset it started from, the reason of each switch, when the last one happened, and the presets tried. */
+/** A fallback episode: origin preset, switch reasons, last switch time and presets tried. */
 export interface Fallback {
 	home: string
 	reasons: Reason[]
@@ -36,10 +30,8 @@ export interface Fallback {
 	visited: string[]
 }
 
-/** Per preset, the preset to fall back to for each reason. */
 export type Fallbacks = Record<string, Partial<Record<Reason, string>>>
 
-/** Named fallback chains the user picks from per session. */
 export type Chains = Record<string, Fallbacks>
 
 export interface Rule {
@@ -65,15 +57,6 @@ export interface AgentInfo {
 
 export type Presets = Record<string, Record<string, string>>
 
-/** A member another plugin starts: its label, and optionally the tools and skill `/crew` can switch off. */
-export interface ManagedInfo {
-	label: string
-	// Permission action pattern of its tools, e.g. `lanes_*`.
-	tools?: string
-	skill?: string
-}
-
-export type Managed = Record<string, ManagedInfo>
 export type Source = "configured" | "inherited" | "user"
 
 export const KEY = "crew"
@@ -163,7 +146,7 @@ export function isEmpty(crew: Crew) {
 const sorted = <T>(record: Record<string, T>) => Object.entries(record).sort(([a], [b]) => a.localeCompare(b))
 
 /** Session permission rules: the overall mode first, then per-agent exceptions and their skills. */
-export function crewRules(crew: Crew, managed: Managed = {}): Rule[] {
+export function crewRules(crew: Crew): Rule[] {
 	const off = crew.delegation === "deny"
 	const rules: Rule[] =
 		crew.delegation === "default"
@@ -179,15 +162,6 @@ export function crewRules(crew: Crew, managed: Managed = {}): Rule[] {
 				]
 	let strategy = false
 	for (const [agent, effect] of sorted(crew.access)) {
-		const info = managed[agent]
-		if (info?.tools) {
-			// On means the configured access: an explicit allow would leak the tools into child sessions.
-			if (effect === "deny") {
-				rules.push({ action: info.tools, resource: "*", effect })
-				if (info.skill) rules.push({ action: SKILL, resource: info.skill, effect })
-			}
-			continue
-		}
 		rules.push({ action: TOOL, resource: agent, effect })
 		// Skills are only allowed back after "All off": child sessions copy these rules.
 		if (effect === "deny" || off) rules.push({ action: SKILL, resource: `${PLAYBOOK}${agent}`, effect })
@@ -197,44 +171,21 @@ export function crewRules(crew: Crew, managed: Managed = {}): Rule[] {
 	return rules
 }
 
-function isOwned(rule: Rule, managed: Managed) {
-	const infos = Object.values(managed)
-	if (rule.action === TOOL || infos.some((info) => info.tools === rule.action)) return true
-	if (rule.action !== SKILL) return false
-	return (
-		rule.resource === STRATEGY ||
-		rule.resource.startsWith(PLAYBOOK) ||
-		infos.some((info) => info.skill === rule.resource)
-	)
+function isOwned(rule: Rule) {
+	if (rule.action === TOOL) return true
+	return rule.action === SKILL && (rule.resource === STRATEGY || rule.resource.startsWith(PLAYBOOK))
 }
 
-/** The session's rules with only the crew's own ones (subagents, playbooks, managed tools) replaced. */
-export function withRules(rules: readonly Rule[] | undefined, crew: Crew, managed: Managed = {}): Rule[] {
-	return [...(rules ?? []).filter((rule) => !isOwned(rule, managed)), ...crewRules(crew, managed)]
+/** The session's rules with only the crew's own ones (subagents and playbooks) replaced. */
+export function withRules(rules: readonly Rule[] | undefined, crew: Crew): Rule[] {
+	return [...(rules ?? []).filter((rule) => !isOwned(rule)), ...crewRules(crew)]
 }
 
-/** Returns the session metadata with the crew stored, or removed when empty. */
 export function withCrew(metadata: unknown, crew: Crew): Record<string, unknown> {
 	const next: Record<string, unknown> = isRecord(metadata) ? { ...metadata } : {}
 	if (isEmpty(crew)) delete next[KEY]
 	else next[KEY] = crew
 	return next
-}
-
-/** Reads the managed members: a label alone, or an object with a label and optional tools and skill. */
-export function readManaged(value: unknown): Managed {
-	if (!isRecord(value)) return {}
-	const managed: Managed = {}
-	for (const [agent, entry] of Object.entries(value)) {
-		if (typeof entry === "string") managed[agent] = { label: entry }
-		else if (isRecord(entry) && typeof entry.label === "string") {
-			const info: ManagedInfo = { label: entry.label }
-			if (typeof entry.tools === "string" && entry.tools) info.tools = entry.tools
-			if (typeof entry.skill === "string" && entry.skill) info.skill = entry.skill
-			managed[agent] = info
-		}
-	}
-	return managed
 }
 
 export function applyPreset(crew: Crew, name: string, preset: Record<string, string>): Crew {
@@ -266,8 +217,7 @@ export function formatModel(ref: ModelRef) {
 	return `${ref.providerID}/${ref.id}${ref.variant ? `#${ref.variant}` : ""}`
 }
 
-// OpenCode's wildcard: `*` matches anything, `?` one character, and a trailing
-// ` *` also matches the bare prefix.
+// OpenCode's wildcard: `*` matches anything, `?` one character, a trailing ` *` also the bare prefix.
 function matches(pattern: string, value: string) {
 	let source = pattern
 		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
@@ -277,24 +227,21 @@ function matches(pattern: string, value: string) {
 	return new RegExp(`^${source}$`, "s").test(value)
 }
 
-/** The effect OpenCode applies to `action` on `resource`: the last matching rule wins. */
-export function effect(rules: readonly Rule[], action: string, resource: string): Rule["effect"] {
+/** The effect OpenCode applies: the last matching rule wins. */
+function effect(rules: readonly Rule[], action: string, resource: string): Rule["effect"] {
 	return rules.findLast((rule) => matches(rule.action, action) && matches(rule.resource, resource))?.effect ?? "ask"
 }
 
-/** The effect OpenCode applies to launching `agent`. */
 export function access(rules: readonly Rule[], agent: string): Rule["effect"] {
 	return effect(rules, TOOL, agent)
 }
 
-/** Subagents that `rules` (the caller's, then its session's) let it launch. */
 export function available(agents: readonly AgentInfo[], rules: readonly Rule[]) {
 	return agents
 		.filter((agent) => agent.mode !== "primary" && !agent.hidden && access(rules, agent.id) !== "deny")
 		.toSorted((a, b) => a.id.localeCompare(b.id))
 }
 
-/** The model a launch of `agent` runs on; agents without one inherit the caller's. */
 export function modelOf(agent: AgentInfo, crew: Crew, inherited?: string): { model?: string; source: Source } {
 	const chosen = crew.models[agent.id]
 	if (chosen) return { model: chosen, source: "user" }
@@ -302,7 +249,6 @@ export function modelOf(agent: AgentInfo, crew: Crew, inherited?: string): { mod
 	return { model: inherited, source: "inherited" }
 }
 
-/** Replaces the subagent tool's list with the session's subagents and their models. */
 export function toolDescription(description: string, agents: readonly AgentInfo[], crew: Crew, inherited?: string) {
 	const base = description.split(`\n\n${HEADER}`)[0] ?? description
 	if (agents.length === 0) return base
@@ -315,7 +261,6 @@ export function toolDescription(description: string, agents: readonly AgentInfo[
 	return [base, "", HEADER, ...lines].join("\n")
 }
 
-/** System note naming the configured subagents the user turned off, if any. */
 export function note(configured: readonly AgentInfo[], effective: readonly AgentInfo[]) {
 	const on = new Set(effective.map((agent) => agent.id))
 	const off = configured.filter((agent) => !on.has(agent.id)).map((agent) => agent.id)
@@ -351,11 +296,7 @@ export function readChainName(value: unknown): string | undefined {
 	return typeof value === "string" && value ? value : undefined
 }
 
-/**
- * The fallback chain the root's crew uses, or undefined when off: its own
- * choice, else the configured default. A chain no longer configured is off;
- * the earlier on switch means the default chain, else the first by name.
- */
+/** The root's fallback chain, or undefined when off; the older on switch means the default chain, else the first. */
 export function selectedChain(crew: Crew, chains: Chains, byDefault?: string): string | undefined {
 	const known = (name: string | undefined) => (name !== undefined && chains[name] ? name : undefined)
 	if (crew.fallbackChain === false) return undefined
@@ -364,7 +305,6 @@ export function selectedChain(crew: Crew, chains: Chains, byDefault?: string): s
 	return known(byDefault)
 }
 
-/** The crew on `chain`, or off for undefined; a choice equal to the default is left unstored, so it follows the default. */
 export function withChain(crew: Crew, chain: string | undefined, byDefault?: string): Crew {
 	const fallbackChain = chain === byDefault ? undefined : (chain ?? false)
 	return { ...crew, fallbackChain, autoFallback: undefined }
@@ -375,19 +315,14 @@ export interface RetryError {
 	readonly status?: number
 }
 
-/** What a 403 means: some gateways answer it when the client is off the corporate network. */
+/** The fallback reason for a 403. */
 export type Forbidden = "auth" | "network"
 
 export function readForbidden(value: unknown): Forbidden {
 	return value === "network" ? "network" : "auth"
 }
 
-/**
- * The reason a refused request may fall back, or undefined to leave it to
- * OpenCode; rate limits, stalls and other errors never fall back. `repeated`
- * marks outages that may be brief (gateway errors and overloads, transport
- * failures, timeouts, missing routes), which only fall back once they persist.
- */
+/** The reason a refused request may fall back; `repeated` marks brief outages that only fall back once they persist. */
 export function classify(error: RetryError, forbidden: Forbidden): { reason: Reason; repeated: boolean } | undefined {
 	switch (error.type) {
 		case "provider.quota":
@@ -411,7 +346,6 @@ export function providerOf(ref: string) {
 	return ref.slice(0, ref.indexOf("/"))
 }
 
-/** Whether any of the crew's models runs on `providerID`. */
 export function usesProvider(crew: Crew, providerID: string) {
 	return Object.values(crew.models).some((model) => providerOf(model) === providerID)
 }
@@ -424,7 +358,6 @@ export function leftProvider(crew: Crew, presets: Presets, providerID: string) {
 		.some((name) => Object.values(presets[name] ?? {}).some((model) => providerOf(model) === providerID))
 }
 
-/** The crew on its next fallback preset for `reason`, or undefined when there is none left to try. */
 export function nextFallback(
 	crew: Crew,
 	presets: Presets,
@@ -445,7 +378,6 @@ export function nextFallback(
 	return { ...applyPreset(crew, target, presets[target]), fallback }
 }
 
-/** The crew back on the preset its fallback started from, or undefined when that preset is gone. */
 export function homeCrew(crew: Crew, presets: Presets): Crew | undefined {
 	const home = crew.fallback?.home
 	if (!home || !presets[home]) return undefined
@@ -486,11 +418,11 @@ export function routeText(fallbacks: Fallbacks, preset: string) {
 
 const clock = (time: number) => new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
 
-/** The crew's fallback state, e.g. `spare — fallback from main (quota, then network) at 2:05 PM, back at 2:35 PM`. */
+/** The crew's fallback state, e.g. `spare — fallback from main (quota, then network) at 2:05 PM, back from 2:35 PM`. */
 export function fallbackText(crew: Crew, minutes: number) {
 	const { fallback } = crew
 	if (!fallback || !crew.preset) return undefined
 	const reasons = fallback.reasons.map((reason) => LABELS[reason]).filter((label, i, all) => label !== all[i - 1])
 	const back = fallback.since + minutes * 60_000
-	return `${crew.preset} — fallback from ${fallback.home} (${reasons.join(", then ")}) at ${clock(fallback.since)}, back at ${clock(back)}`
+	return `${crew.preset} — fallback from ${fallback.home} (${reasons.join(", then ")}) at ${clock(fallback.since)}, back from ${clock(back)}`
 }

@@ -15,7 +15,7 @@ let
   ai-search = pkgs.callPackage ./ai-search.nix { };
 
   # Community plugins, pinned so OpenCode never updates them on its own.
-  memoryPlugin = "opencode-mem@2.29.2";
+  memoryPlugin = "opencode-mem@2.43.0";
 
   # Local plugins must be directories: OpenCode loads `index.ts` (or
   # `server.ts`) on the server and `tui.ts` in the terminal client.
@@ -29,6 +29,8 @@ let
     presets = cfg.crewPresets;
     fallback = crewFallback;
     fallbackMinutes = cfg.crewFallbackMinutes;
+    homeChecks = cfg.crewHomeChecks;
+    homeCheckMinutes = cfg.crewHomeCheckMinutes;
     networkFailures = cfg.crewFallbackNetworkFailures;
     forbidden = cfg.crewFallbackForbiddenAs;
   }
@@ -36,7 +38,6 @@ let
     fallbackDefault = cfg.crewFallbackDefault;
   };
   crewPlugin = ./plugins/crew;
-  lanesPlugin = ./plugins/lanes;
 
   ruleType = lib.types.submodule {
     options = {
@@ -93,20 +94,15 @@ let
   renderRule = rule: { inherit (rule) action resource effect; };
 
   # Playbook skills follow what an agent can start: `crew` and `crew-<id>` for
-  # the subagents it may launch, `lanes` for the lanes tools. /crew narrows
-  # them further per session.
+  # the subagents it may launch. /crew narrows them further per session.
   playbookRules =
     agent:
     map (rules.rule "deny" "skill") [
       "crew"
       "crew-*"
-      "lanes"
     ]
     ++ lib.optionals (agent.subagents != [ ]) (
       map (rules.rule "allow" "skill") ([ "crew" ] ++ map (id: "crew-${id}") agent.subagents)
-    )
-    ++ lib.optional (agent.tools != null && lib.elem "lanes_*" agent.tools) (
-      rules.rule "allow" "skill" "lanes"
     );
 
   # Turns the module's agent shape into a native V2 `agents` entry.
@@ -139,11 +135,8 @@ let
   # The AI sandbox only provides the browser-use MCP server when it is enabled there.
   browserUse = cfg.mcpServers ? mcp_browseruse;
 
-  # Subagents doing dev's work get its tools, minus questions and lanes runs.
-  subagentTools = lib.subtractLists [
-    "question"
-    "lanes_*"
-  ] cfg.agents.dev.tools;
+  # Subagents doing dev's work get its tools, minus questions.
+  subagentTools = lib.subtractLists [ "question" ] cfg.agents.dev.tools;
 
   devWorker = description: model: {
     inherit description;
@@ -274,11 +267,6 @@ in
       defaultText = lib.literalExpression "config.mine.home.opencode.defaultModel";
       description = "Model (`provider/model`) opencode-mem uses to auto-capture memories.";
     };
-    maxLanes = lib.mkOption {
-      type = lib.types.ints.positive;
-      default = 8;
-      description = "Default and maximum number of parallel lanes in a lanes run.";
-    };
     crewPresets = lib.mkOption {
       type = lib.types.attrsOf (lib.types.attrsOf lib.types.str);
       default = { };
@@ -343,7 +331,29 @@ in
     crewFallbackMinutes = lib.mkOption {
       type = lib.types.ints.positive;
       default = 30;
-      description = "Minutes after a `/crew` fallback before the crew returns to the preset it fell back from.";
+      description = ''
+        Minutes after a `/crew` fallback before the crew returns to the preset
+        it fell back from. When a provider of that preset has a
+        `crewHomeChecks` command, the crew also waits until it passes.
+      '';
+    };
+    crewHomeChecks = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
+      example = {
+        my-gateway = "/nix/store/...-gateway-ready/bin/gateway-ready";
+      };
+      description = ''
+        Per provider ID, a command (run without arguments or a shell) that
+        exits 0 once the provider takes requests again. A `/crew` fallback
+        returns to a preset only when the checks of all its providers pass;
+        providers without one return on `crewFallbackMinutes` alone.
+      '';
+    };
+    crewHomeCheckMinutes = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 5;
+      description = "Minutes between `crewHomeChecks` runs while a check keeps a fallback from returning.";
     };
     crewFallbackNetworkFailures = lib.mkOption {
       type = lib.types.ints.positive;
@@ -363,9 +373,8 @@ in
       ];
       default = "auth";
       description = ''
-        The `/crew` fallback reason for an HTTP 403 refusal. Some gateways
-        answer 403 when the client is off the corporate network; `network`
-        then falls back like an outage, at once.
+        The `/crew` fallback reason for an HTTP 403 refusal; `network` falls
+        back like an outage, at once.
       '';
     };
     crewFallbackDefault = lib.mkOption {
@@ -441,7 +450,6 @@ in
             tools.playwright
             (lib.optionals browserUse tools.browseruse)
             tools.ghidra
-            tools.lanes
             [
               "question"
               "skill"
@@ -460,8 +468,8 @@ in
           ];
         };
 
-        # Built-in research subagent, given dev's tools (but no questions or
-        # lanes runs) and the shared research prompt.
+        # Built-in research subagent, given dev's tools (but no questions) and
+        # the shared research prompt.
         general = {
           description = "General-purpose assistant for software and configuration research, local code inspection, and web search.";
           model = lib.mkDefault "${opusModel}#medium";
@@ -505,15 +513,6 @@ in
           model = lib.mkDefault "${opusModel}#max";
           system = builtins.readFile ./prompts/critic.md;
           tools = lib.mkDefault inspectTools;
-        };
-
-        # Started by the lanes plugin for each run, never launched by dev.
-        planner = {
-          description = "Plans lanes runs: splits a goal into tasks on disjoint files for worker subagents, then re-plans as results arrive.";
-          mode = "subagent";
-          model = lib.mkDefault "${opusModel}#medium";
-          system = builtins.readFile ./prompts/planner.md;
-          tools = tools.read ++ tools.plan;
         };
 
         pr = {
@@ -576,8 +575,7 @@ in
         ghidra = ./skills/ghidra.md;
         browser-automation =
           if browserUse then ./skills/browser-automation-browseruse.md else ./skills/browser-automation.md;
-        # Playbooks: running lanes, the default crew strategy, and briefing each member.
-        lanes = ./skills/lanes.md;
+        # Playbooks: the default crew strategy and briefing each member.
         crew = ./skills/crew/strategy.md;
       }
       // lib.listToAttrs (
@@ -604,7 +602,6 @@ in
         plugins = [
           "-opencode-mem"
           "-crew"
-          "-lanes"
         ];
       };
     };
@@ -637,17 +634,8 @@ in
           plugins = [
             {
               package = "${crewPlugin}";
-              options = crewOptions // {
-                # Started by the lanes plugin rather than the subagent tool;
-                # switching it off hides the lanes tools and skill.
-                managed.planner = {
-                  label = "lanes";
-                  tools = "lanes_*";
-                  skill = "lanes";
-                };
-              };
+              options = crewOptions;
             }
-            "${lanesPlugin}"
           ]
           ++ cfg.tuiPlugins;
         };
@@ -694,10 +682,6 @@ in
           {
             package = "${crewPlugin}";
             options = crewOptions;
-          }
-          {
-            package = "${lanesPlugin}";
-            options.maxLanes = cfg.maxLanes;
           }
           memoryPlugin
         ]

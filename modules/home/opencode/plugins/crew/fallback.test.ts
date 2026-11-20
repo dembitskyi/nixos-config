@@ -19,12 +19,20 @@ import {
 	withChain,
 	withCrew,
 } from "./policy"
-import plugin, { fallbacks, type FallbackSettings, PENDING, type RetryEvent, type ServerContext } from "./server"
+import plugin, {
+	fallbackSettings,
+	fallbacks,
+	type FallbackSettings,
+	PENDING,
+	type RetryEvent,
+	type ServerContext,
+} from "./server"
 
 const presets: Presets = {
 	main: { dev: "main/opus#medium", general: "main/opus", explore: "main/haiku" },
 	backup: { dev: "backup/opus#medium", general: "backup/opus" },
 	spare: { dev: "spare/opus#medium", general: "spare/opus", explore: "spare/haiku" },
+	mixed: { dev: "main/opus#medium", general: "other/opus" },
 }
 
 const via: Fallbacks = {
@@ -50,7 +58,14 @@ function crewOn(preset: string, extra: Partial<Crew> = {}): Crew {
 
 function fake(
 	root: Crew | undefined,
-	input: { minutes?: number; defaultChain?: string; chains?: Chains; forbidden?: Forbidden } = {},
+	input: {
+		minutes?: number
+		defaultChain?: string
+		chains?: Chains
+		forbidden?: Forbidden
+		homeChecks?: Record<string, string>
+		ready?: FallbackSettings["ready"]
+	} = {},
 ) {
 	const clock = { now: 1_000_000 }
 	const sessions: Record<string, Session> = {
@@ -61,6 +76,7 @@ function fake(
 	const switches: { sessionID: string; model: string }[] = []
 	const store = new Map<string, unknown>()
 	const logs: string[] = []
+	const fields: Record<string, unknown>[] = []
 	const tick = () => new Promise((resolve) => setTimeout(resolve, 1))
 	const ctx: ServerContext = {
 		agent: { list: async () => ({ data: [] }) },
@@ -100,11 +116,17 @@ function fake(
 		defaultChain: input.defaultChain,
 		networkFailures: 4,
 		forbidden: input.forbidden ?? "auth",
+		homeChecks: input.homeChecks ?? {},
+		homeCheckMinutes: 5,
+		ready: input.ready ?? (async () => ({ ok: true, message: "" })),
 		now: () => clock.now,
-		log: (event) => logs.push(event),
+		log: (event, data) => {
+			logs.push(event)
+			fields.push({ event, ...data })
+		},
 	}
 	const crew = () => readCrew(sessions.root?.metadata?.[KEY])
-	return { ctx, settings, sessions, switches, store, logs, clock, crew, ...fallbacks(ctx, settings) }
+	return { ctx, settings, sessions, switches, store, logs, fields, clock, crew, ...fallbacks(ctx, settings) }
 }
 
 function refusal(
@@ -635,6 +657,135 @@ describe("switch back", () => {
 		await run.check()
 		expect(run.crew().preset).toBe("backup")
 		expect(run.store.size).toBe(0)
+	})
+})
+
+describe("home checks", () => {
+	const calls = () => {
+		const commands: string[] = []
+		const results: Record<string, boolean | Error> = {}
+		const ready: FallbackSettings["ready"] = async (command) => {
+			commands.push(command)
+			const result = results[command] ?? true
+			if (result instanceof Error) throw result
+			return { ok: result, message: result ? "ok\n" : "quota used up" }
+		}
+		return { commands, results, ready }
+	}
+
+	test("a passing check sends the crew home and is logged", async () => {
+		const { commands, ready } = calls()
+		const run = fake(crewOn("main"), { minutes: 10, homeChecks: { main: "/bin/main-ready" }, ready })
+		await run.retry(refusal("child", "general", "main/opus"))
+		run.clock.now += 9 * 60_000
+		await run.check()
+		expect(commands).toEqual([])
+		run.clock.now += 60_000
+		await run.check()
+		expect(commands).toEqual(["/bin/main-ready"])
+		expect(run.crew()).toEqual(crewOn("main"))
+		expect(run.store.size).toBe(0)
+		expect(run.fields.at(-1)).toMatchObject({ event: "fallback.home", checks: { main: "ok\n" } })
+	})
+
+	test("a failing check keeps the fallback until a later check passes", async () => {
+		const { commands, results, ready } = calls()
+		results["/bin/main-ready"] = false
+		const run = fake(crewOn("main"), { minutes: 10, homeChecks: { main: "/bin/main-ready" }, ready })
+		await run.retry(refusal("child", "general", "main/opus"))
+		run.switches.length = 0
+		run.clock.now += 10 * 60_000
+		await run.check()
+		expect(run.crew().preset).toBe("backup")
+		expect(run.switches).toEqual([])
+		expect(run.store.size).toBe(1)
+		expect(run.fields.at(-1)).toEqual({
+			event: "fallback.wait",
+			root: "root",
+			from: "backup",
+			to: "main",
+			provider: "main",
+			reason: "quota used up",
+		})
+
+		run.clock.now += 4 * 60_000
+		await run.check()
+		expect(commands).toHaveLength(1)
+
+		results["/bin/main-ready"] = true
+		run.clock.now += 60_000
+		await run.check()
+		expect(commands).toHaveLength(2)
+		expect(run.crew()).toEqual(crewOn("main"))
+		expect(run.switches).toEqual([{ sessionID: "root", model: "main/opus#medium" }])
+		expect(run.store.size).toBe(0)
+	})
+
+	test("a provider without a check returns on the timer alone", async () => {
+		const { commands, ready } = calls()
+		const run = fake(crewOn("main"), { minutes: 10, homeChecks: { backup: "/bin/backup-ready" }, ready })
+		await run.retry(refusal("child", "general", "main/opus"))
+		run.clock.now += 10 * 60_000
+		await run.check()
+		expect(commands).toEqual([])
+		expect(run.crew()).toEqual(crewOn("main"))
+		expect(run.fields.at(-1)).not.toHaveProperty("checks")
+	})
+
+	const inMixedFallback = (homeChecks: Record<string, string>, ready: FallbackSettings["ready"]) => {
+		const fallback = { home: "mixed", reasons: ["quota" as const], since: 1_000_000, visited: ["mixed", "spare"] }
+		const run = fake(crewOn("spare", { fallback }), { minutes: 10, homeChecks, ready })
+		run.store.set(`${PENDING}root`, { since: 1_000_000 })
+		run.clock.now += 10 * 60_000
+		return run
+	}
+
+	test("every provider of the home preset must pass", async () => {
+		const { commands, results, ready } = calls()
+		results["/bin/other-ready"] = false
+		const run = inMixedFallback({ main: "/bin/main-ready", other: "/bin/other-ready" }, ready)
+		await run.check()
+		expect(commands.toSorted()).toEqual(["/bin/main-ready", "/bin/other-ready"])
+		expect(run.crew().preset).toBe("spare")
+		expect(run.fields.at(-1)).toMatchObject({ event: "fallback.wait", provider: "other", to: "mixed" })
+
+		results["/bin/other-ready"] = true
+		run.clock.now += 5 * 60_000
+		await run.check()
+		expect(run.crew().preset).toBe("mixed")
+	})
+
+	test("a check that cannot run counts as not ready", async () => {
+		const { results, ready } = calls()
+		results["/bin/main-ready"] = new Error("spawn ENOENT")
+		const run = inMixedFallback({ main: "/bin/main-ready" }, ready)
+		await run.check()
+		expect(run.crew().preset).toBe("spare")
+		expect(run.fields.at(-1)).toMatchObject({ event: "fallback.wait", provider: "main", reason: "Error: spawn ENOENT" })
+	})
+
+	test("a timed-out check counts as not ready", async () => {
+		const run = inMixedFallback({ main: "/bin/main-ready" }, async () => ({ ok: false, message: "timed out after 30s" }))
+		await run.check()
+		expect(run.crew().preset).toBe("spare")
+		expect(run.logs).toEqual(["fallback.wait"])
+	})
+
+	test("settings read the options, ignoring invalid entries", () => {
+		const data = process.env.XDG_DATA_HOME
+		process.env.XDG_DATA_HOME = "/tmp/opencode/crew-test"
+		const settings = fallbackSettings({
+			homeChecks: { main: "/bin/main-ready", "": "/bin/x", bad: 1, empty: "" },
+			homeCheckMinutes: 7,
+		})
+		expect(settings.homeChecks).toEqual({ main: "/bin/main-ready" })
+		expect(settings.homeCheckMinutes).toBe(7)
+		expect(fallbackSettings({ homeChecks: ["x"], homeCheckMinutes: 0 })).toMatchObject({
+			homeChecks: {},
+			homeCheckMinutes: 5,
+		})
+		if (data === undefined) delete process.env.XDG_DATA_HOME
+		else process.env.XDG_DATA_HOME = data
 	})
 })
 

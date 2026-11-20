@@ -1,13 +1,6 @@
-// `/crew` terminal side (OpenCode V2 CLI plugin): lists the session's subagents
-// with their access and model, and changes them for this session tree only,
-// along with the Away switch for working without the user. Named presets come
-// from the Nix `crewPresets` option; agents in `managed` are started by another
-// plugin, so they get a model and, when they name their tools, an On/Off switch.
-// A preset's entry for the root session's agent also switches the root session's
-// model, and the prompt's pending model choice when the root session is shown.
-// The Fallback entry picks the named chain along which the server moves the
-// crew to other presets when its provider refuses; picking a preset or Reset
-// ends a fallback.
+// `/crew` terminal side (OpenCode V2 CLI plugin): lists the session's subagents with
+// access and model, edits them for this session tree, and offers the Away switch,
+// presets (Nix `crewPresets`) and the fallback chain the server follows.
 import {
 	type Access,
 	type AgentInfo,
@@ -15,12 +8,10 @@ import {
 	applyPreset,
 	type Crew,
 	type Chains,
-	effect,
 	emptyCrew,
 	fallbackText,
 	formatModel,
 	KEY,
-	type Managed,
 	type ModelRef,
 	modelOf,
 	type Presets,
@@ -29,7 +20,6 @@ import {
 	readCrew,
 	readChainName,
 	readChains,
-	readManaged,
 	readPresets,
 	routeText,
 	selectedChain,
@@ -132,11 +122,8 @@ interface State {
 	crew: Crew
 	session: SessionInfo
 	agents: AgentInfo[]
-	// Subagents another plugin starts (not the subagent tool), by ID.
-	managed: Managed
 }
 
-/** Automatic fallback settings from the Nix options. */
 export interface FallbackOptions {
 	chains: Chains
 	minutes: number
@@ -178,19 +165,12 @@ function members(agents: readonly AgentInfo[]) {
 
 function isOn(state: State, agent: AgentInfo) {
 	const own = state.agents.find((caller) => caller.id === state.session.agent)?.permissions ?? []
-	const rules = [...own, ...withRules(state.session.permissions, state.crew, state.managed)]
-	const tools = state.managed[agent.id]?.tools
-	if (tools) return effect(rules, tools, "*") !== "deny"
+	const rules = [...own, ...withRules(state.session.permissions, state.crew)]
 	return access(rules, agent.id) !== "deny"
 }
 
-/** A member's line in the main dialog. */
 function memberText(state: State, agent: AgentInfo) {
-	const info = state.managed[agent.id]
-	const on = isOn(state, agent)
-	if (info?.tools) return on ? `on · ${info.label} · ${modelText(state, agent)}` : `off · ${info.label}`
-	if (info) return `${info.label} · ${modelText(state, agent)}`
-	return on ? `on · ${modelText(state, agent)}` : "off"
+	return isOn(state, agent) ? `on · ${modelText(state, agent)}` : "off"
 }
 
 function modelText(state: State, agent: AgentInfo) {
@@ -232,26 +212,15 @@ async function editAgent(context: TuiContext, location: LocationRef, state: Stat
 	const agent = state.agents.find((agent) => agent.id === id)
 	if (!agent) return undefined
 	const { crew } = state
-	const managed = state.managed[id]
-	const switches = managed?.tools
-		? [
-				{ title: "On", value: "on", description: "Available in this session" },
-				{ title: "Off", value: "off", description: "Hidden in this session: its tools and skill" },
-			]
-		: managed
-			? []
-			: [
-					{ title: "On", value: "on", description: "Allow in this session" },
-					{ title: "Off", value: "off", description: "Block in this session" },
-					...(crew.access[id]
-						? [{ title: "Default access", value: "access", description: "Use the configured access" }]
-						: []),
-				]
 	const action = await context.ui.dialog.select({
-		title: managed ? `${id} (${managed.label})` : id,
-		current: managed && !managed.tools ? "model" : isOn(state, agent) ? "on" : "off",
+		title: id,
+		current: isOn(state, agent) ? "on" : "off",
 		options: [
-			...switches,
+			{ title: "On", value: "on", description: "Allow in this session" },
+			{ title: "Off", value: "off", description: "Block in this session" },
+			...(crew.access[id]
+				? [{ title: "Default access", value: "access", description: "Use the configured access" }]
+				: []),
 			{ title: "Model", value: "model", description: modelText(state, agent) },
 			...(crew.models[id] ? [{ title: "Default model", value: "unset", description: "Use the configured model" }] : []),
 		],
@@ -259,11 +228,8 @@ async function editAgent(context: TuiContext, location: LocationRef, state: Stat
 	switch (action) {
 		case "on":
 		case "off": {
-			// On for a managed member means its configured access, so the entry is dropped.
-			const { [id]: _, ...rest } = crew.access
 			const value: Access = action === "on" ? "allow" : "deny"
-			const next = managed?.tools && action === "on" ? rest : { ...crew.access, [id]: value }
-			return { crew: { ...crew, access: next }, summary: `${id} ${action}` } satisfies Change
+			return { crew: { ...crew, access: { ...crew.access, [id]: value } }, summary: `${id} ${action}` } satisfies Change
 		}
 		case "access": {
 			const { [id]: _, ...rest } = crew.access
@@ -289,7 +255,6 @@ async function editAgent(context: TuiContext, location: LocationRef, state: Stat
 	}
 }
 
-/** A preset's models, the root session's agent first. */
 function presetText(preset: Record<string, string>, main: string | undefined) {
 	const entries = Object.entries(preset)
 	const root = entries.filter(([agent]) => agent === main).map(([agent, model]) => `${agent} (main)=${model}`)
@@ -297,7 +262,6 @@ function presetText(preset: Record<string, string>, main: string | undefined) {
 	return [...root, ...rest].join(", ")
 }
 
-/** The route `chain` takes from the crew's preset. */
 function chainRoute(crew: Crew, fallback: FallbackOptions, chain: string) {
 	if (!crew.preset) return "pick a preset to fall back from"
 	return routeText(fallback.chains[chain] ?? {}, crew.preset) ?? `no fallback from ${crew.preset}`
@@ -407,11 +371,7 @@ async function edit(
 			return editAgent(context, location, state, choice.id)
 		case "all":
 			return {
-				crew: {
-					...crew,
-					delegation: choice.delegation,
-					access: Object.fromEntries(Object.entries(crew.access).filter(([agent]) => state.managed[agent])),
-				},
+				crew: { ...crew, delegation: choice.delegation, access: {} },
 				summary: choice.delegation === "allow" ? "all on" : "all off",
 			} satisfies Change
 		case "preset": {
@@ -459,12 +419,7 @@ async function checkModel(context: TuiContext, location: LocationRef, model: Mod
 		throw new Error(`${info.name} has no variant ${model.variant}`)
 }
 
-/**
- * Points the prompt at `model` when it shows the root session: its pending choice
- * otherwise wins over the session's model and would switch it back on submit.
- * Returns a warning when the prompt could not follow, including when another
- * session is on screen, since the root's prompt may still hold an older choice.
- */
+/** Points the prompt at `model` when it shows the root session; returns a warning when it could not follow. */
 function followPrompt(context: TuiContext, root: string, model: ModelRef) {
 	const ref = formatModel(model)
 	const route = context.ui.router.current()
@@ -475,8 +430,7 @@ function followPrompt(context: TuiContext, root: string, model: ModelRef) {
 	return selected ? undefined : `the prompt could not select ${ref}, so select it there too`
 }
 
-// The fallback state last seen per root, kept only while a fallback runs, so the
-// server's switches are announced once.
+// Fallback state last seen per root while a fallback runs, so switches are announced once.
 const seen = new Map<string, string>()
 
 function remember(sessionID: string, crew: Crew) {
@@ -508,12 +462,7 @@ export function watch(context: TuiContext, minutes: number) {
 	}
 }
 
-export async function open(
-	context: TuiContext,
-	presets: Presets,
-	managed: Managed,
-	fallback: FallbackOptions = NO_FALLBACK,
-) {
+export async function open(context: TuiContext, presets: Presets, fallback: FallbackOptions = NO_FALLBACK) {
 	const route = context.ui.router.current()
 	if (route.type !== "session" || !route.sessionID) {
 		context.ui.toast.show({ message: "Open a session first.", variant: "warning" })
@@ -526,7 +475,7 @@ export async function open(
 			context.client.session.get({ sessionID: root }),
 			context.client.agent.list({ location }),
 		])
-		const state = { crew: readCrew(session.metadata?.[KEY]), session, agents, managed }
+		const state = { crew: readCrew(session.metadata?.[KEY]), session, agents }
 		const change = await edit(context, location, state, presets, fallback)
 		if (!change) return
 		if (change.root) await checkModel(context, location, change.root)
@@ -534,7 +483,7 @@ export async function open(
 		await context.client.session.update({
 			sessionID: root,
 			metadata: withCrew(session.metadata, change.crew),
-			permissions: withRules(session.permissions, change.crew, managed),
+			permissions: withRules(session.permissions, change.crew),
 		})
 		if (change.root) {
 			try {
@@ -562,7 +511,6 @@ export default {
 	id: "crew",
 	setup(context: TuiContext) {
 		const presets = readPresets(context.options.presets)
-		const managed = readManaged(context.options.managed)
 		const fallback = readFallbackOptions(context.options)
 		const stop = Object.keys(fallback.chains).length > 0 ? watch(context, fallback.minutes) : undefined
 		// Keymap layers need the app's keymap provider, so register from an app slot.
@@ -579,7 +527,7 @@ export default {
 							group: "Session",
 							palette: true,
 							slash: { name: "crew" },
-							run: () => void open(context, presets, managed, fallback),
+							run: () => void open(context, presets, fallback),
 						},
 					],
 				}))

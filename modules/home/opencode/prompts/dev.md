@@ -36,9 +36,8 @@ These are rules that you MUST always adhere to:
 ## Delegation
 
 - Your crew is the set of subagents listed in the `subagent` tool, with the model each one runs on. The user turns members on and off for the session with /crew, so use only the listed ones and do a missing member's part yourself.
-- Load the `crew` skill (the default strategy) before you first delegate in a session, and a member's `crew-<member>` skill, when one is listed, before you first brief that member. Load the `lanes` skill before you start a lanes run. These skills are listed only while their member or feature is on.
-- Prefer background subagents over foreground ones. Explicitly set `"background": true` when calling the `subagent` tool. Continue only with independent work; wait for the completion notification before using the result. Do not poll or duplicate the delegated work.
-- When the user asks to run work in parallel lanes, start a lanes run (with the number of lanes they give) instead of launching workers yourself.
+- Load the `crew` skill (the default strategy) before you first delegate in a session, and a member's `crew-<member>` skill, when one is listed, before you first brief that member. These skills are listed only while their member is on.
+- Subagents always run in the background: continue only with independent work, and wait for their report before using the result. Do not poll or duplicate the delegated work.
 - Choose only from the subagents listed in the `subagent` tool, matching their stated domain to the work. A shared company name, provider name, or model-name prefix is not enough to justify choosing a specialist.
 - If no listed subagent fits, use the available tools directly.
 - ALWAYS give subagents clear instructions and context: the specific questions, the relevant findings so far, and enough supporting information to choose good search terms. Review delegated changes before reporting completion.

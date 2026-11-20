@@ -1,11 +1,7 @@
-// `/crew` server side (OpenCode V2): injects the session's model choices into
-// subagent launches and keeps the model aware of its crew — which subagents it
-// may launch in this session and the model each one runs on. While the user is
-// away, the whole session tree works without them: no questions, and approval
-// prompts are granted (configured denies are settled before plugins see them).
-// With a fallback chain selected, a crew whose provider refuses (quota, token,
-// network) moves the whole tree to the chain's next preset and returns to its
-// home preset after `fallbackMinutes`.
+// `/crew` server side (OpenCode V2): injects model choices into subagent launches,
+// tells the model its crew, applies the away rules to the session tree, and moves
+// crews along their fallback chain when a provider refuses, returning home later.
+import { execFile } from "node:child_process"
 import { appendFile, mkdir } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -126,14 +122,12 @@ async function rootOf(ctx: ServerContext, session: SessionInfo): Promise<Session
 	return session
 }
 
-/** The crew lives on the root session, so nested sessions always see the current one. */
 export async function rootCrew(ctx: ServerContext, session: SessionInfo): Promise<Crew> {
 	return readCrew((await rootOf(ctx, session)).metadata?.[KEY])
 }
 
 export type Log = (event: string, fields: Record<string, unknown>) => void
 
-/** JSON lines in OpenCode's log directory; never throws. */
 function fileLog(): Log {
 	const path = join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "opencode", "log", "crew.log")
 	let queue: Promise<unknown> = mkdir(join(path, ".."), { recursive: true }).catch(() => undefined)
@@ -143,21 +137,57 @@ function fileLog(): Log {
 	}
 }
 
+export interface Readiness {
+	ok: boolean
+	message: string
+}
+
 export interface FallbackSettings {
 	presets: Presets
 	chains: Chains
 	minutes: number
-	// The chain of sessions that never chose one.
 	defaultChain?: string
-	// Consecutive outage failures on one provider before a session falls back.
 	networkFailures: number
 	forbidden: Forbidden
+	homeChecks: Record<string, string>
+	homeCheckMinutes: number
+	ready: (command: string) => Promise<Readiness>
 	now: () => number
 	log: Log
 }
 
 const positive = (value: unknown, fallback: number) =>
 	typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback
+
+function readHomeChecks(value: unknown): Record<string, string> {
+	const checks: Record<string, string> = {}
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return checks
+	for (const [provider, command] of Object.entries(value)) {
+		if (provider && typeof command === "string" && command) checks[provider] = command
+	}
+	return checks
+}
+
+const CHECK_MS = 30_000
+
+function runCheck(command: string): Promise<Readiness> {
+	return new Promise((resolve) => {
+		const done = (ok: boolean, output: string, fallback = "") => {
+			const line = (output.trim() || fallback).split("\n")[0]?.trim() ?? ""
+			resolve({ ok, message: line.slice(0, 200) })
+		}
+		try {
+			execFile(command, [], { timeout: CHECK_MS }, (error, stdout, stderr) => {
+				const output = `${stdout}`.trim() || `${stderr}`
+				if (!error) return done(true, output)
+				const reason = error.killed ? `timed out after ${CHECK_MS / 1000}s` : error.message
+				done(false, output, reason)
+			})
+		} catch (error) {
+			done(false, "", String(error))
+		}
+	})
+}
 
 export function fallbackSettings(options: Readonly<Record<string, unknown>> = {}): FallbackSettings {
 	return {
@@ -167,6 +197,9 @@ export function fallbackSettings(options: Readonly<Record<string, unknown>> = {}
 		defaultChain: readChainName(options.fallbackDefault),
 		networkFailures: positive(options.networkFailures, 4),
 		forbidden: readForbidden(options.forbidden),
+		homeChecks: readHomeChecks(options.homeChecks),
+		homeCheckMinutes: positive(options.homeCheckMinutes, 5),
+		ready: runCheck,
 		now: () => Date.now(),
 		log: fileLog(),
 	}
@@ -178,12 +211,7 @@ export const PENDING = "crew/fallback/"
 // An outage count lapses after this long without another failure.
 const OUTAGE_MS = 10 * 60_000
 
-/**
- * Switches crews whose provider refuses to their fallback preset, and back home
- * once the configured time has passed. Changes to one root run one at a time,
- * and each write re-reads the crew and gives up when another writer changed it,
- * so sessions failing together advance it only once.
- */
+/** Switches crews whose provider refuses to their fallback preset, and back home once checks pass. */
 export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 	const { presets, log } = settings
 	const queues = new Map<string, Promise<unknown>>()
@@ -195,11 +223,7 @@ export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 		return run
 	}
 
-	// Consecutive outage failures per session. A success is not observable, but
-	// OpenCode's attempt counter restarts with every step and its first retry of a
-	// request is attempt 2, so the count restarts there (the request before it
-	// succeeded, or a step began), when the session moves to another provider, and
-	// after OUTAGE_MS without a failure.
+	// Consecutive outage failures per session; restarts on a retry's attempt 2, a provider change, or after OUTAGE_MS.
 	const outages = new Map<string, { providerID: string; count: number; last: number }>()
 	const countOutage = (sessionID: string, providerID: string, attempt: number) => {
 		const now = settings.now()
@@ -218,11 +242,7 @@ export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 		return true
 	}
 
-	/**
-	 * Moves the root's crew, as stored right now, onto `target`'s preset, models
-	 * and fallback state, keeping its other settings. Gives up when its preset or
-	 * fallback changed since `seen` was read, e.g. by another plugin instance.
-	 */
+	/** Moves the root's crew onto `target`; gives up if its preset or fallback changed since `seen`. */
 	const save = async (rootID: string, seen: Crew, target: Crew) => {
 		const root = await ctx.session.get({ sessionID: rootID })
 		const current = readCrew(root.metadata?.[KEY])
@@ -298,7 +318,24 @@ export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 		})
 	}
 
-	/** Switches roots whose fallback time is up back to their home preset; stale entries are dropped. */
+	const waits = new Map<string, { since: number; at: number }>()
+
+	const checkHome = (home: Crew) => {
+		const providers = new Set(Object.values(home.models).map((ref) => parseModel(ref)?.providerID))
+		const checked = [...providers].filter(
+			(provider): provider is string => !!provider && Object.hasOwn(settings.homeChecks, provider),
+		)
+		return Promise.all(
+			checked.map(async (provider) => {
+				const result = await settings
+					.ready(settings.homeChecks[provider] as string)
+					.catch((error): Readiness => ({ ok: false, message: String(error) }))
+				return { provider, ...result }
+			}),
+		)
+	}
+
+	/** Switches roots whose fallback time is up back home once checks pass; checks run outside the root's lock. */
 	async function check() {
 		if (!ctx.storage) return
 		const entries: { key: string; value: unknown }[] = []
@@ -311,23 +348,56 @@ export function fallbacks(ctx: ServerContext, settings: FallbackSettings) {
 		for (const { key, value } of entries) {
 			const rootID = key.slice(PENDING.length)
 			try {
-				await locked(rootID, async () => {
+				const due = await locked(rootID, async () => {
 					// A removed session has nothing left to switch back.
 					const root = await ctx.session.get({ sessionID: rootID }).catch(() => undefined)
-					if (!root) return ctx.storage?.remove(key)
-					const crew = readCrew(root.metadata?.[KEY])
+					const crew = root && readCrew(root.metadata?.[KEY])
 					// The return home does not depend on the chain, which may have changed or gone.
-					if (!crew.fallback) return ctx.storage?.remove(key)
-					if (settings.now() < crew.fallback.since + settings.minutes * 60_000) return
-					// Without its home preset the crew stays where it is, out of the fallback.
-					const home = homeCrew(crew, presets)
+					if (!root || !crew?.fallback) {
+						waits.delete(rootID)
+						await ctx.storage?.remove(key)
+						return undefined
+					}
+					const { since } = crew.fallback
+					if (settings.now() < since + settings.minutes * 60_000) return undefined
+					const wait = waits.get(rootID)
+					if (wait?.since === since && settings.now() < wait.at) return undefined
+					return { root, crew, fallback: crew.fallback }
+				})
+				if (!due) continue
+				const { root, crew, fallback } = due
+				// Without its home preset the crew stays where it is, out of the fallback.
+				const home = homeCrew(crew, presets)
+				const checks = home ? await checkHome(home) : []
+				const failed = checks.find((result) => !result.ok)
+				if (failed) {
+					waits.set(rootID, { since: fallback.since, at: settings.now() + settings.homeCheckMinutes * 60_000 })
+					log("fallback.wait", {
+						root: rootID,
+						from: crew.preset,
+						to: fallback.home,
+						provider: failed.provider,
+						reason: failed.message,
+					})
+					continue
+				}
+				await locked(rootID, async () => {
+					waits.delete(rootID)
 					// Other plugin instances share the storage and may switch back first.
 					if (!(await save(rootID, crew, home ?? { ...crew, fallback: undefined }))) return
 					const stored = (value as { agent?: unknown } | undefined)?.agent
 					const rootAgent = root.agent ?? (typeof stored === "string" ? stored : undefined)
 					if (home && rootAgent) await switchTo(rootID, home.models[rootAgent])
 					await ctx.storage?.remove(key)
-					log("fallback.home", { root: rootID, from: crew.preset, to: crew.fallback.home, restored: !!home })
+					log("fallback.home", {
+						root: rootID,
+						from: crew.preset,
+						to: fallback.home,
+						restored: !!home,
+						...(checks.length > 0
+							? { checks: Object.fromEntries(checks.map((result) => [result.provider, result.message])) }
+							: {}),
+					})
 				})
 			} catch (error) {
 				log("fallback.error", { root: rootID, error: String(error) })

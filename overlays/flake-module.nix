@@ -13,19 +13,19 @@
     };
 
     # opencode from the pinned upstream flake (see the `opencode` input), with a
-    # TUI patch that lets plugins add tabs to the session composer.
+    # TUI patch that lets plugins select the prompt's model.
     opencode-pin =
       _final: prev:
       let
         system = prev.stdenv.hostPlatform.system;
         upstream = inputs.opencode.packages.${system};
-        # v2.2.5's nix/hashes.json predates the last bun.lock changes before the
-        # tag, so upstream's node_modules hashes are stale. Drop this on the next
-        # tag bump.
+        # Upstream's nix/hashes.json lags behind bun.lock changes made before
+        # the tag, so its node_modules hashes can be stale. Recheck on each tag
+        # bump and drop this once upstream's hashes match.
         nodeModulesHash =
           {
-            aarch64-linux = "sha256-x903Q+5ThC84PQjCp/4Id/2pRXT7YtYNFHfkLvFsO+0=";
-            x86_64-linux = "sha256-+GgLX4lq8fPOJVoDGp220uiCTLB0ZwrBkcNo36q9MZU=";
+            aarch64-linux = "sha256-aYIkUpvJG2FHjcTfQaeuMZR+I89cqMCtXvZ26rnbQPY=";
+            x86_64-linux = prev.lib.fakeHash;
           }
           .${system} or null;
         opencode =
@@ -39,9 +39,18 @@
       {
         opencode = opencode.overrideAttrs (old: {
           patches = (old.patches or [ ]) ++ [
-            ../patches/opencode-composer-plugin-tabs.diff
             ../patches/opencode-plugin-model-set.diff
           ];
+          # build.ts re-exports `extension`/`subprotocol` from "ws", which only
+          # bun >= 1.4.4's built-in ws provides; the nix bun (1.4.2) lacks them and
+          # the compiled binary dies at startup with "Export named 'extension' not
+          # found in module 'ws'". Drop this once the nix bun catches up.
+          postPatch = (old.postPatch or "") + ''
+            substituteInPlace packages/cli/script/build.ts \
+              --replace-fail \
+                'export { createWebSocketStream, extension, Receiver, Sender, subprotocol, WebSocket, WebSocketServer } from "ws"' \
+                'export { createWebSocketStream, Receiver, Sender, WebSocket, WebSocketServer } from "ws"'
+          '';
         });
       };
 

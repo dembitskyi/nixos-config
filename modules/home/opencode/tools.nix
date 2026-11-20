@@ -37,13 +37,6 @@
   ghidra = [ "mcp_ghidra_*" ];
   playwright = [ "mcp_playwright_*" ];
 
-  # Lanes runs: control for orchestrators, planning for the lanes planner.
-  lanes = [ "lanes_*" ];
-  plan = [
-    "plan_*"
-    "lanes_status"
-  ];
-
   # Typing, screenshots, tab handling and the autonomous agent are unreliable
   # in browser-use; playwright covers them.
   browseruse = [

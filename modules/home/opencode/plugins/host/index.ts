@@ -1,12 +1,6 @@
-// Host integration plugin for OpenCode V2:
-// - Registers the ai-search CLI (Perplexity or Google AI driven over CDP in the
-//   logged-in ai-browser) as the `ai-search` websearch provider, so the
-//   built-in `websearch` tool uses it.
-// - Keeps the server password out of the environment of shell commands.
-//
-// Loaded from the Nix store, where `@opencode/plugin` is not importable at
-// runtime; `Plugin.define` is an identity helper, so the plugin default-exports
-// its definition directly. Options come from the `plugins` entry in Nix.
+// Registers the ai-search CLI as the default websearch provider and strips
+// server password variables from shell command environments.
+// Loaded from the Nix store, so the plugin default-exports its definition.
 import { execFile } from "node:child_process"
 
 export interface SearchResult {

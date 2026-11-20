@@ -5,7 +5,7 @@ description: How to brief the general subagent for software and configuration re
 
 # general
 
-Research subagent with your tools, minus questions and lanes: documentation and web search, local code and configuration inspection, and changes only when you authorize them.
+Research subagent with your tools, minus questions: documentation and web search, local code and configuration inspection, and changes only when you authorize them.
 
 ## Use it for
 
