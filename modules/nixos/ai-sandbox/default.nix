@@ -103,9 +103,11 @@ let
 in
 {
   imports = [
+    ./antigravity.nix
     ./claude.nix
     ./clipboard.nix
     ./codex.nix
+    ./copilot.nix
     ./mcp.nix
     ./network.nix
     ./opencode.nix

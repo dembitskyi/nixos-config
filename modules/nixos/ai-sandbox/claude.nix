@@ -54,6 +54,8 @@ let
     CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL = 1;
     FORCE_AUTOUPDATE_PLUGINS = 0;
     CLAUDE_CODE_DISABLE_AGENT_VIEW = 1;
+    # Bypass mode still asks before risky rm calls; this waives those prompts too.
+    CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS = 1;
   };
 
   vllmEnv = {

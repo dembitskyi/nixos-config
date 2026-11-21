@@ -1,4 +1,4 @@
-# Interactive agent sessions (Claude Code, Codex).
+# Interactive agent sessions.
 {
   lib,
   config,

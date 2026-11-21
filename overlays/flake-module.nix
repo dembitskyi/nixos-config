@@ -25,7 +25,7 @@
         nodeModulesHash =
           {
             aarch64-linux = "sha256-aYIkUpvJG2FHjcTfQaeuMZR+I89cqMCtXvZ26rnbQPY=";
-            x86_64-linux = prev.lib.fakeHash;
+            x86_64-linux = "sha256-At902X9Dxopt9Z2oHelDXwb9mgM9wPpI44UlQApLVYg=";
           }
           .${system} or null;
         opencode =
